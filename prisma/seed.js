@@ -112,16 +112,34 @@ async function main() {
     create: { id: 'demo-schedule', companyId: company.id, jobId: job.id, workerId: worker.id, startsAt: scheduledStart, endsAt: scheduledEnd, notes: 'Bring filter set A.' }
   });
 
-  await prisma.quote.upsert({
+  const quote = await prisma.quote.upsert({
     where: { id: 'demo-quote' },
-    update: {},
-    create: { id: 'demo-quote', companyId: company.id, customerId: customer.id, serviceId: service.id, jobId: job.id, title: 'Quarterly HVAC maintenance', status: 'SENT', amount: 450 }
+    update: { subtotal: 450, total: 450, amount: 450 },
+    create: { id: 'demo-quote', companyId: company.id, customerId: customer.id, serviceId: service.id, jobId: job.id, title: 'Quarterly HVAC maintenance', status: 'SENT', sentAt: new Date(), amount: 450, subtotal: 450, total: 450 }
+  });
+
+  await prisma.quoteLineItem.upsert({
+    where: { id: 'demo-quote-line' },
+    update: { unitPrice: 450, lineTotal: 450 },
+    create: { id: 'demo-quote-line', companyId: company.id, quoteId: quote.id, serviceId: service.id, description: 'Quarterly HVAC maintenance', quantity: 1, unitPrice: 450, lineTotal: 450 }
+  });
+
+  await prisma.companyInvoiceCounter.upsert({
+    where: { companyId: company.id },
+    update: { nextNumber: 2 },
+    create: { companyId: company.id, nextNumber: 2 }
   });
 
   const invoice = await prisma.invoice.upsert({
     where: { companyId_number: { companyId: company.id, number: 'INV-0001' } },
-    update: {},
-    create: { companyId: company.id, customerId: customer.id, serviceId: service.id, jobId: job.id, number: 'INV-0001', status: 'SENT', amount: 450, dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }
+    update: { subtotal: 450, total: 450, amount: 450, balanceDue: 450 },
+    create: { companyId: company.id, customerId: customer.id, serviceId: service.id, jobId: job.id, quoteId: quote.id, number: 'INV-0001', status: 'SENT', amount: 450, subtotal: 450, total: 450, balanceDue: 450, dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }
+  });
+
+  await prisma.invoiceLineItem.upsert({
+    where: { id: 'demo-invoice-line' },
+    update: { unitPrice: 450, lineTotal: 450 },
+    create: { id: 'demo-invoice-line', companyId: company.id, invoiceId: invoice.id, serviceId: service.id, description: 'Quarterly HVAC maintenance', quantity: 1, unitPrice: 450, lineTotal: 450 }
   });
 
   await prisma.auditLog.create({ data: { companyId: company.id, userId: owner.id, action: 'SEED', entity: 'Company', entityId: company.id, metadata: { invoiceId: invoice.id } } });

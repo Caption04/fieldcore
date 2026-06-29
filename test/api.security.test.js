@@ -45,7 +45,13 @@ function byCreatedDesc(a, b) {
 function createMockPrisma(seed) {
   const db = seed;
   let next = 1;
-  const id = (prefix) => `${prefix}-${next++}`;
+  const id = (prefix) => {
+    let value;
+    do {
+      value = `${prefix}-${next++}`;
+    } while (Object.values(db).some((records) => Array.isArray(records) && records.some((record) => record.id === value)));
+    return value;
+  };
 
   function companyById(companyId) { return db.companies.find((item) => item.id === companyId); }
   function brandingByCompanyId(companyId) { return db.companyBrandings.find((item) => item.companyId === companyId); }
@@ -55,6 +61,9 @@ function createMockPrisma(seed) {
   function workerById(workerId) { return db.workerProfiles.find((item) => item.id === workerId); }
   function jobById(jobId) { return db.jobs.find((item) => item.id === jobId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
+  function quoteLineItems(quoteId) { return db.quoteLineItems.filter((item) => item.quoteId === quoteId); }
+  function invoiceLineItems(invoiceId) { return db.invoiceLineItems.filter((item) => item.invoiceId === invoiceId); }
+  function receiptByPaymentId(paymentId) { return db.receipts.find((item) => item.paymentId === paymentId); }
 
   function enrichCompany(company, include) {
     if (!company) return null;
@@ -90,6 +99,8 @@ function createMockPrisma(seed) {
     if (include && include.customer) result.customer = clone(customerById(quote.customerId));
     if (include && include.service) result.service = clone(serviceById(quote.serviceId));
     if (include && include.job) result.job = clone(jobById(quote.jobId));
+    if (include && include.lineItems) result.lineItems = clone(quoteLineItems(quote.id));
+    if (include && include.statusHistory) result.statusHistory = db.quoteStatusHistories.filter((item) => item.quoteId === quote.id);
     return result;
   }
 
@@ -99,6 +110,16 @@ function createMockPrisma(seed) {
     if (include && include.service) result.service = clone(serviceById(invoice.serviceId));
     if (include && include.job) result.job = clone(jobById(invoice.jobId));
     if (include && include.payments) result.payments = db.payments.filter((payment) => payment.invoiceId === invoice.id);
+    if (include && include.receipts) result.receipts = db.receipts.filter((receipt) => receipt.invoiceId === invoice.id);
+    if (include && include.lineItems) result.lineItems = clone(invoiceLineItems(invoice.id));
+    if (include && include.statusHistory) result.statusHistory = db.invoiceStatusHistories.filter((item) => item.invoiceId === invoice.id);
+    return result;
+  }
+
+  function enrichPayment(payment, include) {
+    if (!payment) return null;
+    const result = { ...payment };
+    if (include && include.receipt) result.receipt = clone(receiptByPaymentId(payment.id)) || null;
     return result;
   }
 
@@ -140,6 +161,21 @@ function createMockPrisma(seed) {
         const index = db[name].findIndex((item) => matchesWhere(item, args.where));
         const [record] = db[name].splice(index, 1);
         return Promise.resolve(clone(record));
+      },
+      deleteMany: (args) => {
+        const before = db[name].length;
+        db[name] = db[name].filter((item) => !matchesWhere(item, args.where));
+        return Promise.resolve({ count: before - db[name].length });
+      },
+      upsert: (args) => {
+        const index = db[name].findIndex((item) => matchesWhere(item, args.where));
+        if (index === -1) {
+          const record = { id: args.create.id || id(name), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...stripUndefined(args.create) };
+          db[name].push(record);
+          return Promise.resolve(clone(enrich(record, args.include)));
+        }
+        db[name][index] = { ...db[name][index], ...stripUndefined(args.update), updatedAt: new Date().toISOString() };
+        return Promise.resolve(clone(enrich(db[name][index], args.include)));
       }
     };
   }
@@ -187,8 +223,14 @@ function createMockPrisma(seed) {
       }
     },
     invoice: makeModel('invoices', enrichInvoice),
+    quoteLineItem: makeModel('quoteLineItems'),
+    quoteStatusHistory: makeModel('quoteStatusHistories'),
+    companyInvoiceCounter: makeModel('companyInvoiceCounters'),
+    invoiceLineItem: makeModel('invoiceLineItems'),
+    invoiceStatusHistory: makeModel('invoiceStatusHistories'),
+    receipt: makeModel('receipts'),
     scheduleItem: makeModel('scheduleItems'),
-    payment: makeModel('payments'),
+    payment: makeModel('payments', enrichPayment),
     workerLocation: makeModel('workerLocations'),
     jobPhoto: makeModel('jobPhotos'),
     auditLog: makeModel('auditLogs'),
@@ -231,8 +273,14 @@ async function buildApp() {
       { id: 'job-other-worker', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-b', title: 'Assigned B', status: 'SCHEDULED', total: 100, createdAt: '2026-01-03T00:00:00.000Z' },
       { id: 'job-b', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', workerId: 'wp-c', title: 'Company B Job', status: 'SCHEDULED', total: 200, createdAt: '2026-01-04T00:00:00.000Z' }
     ],
-    quotes: [{ id: 'quote-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', title: 'Quote A', status: 'SENT', amount: 100, createdAt: '2026-01-01T00:00:00.000Z' }],
-    invoices: [{ id: 'invoice-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', number: 'INV-A', status: 'SENT', amount: 100, createdAt: '2026-01-01T00:00:00.000Z' }],
+    quotes: [{ id: 'quote-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', title: 'Quote A', status: 'SENT', amount: 100, subtotal: 100, total: 100, createdAt: '2026-01-01T00:00:00.000Z' }],
+    quoteLineItems: [{ id: 'qli-a', companyId: 'company-a', quoteId: 'quote-a', serviceId: 'service-a', description: 'Service A', quantity: 1, unitPrice: 100, discountAmount: 0, taxAmount: 0, lineTotal: 100, sortOrder: 0 }],
+    quoteStatusHistories: [],
+    companyInvoiceCounters: [{ id: 'counter-a', companyId: 'company-a', prefix: 'INV', nextNumber: 7, padding: 4 }, { id: 'counter-b', companyId: 'company-b', prefix: 'INV', nextNumber: 1, padding: 4 }],
+    invoices: [{ id: 'invoice-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', number: 'INV-A', status: 'SENT', amount: 100, subtotal: 100, total: 100, balanceDue: 100, createdAt: '2026-01-01T00:00:00.000Z' }],
+    invoiceLineItems: [{ id: 'ili-a', companyId: 'company-a', invoiceId: 'invoice-a', serviceId: 'service-a', description: 'Service A', quantity: 1, unitPrice: 100, discountAmount: 0, taxAmount: 0, lineTotal: 100, sortOrder: 0 }],
+    invoiceStatusHistories: [],
+    receipts: [],
     scheduleItems: [],
     payments: [],
     workerLocations: [],
@@ -436,4 +484,96 @@ test('all sampled API responses omit passwordHash', async () => {
     assert.ok(response.status < 500, path);
     assertNoPasswordHash(response.body);
   }
+});
+
+
+test('quote engine calculates totals and accept is idempotent', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const created = await admin.post('/api/quotes').send({
+    customerId: 'customer-a',
+    serviceId: 'service-a',
+    title: 'Calculated Quote',
+    lineItems: [{ description: 'Labor', quantity: 2, unitPrice: 100, discountAmount: 10, taxAmount: 5 }]
+  });
+  assert.equal(created.status, 201);
+  assert.equal(Number(created.body.data.subtotal), 200);
+  assert.equal(Number(created.body.data.discountTotal), 10);
+  assert.equal(Number(created.body.data.taxTotal), 5);
+  assert.equal(Number(created.body.data.total), 195);
+
+  const sent = await admin.post('/api/quotes/' + created.body.data.id + '/send').send({});
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.data.status, 'SENT');
+  assert.equal(sent.body.data.statusHistory.length, 2);
+
+  const accepted = await admin.post('/api/quotes/' + created.body.data.id + '/accept').send({});
+  const acceptedAgain = await admin.post('/api/quotes/' + created.body.data.id + '/accept').send({});
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.data.status, 'ACCEPTED');
+  assert.equal(accepted.body.data.jobId, acceptedAgain.body.data.jobId);
+  assertNoPasswordHash(accepted.body);
+});
+
+test('completed job creates one invoice and payments create one receipt', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const complete = await admin.post('/api/jobs/job-other-worker/complete').send({ completionNotes: 'Done' });
+  assert.equal(complete.status, 200);
+  assert.equal(complete.body.data.status, 'COMPLETED');
+
+  const invoice = await admin.post('/api/jobs/job-other-worker/create-invoice').send({});
+  const invoiceAgain = await admin.post('/api/jobs/job-other-worker/create-invoice').send({});
+  assert.equal(invoice.status, 201);
+  assert.equal(invoice.body.data.id, invoiceAgain.body.data.id);
+  assert.equal(invoice.body.data.number, 'INV-0007');
+
+  const partial = await admin.post('/api/invoices/' + invoice.body.data.id + '/payments').send({ amount: 40, method: 'CASH', status: 'CONFIRMED' });
+  assert.equal(partial.status, 201);
+  assert.equal(partial.body.data.status, 'PARTIALLY_PAID');
+  assert.equal(Number(partial.body.data.balanceDue), 60);
+
+  const payments = await admin.get('/api/invoices/' + invoice.body.data.id + '/payments');
+  const confirmAgain = await admin.post('/api/payments/' + payments.body.data[0].id + '/confirm').send({});
+  const receipts = await admin.get('/api/invoices/' + invoice.body.data.id + '/receipts');
+  assert.equal(confirmAgain.status, 200);
+  assert.equal(receipts.body.data.length, 1);
+  assertNoPasswordHash(receipts.body);
+});
+
+test('job invoice creation skips stale invoice counter numbers', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const conflicting = await admin.post('/api/invoices').send({
+    number: 'INV-0007',
+    customerId: 'customer-a',
+    serviceId: 'service-a',
+    amount: 25
+  });
+  assert.equal(conflicting.status, 201);
+  assert.equal(conflicting.body.data.number, 'INV-0007');
+
+  const complete = await admin.post('/api/jobs/job-other-worker/complete').send({ completionNotes: 'Done' });
+  assert.equal(complete.status, 200);
+
+  const invoice = await admin.post('/api/jobs/job-other-worker/create-invoice').send({});
+  assert.equal(invoice.status, 201);
+  assert.equal(invoice.body.data.number, 'INV-0008');
+
+  const invoiceAgain = await admin.post('/api/jobs/job-other-worker/create-invoice').send({});
+  assert.equal(invoiceAgain.status, 200);
+  assert.equal(invoiceAgain.body.data.id, invoice.body.data.id);
+});
+test('paid invoices cannot be edited and workers cannot access receipts', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const pay = await admin.post('/api/invoices/invoice-a/payments').send({ amount: 100, method: 'CASH', status: 'CONFIRMED' });
+  assert.equal(pay.status, 201);
+  assert.equal(pay.body.data.status, 'PAID');
+  const edit = await admin.patch('/api/invoices/invoice-a').send({ dueDate: '2026-02-01' });
+  assert.equal(edit.status, 409);
+  const receipts = await worker.get('/api/invoices/invoice-a/receipts');
+  assert.equal(receipts.status, 403);
 });

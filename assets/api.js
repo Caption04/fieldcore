@@ -2,7 +2,8 @@
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], jobs: [] };
+  const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], jobs: [], invoices: [] };
 
   const tableConfigs = {
     customers: {
@@ -12,22 +13,22 @@
       row: (item) => [item.name, [item.email, item.phone].filter(Boolean).join(' / ') || '-', item.address || '-', (item.jobs || []).length, money.format((item.invoices || []).filter((i) => i.status !== 'PAID').reduce((sum, i) => sum + Number(i.amount || 0), 0))]
     },
     jobs: {
-      columns: ['Job', 'Customer', 'Worker', 'Status', 'Scheduled', 'Total'],
+      columns: ['Job', 'Customer', 'Worker', 'Status', 'Scheduled', 'Total', 'Actions'],
       emptyTitle: 'No jobs yet',
       emptyText: 'Create your first job to populate operations.',
-      row: (item) => [item.title, item.customer && item.customer.name || '-', item.worker && item.worker.user && item.worker.user.name || '-', badge(item.status), formatDate(item.scheduledStart), money.format(Number(item.total || 0))]
+      row: (item) => [item.title, item.customer && item.customer.name || '-', item.worker && item.worker.user && item.worker.user.name || '-', badge(item.status), formatDate(item.scheduledStart), money.format(Number(item.total || 0)), rowActions('jobs', item)]
     },
     quotes: {
-      columns: ['Quote', 'Customer', 'Status', 'Amount', 'Valid Until'],
+      columns: ['Quote', 'Customer', 'Status', 'Total', 'Valid Until', 'Actions'],
       emptyTitle: 'No quotes yet',
       emptyText: 'Create your first quote to start the pipeline.',
-      row: (item) => [item.title, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.amount || 0)), formatDate(item.validUntil)]
+      row: (item) => [item.title, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.total || item.amount || 0)), formatDate(item.validUntil), rowActions('quotes', item)]
     },
     invoices: {
-      columns: ['Invoice', 'Customer', 'Status', 'Amount', 'Due'],
+      columns: ['Invoice', 'Customer', 'Status', 'Total', 'Balance', 'Due', 'Actions'],
       emptyTitle: 'No invoices yet',
       emptyText: 'Create your first invoice to start billing.',
-      row: (item) => [item.number, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.amount || 0)), formatDate(item.dueDate)]
+      row: (item) => [item.number, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.total || item.amount || 0)), money.format(Number(item.balanceDue || 0)), formatDate(item.dueDate), rowActions('invoices', item)]
     }
   };
 
@@ -168,10 +169,36 @@
     return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 
+  function formatReceiptDateTime(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+
   function badge(value) {
     const normalized = String(value || '').toLowerCase();
     const color = normalized.includes('overdue') || normalized.includes('reject') || normalized.includes('cancel') ? 'red' : normalized.includes('progress') || normalized.includes('sent') || normalized.includes('scheduled') ? 'orange' : normalized.includes('draft') || normalized.includes('new') ? 'gray' : 'blue';
     return `<span class="badge ${color}">${escapeHtml(String(value || '-').replace(/_/g, ' '))}</span>`;
+  }
+
+
+  function rowActions(resource, item) {
+    const buttons = [];
+    const add = (label, action, primary) => buttons.push('<button class="' + (primary ? 'primary-button' : 'secondary-button') + ' compact" type="button" data-row-action="' + action + '" data-id="' + escapeHtml(item.id) + '">' + label + '</button>');
+    if (resource === 'quotes' && item.status === 'DRAFT') add('Send', 'quote-send');
+    if (resource === 'quotes' && item.status === 'SENT') add('Accept', 'quote-accept');
+    if (resource === 'quotes' && item.status === 'SENT') add('Reject', 'quote-reject');
+    if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Complete', 'job-complete');
+    if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice');
+    if (resource === 'invoices') {
+      const status = String(item.status || '').toUpperCase();
+      const hasReceipts = Array.isArray(item.receipts) && item.receipts.length > 0;
+      if (status === 'DRAFT') add('Send', 'invoice-send');
+      if (status !== 'PAID' && status !== 'VOID') add('Record Payment', 'invoice-pay');
+      if (hasReceipts) add(status === 'PARTIALLY_PAID' || item.receipts.length > 1 ? 'View Receipts' : 'View Receipt', 'invoice-receipts', status === 'PAID');
+      if (status !== 'VOID' && status !== 'PAID') add('Void', 'invoice-void');
+    }
+    return '<div class="row-actions">' + buttons.join('') + '</div>';
   }
 
   function setStats(values) {
@@ -192,7 +219,7 @@
       card.innerHTML = `<div class="empty-state"><div><strong>${config.emptyTitle}</strong><span>${config.emptyText}</span></div></div><footer class="table-footer"><span>Showing 0 ${resource}</span><div class="pager"><span class="page-dot active">1</span></div></footer>`;
       return;
     }
-    const rows = data.map((item) => `<tr>${config.row(item).map((cell) => `<td>${String(cell).startsWith('<span') ? cell : escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
+    const rows = data.map((item) => `<tr>${config.row(item).map((cell) => `<td>${String(cell).startsWith('<span') || String(cell).startsWith('<div') ? cell : escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
     card.innerHTML = `<div class="table-scroll"><table><thead><tr>${config.columns.map((name) => `<th>${escapeHtml(name)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div><footer class="table-footer"><span>Showing ${data.length} ${resource}</span><div class="pager"><span class="page-dot active">1</span></div></footer>`;
   }
 
@@ -295,6 +322,10 @@
       error.hidden = true;
       const body = Object.fromEntries(new FormData(event.currentTarget).entries());
       Object.keys(body).forEach((key) => { if (body[key] === '') delete body[key]; });
+      if ((config.action === '/quotes' || config.action === '/invoices') && body.amount) {
+        body.lineItems = [{ serviceId: body.serviceId, description: body.title || body.number || 'Service line item', quantity: 1, unitPrice: Number(body.amount), discountAmount: 0, taxAmount: 0 }];
+        delete body.amount;
+      }
       try {
         await api(config.action, { method: 'POST', body: JSON.stringify(body) });
         closeModal();
@@ -305,6 +336,65 @@
       }
     });
     document.body.appendChild(modal);
+  }
+
+  function receiptDetail(label, value) {
+    return `<div class="receipt-detail"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '-')}</strong></div>`;
+  }
+
+  function paymentMethod(value) {
+    return String(value || '-').replace(/_/g, ' ');
+  }
+
+  function receiptCard(receipt, invoice) {
+    const payment = receipt.payment || {};
+    const invoiceNumber = invoice.number || receipt.invoice && receipt.invoice.number || '-';
+    const customerName = invoice.customer && invoice.customer.name || receipt.invoice && receipt.invoice.customer && receipt.invoice.customer.name || '-';
+    const remainingBalance = invoice.balanceDue == null ? null : receiptMoney.format(Number(invoice.balanceDue || 0));
+    return `<article class="receipt-card">
+      <div class="receipt-card-head">
+        <strong>${escapeHtml(receipt.receiptNumber || 'Receipt')}</strong>
+        <span>${escapeHtml(formatReceiptDateTime(receipt.issuedAt || receipt.createdAt))}</span>
+      </div>
+      <div class="receipt-details">
+        ${receiptDetail('Receipt number', receipt.receiptNumber || '-')}
+        ${receiptDetail('Invoice number', invoiceNumber)}
+        ${receiptDetail('Customer', customerName)}
+        ${receiptDetail('Amount paid', receiptMoney.format(Number(receipt.amount || payment.amount || 0)))}
+        ${receiptDetail('Payment method', paymentMethod(payment.method))}
+        ${payment.reference ? receiptDetail('Payment reference', payment.reference) : ''}
+        ${receiptDetail('Issued date', formatReceiptDateTime(receipt.issuedAt || receipt.createdAt))}
+        ${remainingBalance == null ? '' : receiptDetail('Remaining balance', remainingBalance)}
+      </div>
+    </article>`;
+  }
+
+  function openReceiptModal(invoice, receipts) {
+    closeModal();
+    const branding = currentBranding();
+    const companyName = branding.brandName || state.profile && (state.profile.tradingName || state.profile.name) || 'FieldCore';
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal';
+    const receiptContent = receipts.length ? receipts.map((receipt) => receiptCard(receipt, invoice)).join('') : '<div class="empty-state receipt-empty"><div><strong>No receipt found for this invoice yet.</strong></div></div>';
+    modal.innerHTML = `<div class="fc-dialog receipt-dialog">
+      <div class="panel-head">
+        <div class="receipt-brand">
+          <span class="logo-preview small">${branding.logoUrl ? `<img src="${escapeHtml(branding.logoUrl)}" alt="${escapeHtml(companyName)} logo">` : escapeHtml(initials(companyName))}</span>
+          <div><h3>Receipts</h3><small>${escapeHtml(companyName)}</small></div>
+        </div>
+        <button class="icon-button" type="button" data-close>&times;</button>
+      </div>
+      <div class="receipt-list">${receiptContent}</div>
+      <div class="fc-form-actions"><button class="secondary-button" type="button" data-close>Close</button></div>
+    </div>`;
+    modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('[data-close]')) closeModal(); });
+    document.body.appendChild(modal);
+  }
+
+  async function showInvoiceReceipts(invoiceId) {
+    const invoice = state.invoices.find((item) => item.id === invoiceId) || await api('/invoices/' + invoiceId).catch(() => ({}));
+    const receipts = await api('/invoices/' + invoiceId + '/receipts');
+    openReceiptModal(invoice || {}, Array.isArray(receipts) ? receipts : []);
   }
 
   function closeModal() {
@@ -324,6 +414,35 @@
     });
   }
 
+
+
+  async function handleRowAction(event) {
+    const button = event.target.closest('[data-row-action]');
+    if (!button) return;
+    const id = button.dataset.id;
+    const action = button.dataset.rowAction;
+    try {
+      if (action === 'quote-send') await api('/quotes/' + id + '/send', { method: 'POST', body: '{}' });
+      if (action === 'quote-accept') await api('/quotes/' + id + '/accept', { method: 'POST', body: '{}' });
+      if (action === 'quote-reject') await api('/quotes/' + id + '/reject', { method: 'POST', body: '{}' });
+      if (action === 'job-complete') await api('/jobs/' + id + '/complete', { method: 'POST', body: JSON.stringify({ completionNotes: 'Completed from FieldCore web app', adminOverride: true }) });
+      if (action === 'job-invoice') await api('/jobs/' + id + '/create-invoice', { method: 'POST', body: '{}' });
+      if (action === 'invoice-send') await api('/invoices/' + id + '/send', { method: 'POST', body: '{}' });
+      if (action === 'invoice-void') await api('/invoices/' + id + '/void', { method: 'POST', body: '{}' });
+      if (action === 'invoice-receipts') {
+        await showInvoiceReceipts(id);
+        return;
+      }
+      if (action === 'invoice-pay') {
+        const amount = window.prompt('Payment amount');
+        if (!amount) return;
+        await api('/invoices/' + id + '/payments', { method: 'POST', body: JSON.stringify({ amount: Number(amount), method: 'CASH', status: 'CONFIRMED' }) });
+      }
+      await load();
+    } catch (error) {
+      setStatus(error.message, false);
+    }
+  }
 
   function setupSettings() {
     const tabs = Array.from(document.querySelectorAll('[data-settings-target]'));
@@ -459,6 +578,7 @@
       if (page === 'dashboard') renderDashboard(await api('/dashboard'));
       if (tableConfigs[page]) {
         const data = await api(`/${page}`);
+        state[page] = data;
         renderTable(page, data);
         updateListStats(page, data);
       }
@@ -469,6 +589,7 @@
     }
   }
 
+  document.addEventListener('click', handleRowAction);
   setupCreateButtons();
   setupSettings();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', load);
