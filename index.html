@@ -1,0 +1,121 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Dashboard</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="dashboard" data-title="Dashboard">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Good morning.</h2>
+          <p>Your workspace is ready. Once jobs, customers, invoices, and workers are created, this dashboard will fill in automatically.</p>
+        </div>
+        <span class="api-status" data-api-status>Connecting...</span>
+      </div>
+      <section class="stats">
+        <article class="card stat-card">
+          <div class="stat-label">
+            Jobs Today
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            No jobs scheduled
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Revenue MTD
+          </div>
+          <div class="stat-value">
+            $0
+          </div>
+          <div class="trend">
+            No payments yet
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Unpaid Invoices
+          </div>
+          <div class="stat-value">
+            $0
+          </div>
+          <div class="trend">
+            Nothing outstanding
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Active Workers
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            No workers online
+          </div>
+        </article>
+      </section>
+      <section class="split">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Today's Schedule</h2>
+            <a class="secondary-button" href="schedule.html">Open</a>
+          </div>
+          <div class="empty-state">
+            <div>
+              <strong>No jobs scheduled yet</strong>
+              <span>Create your first job to populate today's schedule.</span>
+            </div>
+          </div>
+        </div>
+        <aside class="panel">
+          <div class="panel-head">
+            <h3>Worker Status</h3>
+            <a href="map.html">Map</a>
+          </div>
+          <div class="empty-state">
+            <div>
+              <strong>No workers yet</strong>
+              <span>Add technicians to see live status.</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+      <section class="split">
+        <div class="table-card">
+          <div class="panel-head card">
+            <h3>Recent Jobs</h3>
+            <a href="jobs.html">View all</a>
+          </div>
+          <div class="empty-state">
+            <div>
+              <strong>No recent jobs</strong>
+              <span>Completed and active jobs will appear here.</span>
+            </div>
+          </div>
+        </div>
+        <aside class="panel">
+          <div class="panel-head">
+            <h3>Pipeline</h3>
+            <a href="quotes.html">Quotes</a>
+          </div>
+          <div class="empty-state">
+            <div>
+              <strong>No leads or quotes</strong>
+              <span>Your sales pipeline starts empty.</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </section>
+  </body>
+</html>
+

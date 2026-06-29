@@ -1,0 +1,86 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Customers</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="customers" data-title="Customers">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Customer Directory</h2>
+          <p>Customer records, balances, and service history will appear here once created.</p>
+        </div>
+        <button class="primary-button" type="button">+ New Customer</button>
+      </div>
+      <section class="stats">
+        <article class="card stat-card">
+          <div class="stat-label">
+            Total Customers
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Active Accounts
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Outstanding Balance
+          </div>
+          <div class="stat-value">
+            $0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Avg. Jobs
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+      </section>
+      <div class="toolbar">
+        <span class="api-status" data-api-status>Connecting...</span>
+      </div>
+      <section class="table-card">
+        <div class="empty-state">
+          <div>
+            <strong>No customers yet</strong>
+            <span>The local API is ready for customer records.</span>
+          </div>
+        </div>
+        <footer class="table-footer">
+          <span>Showing 0 customers</span>
+          <div class="pager">
+            <span class="page-dot active">1</span>
+          </div>
+        </footer>
+      </section>
+    </section>
+  </body>
+</html>
+

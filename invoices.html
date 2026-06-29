@@ -1,0 +1,100 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Invoices</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="invoices" data-title="Invoices">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Billing Workspace</h2>
+          <p>Invoices and payment status will appear once work is billed.</p>
+        </div>
+        <button class="primary-button">+ New Invoice</button>
+      </div>
+      <section class="stats five">
+        <article class="card stat-card">
+          <div class="stat-label">
+            Total Invoices
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Paid
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Unpaid
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            $0
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Overdue
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            $0
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Drafts
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+        </article>
+      </section>
+      <div class="toolbar">
+        <div class="tabs">
+          <button class="tab active" type="button">All</button>
+          <button class="tab" type="button">Paid</button>
+          <button class="tab" type="button">Unpaid</button>
+          <button class="tab" type="button">Overdue</button>
+          <button class="tab" type="button">Drafts</button>
+        </div>
+        <div class="toolbar-actions">
+          <span class="api-status" data-api-status>Connecting...</span>
+        </div>
+      </div>
+      <section class="table-card">
+        <div class="empty-state">
+          <div>
+            <strong>No invoices yet</strong>
+            <span>The fake invoices API is empty.</span>
+          </div>
+        </div>
+        <footer class="table-footer">
+          <span>Showing 0 invoices</span>
+          <div class="pager">
+            <span class="page-dot active">1</span>
+          </div>
+        </footer>
+      </section>
+    </section>
+  </body>
+</html>
+

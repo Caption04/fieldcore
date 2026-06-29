@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  WORKER
+}
+
+enum JobStatus {
+  NEW
+  SCHEDULED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  OTHER
+}
+
+model Company {
+  id              String           @id @default(cuid())
+  name            String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  users           User[]
+  customers       Customer[]
+  workers         WorkerProfile[]
+  services        Service[]
+  jobs            Job[]
+  scheduleItems   ScheduleItem[]
+  quotes          Quote[]
+  invoices        Invoice[]
+  payments        Payment[]
+  workerLocations WorkerLocation[]
+  jobPhotos       JobPhoto[]
+  auditLogs       AuditLog[]
+}
+
+model User {
+  id           String         @id @default(cuid())
+  companyId    String
+  email        String         @unique
+  name         String
+  passwordHash String
+  role         Role           @default(WORKER)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker       WorkerProfile?
+  auditLogs    AuditLog[]
+
+  @@index([companyId])
+}
+
+model Customer {
+  id        String    @id @default(cuid())
+  companyId String
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobs      Job[]
+  quotes    Quote[]
+  invoices  Invoice[]
+
+  @@index([companyId])
+}
+
+model WorkerProfile {
+  id              String           @id @default(cuid())
+  companyId       String
+  userId          String           @unique
+  title           String?
+  phone           String?
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs            Job[]
+  scheduleItems   ScheduleItem[]
+  workerLocations WorkerLocation[]
+
+  @@index([companyId])
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  description String?
+  price       Decimal  @default(0) @db.Decimal(12, 2)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobs        Job[]
+  quotes      Quote[]
+  invoices    Invoice[]
+
+  @@index([companyId])
+}
+
+model Job {
+  id             String         @id @default(cuid())
+  companyId      String
+  customerId     String
+  serviceId      String?
+  workerId       String?
+  title          String
+  description    String?
+  status         JobStatus      @default(NEW)
+  scheduledStart DateTime?
+  scheduledEnd   DateTime?
+  completedAt    DateTime?
+  total          Decimal        @default(0) @db.Decimal(12, 2)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  company        Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer       Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service        Service?       @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  worker         WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  scheduleItems  ScheduleItem[]
+  quotes         Quote[]
+  invoices       Invoice[]
+  photos         JobPhoto[]
+
+  @@index([companyId])
+  @@index([companyId, customerId])
+}
+
+model ScheduleItem {
+  id        String         @id @default(cuid())
+  companyId String
+  jobId     String
+  workerId  String?
+  startsAt  DateTime
+  endsAt    DateTime?
+  notes     String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  company   Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job       Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker    WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+}
+
+model Quote {
+  id         String      @id @default(cuid())
+  companyId  String
+  customerId String
+  serviceId  String?
+  jobId      String?
+  title      String
+  status     QuoteStatus @default(DRAFT)
+  amount     Decimal     @default(0) @db.Decimal(12, 2)
+  validUntil DateTime?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer   Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service    Service?    @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  job        Job?        @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+}
+
+model Invoice {
+  id         String        @id @default(cuid())
+  companyId  String
+  customerId String
+  serviceId  String?
+  jobId      String?
+  number     String
+  status     InvoiceStatus @default(DRAFT)
+  amount     Decimal       @default(0) @db.Decimal(12, 2)
+  dueDate    DateTime?
+  paidAt     DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  company    Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer   Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service    Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  job        Job?          @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  payments   Payment[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  companyId String
+  invoiceId String
+  amount    Decimal       @db.Decimal(12, 2)
+  method    PaymentMethod @default(OTHER)
+  paidAt    DateTime      @default(now())
+  createdAt DateTime      @default(now())
+  company   Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice   Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+model WorkerLocation {
+  id        String        @id @default(cuid())
+  companyId String
+  workerId  String
+  latitude  Float
+  longitude Float
+  recordedAt DateTime     @default(now())
+  company   Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker    WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, workerId, recordedAt])
+}
+
+model JobPhoto {
+  id        String   @id @default(cuid())
+  companyId String
+  jobId     String
+  url       String
+  caption   String?
+  createdAt DateTime @default(now())
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, jobId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+}

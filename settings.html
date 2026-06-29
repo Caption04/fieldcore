@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Settings</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="settings" data-title="Settings">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Workspace Settings</h2>
+          <p>Configure the white-label workspace, operating defaults, billing preferences, and account security.</p>
+        </div>
+        <span class="api-status" data-api-status>Connecting...</span>
+      </div>
+      <section class="settings-layout">
+        <aside class="panel settings-tabs" aria-label="Settings sections">
+          <button class="settings-tab active" type="button" data-settings-target="company">Company Information</button>
+          <button class="settings-tab" type="button" data-settings-target="team">Team &amp; Roles</button>
+          <button class="settings-tab" type="button" data-settings-target="jobs">Job Defaults</button>
+          <button class="settings-tab" type="button" data-settings-target="billing">Billing</button>
+          <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
+          <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
+          <button class="settings-tab" type="button" data-settings-target="security">Security</button>
+        </aside>
+        <div class="settings-panels">
+          <div class="panel settings-panel active" data-settings-panel="company">
+            <div class="panel-head">
+              <h2>Company Information</h2>
+              <span class="badge blue">White-label</span>
+            </div>
+            <form class="form-grid">
+              <div class="field span-2">
+                <label for="logo">Company Logo</label>
+                <div class="logo-upload">
+                  <div class="logo-preview" data-logo-preview>FC</div>
+                  <div>
+                    <input id="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" data-logo-input>
+                    <small>Use a square PNG, JPG, or SVG for client-facing branding.</small>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <label for="company">Company Name</label>
+                <input id="company" placeholder="Not set">
+              </div>
+              <div class="field">
+                <label for="brandColor">Brand Color</label>
+                <input id="brandColor" type="color" value="#2363ff">
+              </div>
+              <div class="field">
+                <label for="email">Support Email</label>
+                <input id="email" type="email" placeholder="support@example.com">
+              </div>
+              <div class="field">
+                <label for="phone">Phone</label>
+                <input id="phone" placeholder="Not set">
+              </div>
+              <div class="field">
+                <label for="timezone">Timezone</label>
+                <select id="timezone">
+                  <option value="">Not set</option>
+                  <option>Central Time (US)</option>
+                  <option>Eastern Time (US)</option>
+                  <option>Mountain Time (US)</option>
+                  <option>Pacific Time (US)</option>
+                  <option>Africa/Harare</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="website">Website</label>
+                <input id="website" type="url" placeholder="https://example.com">
+              </div>
+              <div class="field span-2">
+                <label for="address">Business Address</label>
+                <input id="address" placeholder="Not set">
+              </div>
+              <div class="field span-2">
+                <label for="notes">Internal Notes</label>
+                <textarea id="notes" placeholder="No notes yet"></textarea>
+              </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="button">Save Settings</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="team" hidden>
+            <div class="panel-head">
+              <h2>Team &amp; Roles</h2>
+              <span class="badge gray">Access</span>
+            </div>
+            <form class="form-grid">
+              <div class="field">
+                <label for="defaultRole">Default New User Role</label>
+                <select id="defaultRole">
+                  <option>WORKER</option>
+                  <option>ADMIN</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="inviteExpiry">Invite Expiry</label>
+                <select id="inviteExpiry">
+                  <option>7 days</option>
+                  <option>14 days</option>
+                  <option>30 days</option>
+                </select>
+              </div>
+              <div class="field span-2">
+                <label for="roleNotes">Role Notes</label>
+                <textarea id="roleNotes" placeholder="Document internal permission rules."></textarea>
+              </div>
+              <div class="settings-checks span-2">
+                <label><input type="checkbox" checked> Require admins to invite workers by email</label>
+                <label><input type="checkbox" checked> Let workers update only their assigned job status</label>
+                <label><input type="checkbox"> Require owner approval for admin creation</label>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="jobs" hidden>
+            <div class="panel-head">
+              <h2>Job Defaults</h2>
+              <span class="badge gray">Operations</span>
+            </div>
+            <form class="form-grid">
+              <div class="field">
+                <label for="jobDuration">Default Job Duration</label>
+                <select id="jobDuration">
+                  <option>1 hour</option>
+                  <option>2 hours</option>
+                  <option>4 hours</option>
+                  <option>Full day</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="jobStatus">Default Job Status</label>
+                <select id="jobStatus">
+                  <option>NEW</option>
+                  <option>SCHEDULED</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="workdayStart">Workday Start</label>
+                <input id="workdayStart" type="time" value="08:00">
+              </div>
+              <div class="field">
+                <label for="workdayEnd">Workday End</label>
+                <input id="workdayEnd" type="time" value="17:00">
+              </div>
+              <div class="settings-checks span-2">
+                <label><input type="checkbox" checked> Require completion notes</label>
+                <label><input type="checkbox" checked> Require proof-of-work photos</label>
+                <label><input type="checkbox"> Auto-create schedule item when assigning a worker</label>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="billing" hidden>
+            <div class="panel-head">
+              <h2>Billing</h2>
+              <span class="badge gray">Finance</span>
+            </div>
+            <form class="form-grid">
+              <div class="field">
+                <label for="currency">Currency</label>
+                <select id="currency">
+                  <option>USD</option>
+                  <option>ZWL</option>
+                  <option>ZAR</option>
+                  <option>GBP</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="paymentTerms">Default Payment Terms</label>
+                <select id="paymentTerms">
+                  <option>Due on receipt</option>
+                  <option>Net 7</option>
+                  <option>Net 14</option>
+                  <option>Net 30</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="invoicePrefix">Invoice Prefix</label>
+                <input id="invoicePrefix" value="INV">
+              </div>
+              <div class="field">
+                <label for="taxRate">Default Tax Rate</label>
+                <input id="taxRate" type="number" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <div class="field span-2">
+                <label for="invoiceFooter">Invoice Footer</label>
+                <textarea id="invoiceFooter" placeholder="Payment instructions or legal footer."></textarea>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="notifications" hidden>
+            <div class="panel-head">
+              <h2>Notifications</h2>
+              <span class="badge gray">Messaging</span>
+            </div>
+            <form class="form-grid">
+              <div class="field">
+                <label for="senderEmail">Sender Email</label>
+                <input id="senderEmail" type="email" placeholder="dispatch@example.com">
+              </div>
+              <div class="field">
+                <label for="senderName">Sender Name</label>
+                <input id="senderName" placeholder="Dispatch Team">
+              </div>
+              <div class="settings-checks span-2">
+                <label><input type="checkbox" checked> Email customers when quotes are sent</label>
+                <label><input type="checkbox" checked> Email customers when invoices are issued</label>
+                <label><input type="checkbox"> SMS workers when jobs are assigned</label>
+                <label><input type="checkbox"> Notify admins when jobs are completed</label>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="integrations" hidden>
+            <div class="panel-head">
+              <h2>Integrations</h2>
+              <span class="badge gray">Connect</span>
+            </div>
+            <div class="settings-list">
+              <div class="list-item"><span class="initials">MP</span><div><strong>Maps Provider</strong><small>Google Maps, Mapbox, or HERE API key.</small></div><span class="badge gray">Not connected</span></div>
+              <div class="list-item"><span class="initials">PM</span><div><strong>Payments</strong><small>Stripe, Square, QuickBooks, or Xero.</small></div><span class="badge gray">Not connected</span></div>
+              <div class="list-item"><span class="initials">MS</span><div><strong>Email &amp; SMS</strong><small>SendGrid, Postmark, and Twilio credentials.</small></div><span class="badge gray">Not connected</span></div>
+              <div class="list-item"><span class="initials">FS</span><div><strong>File Storage</strong><small>S3-compatible storage or Cloudinary for job photos.</small></div><span class="badge gray">Not connected</span></div>
+            </div>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="security" hidden>
+            <div class="panel-head">
+              <h2>Security</h2>
+              <span class="badge blue">Protected</span>
+            </div>
+            <form class="form-grid">
+              <div class="field">
+                <label for="sessionLength">Session Length</label>
+                <select id="sessionLength">
+                  <option>8 hours</option>
+                  <option>12 hours</option>
+                  <option>24 hours</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="passwordMinimum">Minimum Password Length</label>
+                <input id="passwordMinimum" type="number" min="8" value="8">
+              </div>
+              <div class="settings-checks span-2">
+                <label><input type="checkbox" checked> Require secure HTTP-only auth cookies</label>
+                <label><input type="checkbox" checked> Lock users to their company workspace</label>
+                <label><input type="checkbox"> Require two-factor authentication</label>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+    </section>
+  </body>
+</html>

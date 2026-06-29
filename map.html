@@ -1,0 +1,51 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Live Map</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="map" data-title="Map">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Live Map</h2>
+          <p>Worker locations will show here after location tracking is connected.</p>
+        </div>
+        <span class="api-status" data-api-status>Connecting...</span>
+      </div>
+      <section class="map-layout">
+        <div class="map-canvas">
+          <div class="map-road" style="left:10%;top:28%;width:78%;transform:rotate(-12deg)">
+          </div>
+          <div class="map-road" style="left:18%;top:58%;width:70%;transform:rotate(18deg)">
+          </div>
+          <div class="map-road" style="left:42%;top:12%;width:14%;height:78%;transform:rotate(8deg)">
+          </div>
+          <div class="zero-map">
+            <div>
+              <strong>No live locations</strong>
+              <span>Connect a maps/location provider to show workers here.</span>
+            </div>
+          </div>
+        </div>
+        <aside class="panel">
+          <div class="panel-head">
+            <h3>Live Workers</h3>
+            <span class="badge gray">0 Online</span>
+          </div>
+          <div class="empty-state">
+            <div>
+              <strong>No workers found</strong>
+              <span>The fake workers API is empty.</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </section>
+  </body>
+</html>
+

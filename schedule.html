@@ -1,0 +1,141 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Schedule</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="schedule" data-title="Schedule">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Schedule</h2>
+          <p>The calendar starts empty until jobs are assigned to dates and workers.</p>
+        </div>
+        <div class="toolbar-actions">
+          <span class="api-status" data-api-status>Connecting...</span>
+          <button class="primary-button">+ New Job</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="tabs">
+          <button class="tab" type="button">Day</button>
+          <button class="tab active" type="button">Week</button>
+          <button class="tab" type="button">Month</button>
+        </div>
+        <div class="toolbar-actions">
+          <button class="secondary-button">Today</button>
+          <button class="secondary-button">Filter</button>
+        </div>
+      </div>
+      <section class="table-card">
+        <div class="table-scroll">
+          <div class="schedule-grid">
+            <div class="schedule-head">
+              Time
+            </div>
+            <div class="schedule-head">
+              Mon
+            </div>
+            <div class="schedule-head">
+              Tue
+            </div>
+            <div class="schedule-head">
+              Wed
+            </div>
+            <div class="schedule-head">
+              Thu
+            </div>
+            <div class="schedule-head">
+              Fri
+            </div>
+            <div class="schedule-head">
+              Sat
+            </div>
+            <div class="schedule-head">
+              Sun
+            </div>
+            <div class="time-cell">
+              8 AM
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="time-cell">
+              10 AM
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="time-cell">
+              12 PM
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="time-cell">
+              2 PM
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+            <div class="schedule-cell">
+            </div>
+          </div>
+        </div>
+        <div class="empty-state">
+          <div>
+            <strong>No scheduled work</strong>
+            <span>Jobs from the local API will appear on this calendar.</span>
+          </div>
+        </div>
+      </section>
+    </section>
+  </body>
+</html>
+

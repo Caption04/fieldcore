@@ -1,0 +1,95 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Jobs</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="jobs" data-title="Jobs">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Job Command Center</h2>
+          <p>Plan, assign, and track service visits. This account has no jobs yet.</p>
+        </div>
+        <button class="primary-button" type="button">+ New Job</button>
+      </div>
+      <section class="stats">
+        <article class="card stat-card">
+          <div class="stat-label">
+            Open Jobs
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            In Progress
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Completed
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            On Hold
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+      </section>
+      <div class="toolbar">
+        <div class="tabs">
+          <button class="tab active" type="button">All Jobs</button>
+          <button class="tab" type="button">Scheduled</button>
+          <button class="tab" type="button">In Progress</button>
+          <button class="tab" type="button">On Hold</button>
+          <button class="tab" type="button">Completed</button>
+        </div>
+        <div class="toolbar-actions">
+          <span class="api-status" data-api-status>Connecting...</span>
+        </div>
+      </div>
+      <section class="table-card">
+        <div class="empty-state">
+          <div>
+            <strong>No jobs yet</strong>
+            <span>The fake local API returned an empty jobs collection.</span>
+          </div>
+        </div>
+        <footer class="table-footer">
+          <span>Showing 0 jobs</span>
+          <div class="pager">
+            <span class="page-dot active">1</span>
+          </div>
+        </footer>
+      </section>
+    </section>
+  </body>
+</html>
+

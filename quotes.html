@@ -1,0 +1,94 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Quotes</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+  </head>
+  <body data-page="quotes" data-title="Quotes">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Quote Pipeline</h2>
+          <p>Create and send estimates. This account has no quotes yet.</p>
+        </div>
+        <button class="primary-button">+ New Quote</button>
+      </div>
+      <section class="stats">
+        <article class="card stat-card">
+          <div class="stat-label">
+            Open Quotes
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Accepted
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Sent
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+        <article class="card stat-card">
+          <div class="stat-label">
+            Drafts
+          </div>
+          <div class="stat-value">
+            0
+          </div>
+          <div class="trend">
+            Empty
+          </div>
+        </article>
+      </section>
+      <div class="toolbar">
+        <div class="tabs">
+          <button class="tab active" type="button">All</button>
+          <button class="tab" type="button">Accepted</button>
+          <button class="tab" type="button">Sent</button>
+          <button class="tab" type="button">Draft</button>
+        </div>
+        <div class="toolbar-actions">
+          <span class="api-status" data-api-status>Connecting...</span>
+        </div>
+      </div>
+      <section class="table-card">
+        <div class="empty-state">
+          <div>
+            <strong>No quotes yet</strong>
+            <span>The local quotes API returned an empty collection.</span>
+          </div>
+        </div>
+        <footer class="table-footer">
+          <span>Showing 0 quotes</span>
+          <div class="pager">
+            <span class="page-dot active">1</span>
+          </div>
+        </footer>
+      </section>
+    </section>
+  </body>
+</html>
+
