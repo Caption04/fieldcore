@@ -45,22 +45,51 @@ enum PaymentMethod {
 }
 
 model Company {
-  id              String           @id @default(cuid())
-  name            String
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  users           User[]
-  customers       Customer[]
-  workers         WorkerProfile[]
-  services        Service[]
-  jobs            Job[]
-  scheduleItems   ScheduleItem[]
-  quotes          Quote[]
-  invoices        Invoice[]
-  payments        Payment[]
-  workerLocations WorkerLocation[]
-  jobPhotos       JobPhoto[]
-  auditLogs       AuditLog[]
+  id                 String           @id @default(cuid())
+  name               String
+  legalName          String?
+  tradingName        String?
+  registrationNumber String?
+  taxNumber          String?
+  address            String?
+  phone              String?
+  email              String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  users              User[]
+  customers          Customer[]
+  workers            WorkerProfile[]
+  services           Service[]
+  jobs               Job[]
+  scheduleItems      ScheduleItem[]
+  quotes             Quote[]
+  invoices           Invoice[]
+  payments           Payment[]
+  workerLocations    WorkerLocation[]
+  jobPhotos          JobPhoto[]
+  auditLogs          AuditLog[]
+  branding           CompanyBranding?
+}
+
+
+model CompanyBranding {
+  id             String   @id @default(cuid())
+  companyId      String   @unique
+  brandName      String?
+  logoUrl        String?
+  primaryColor   String?
+  secondaryColor String?
+  accentColor    String?
+  supportEmail   String?
+  supportPhone   String?
+  websiteUrl     String?
+  invoiceFooter  String?
+  invoiceTerms   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
 }
 
 model User {

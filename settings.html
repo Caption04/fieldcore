@@ -31,61 +31,108 @@
           <div class="panel settings-panel active" data-settings-panel="company">
             <div class="panel-head">
               <h2>Company Information</h2>
-              <span class="badge blue">White-label</span>
+              <!-- <span class="badge blue">White-label</span> -->
             </div>
-            <form class="form-grid">
+            <form class="form-grid" data-branding-form>
               <div class="field span-2">
-                <label for="logo">Company Logo</label>
+                <label for="logoFile">Company Logo</label>
+
                 <div class="logo-upload">
                   <div class="logo-preview" data-logo-preview>FC</div>
-                  <div>
-                    <input id="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" data-logo-input>
-                    <small>Use a square PNG, JPG, or SVG for client-facing branding.</small>
+
+                  <div class="logo-upload-controls">
+                    <div class="file-upload-row">
+                      <label class="file-upload-button" for="logoFile">Choose logo</label>
+                      <span class="file-name" data-logo-file-name>No file selected</span>
+                    </div>
+
+                    <input
+                      id="logoFile"
+                      name="logo"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      data-logo-input
+                      hidden
+                    >
+
+                    <input
+                      id="logoUrl"
+                      name="logoUrl"
+                      type="hidden"
+                      data-branding-field="logoUrl"
+                    >
+
+                    <small>Upload a square PNG, JPG, or WEBP logo. Max 2MB.</small>
                   </div>
                 </div>
               </div>
               <div class="field">
-                <label for="company">Company Name</label>
-                <input id="company" placeholder="Not set">
+                <label for="companyName">Company Name</label>
+                <input id="companyName" name="name" placeholder="Not set" data-profile-field="name" data-preview-name>
               </div>
               <div class="field">
-                <label for="brandColor">Brand Color</label>
-                <input id="brandColor" type="color" value="#2363ff">
+                <label for="brandName">Brand Name</label>
+                <input id="brandName" name="brandName" placeholder="Customer-facing name" data-branding-field="brandName">
               </div>
               <div class="field">
-                <label for="email">Support Email</label>
-                <input id="email" type="email" placeholder="support@example.com">
+                <label for="legalName">Legal Name</label>
+                <input id="legalName" name="legalName" placeholder="Registered legal name" data-profile-field="legalName">
               </div>
               <div class="field">
-                <label for="phone">Phone</label>
-                <input id="phone" placeholder="Not set">
+                <label for="tradingName">Trading Name</label>
+                <input id="tradingName" name="tradingName" placeholder="Trading as" data-profile-field="tradingName">
               </div>
               <div class="field">
-                <label for="timezone">Timezone</label>
-                <select id="timezone">
-                  <option value="">Not set</option>
-                  <option>Central Time (US)</option>
-                  <option>Eastern Time (US)</option>
-                  <option>Mountain Time (US)</option>
-                  <option>Pacific Time (US)</option>
-                  <option>Africa/Harare</option>
-                </select>
+                <label for="primaryColor">Primary Color</label>
+                <input id="primaryColor" name="primaryColor" type="color" value="#2363ff" data-branding-field="primaryColor" data-preview-color>
               </div>
               <div class="field">
-                <label for="website">Website</label>
-                <input id="website" type="url" placeholder="https://example.com">
+                <label for="secondaryColor">Secondary Color</label>
+                <input id="secondaryColor" name="secondaryColor" type="color" value="#263ff1" data-branding-field="secondaryColor">
+              </div>
+              <div class="field">
+                <label for="supportEmail">Support Email</label>
+                <input id="supportEmail" name="supportEmail" type="email" placeholder="support@example.com" data-branding-field="supportEmail">
+              </div>
+              <div class="field">
+                <label for="supportPhone">Support Phone</label>
+                <input id="supportPhone" name="supportPhone" placeholder="Not set" data-branding-field="supportPhone">
+              </div>
+              <div class="field">
+                <label for="websiteUrl">Website</label>
+                <input id="websiteUrl" name="websiteUrl" type="url" placeholder="https://example.com" data-branding-field="websiteUrl">
+              </div>
+              <div class="field">
+                <label for="companyEmail">Company Email</label>
+                <input id="companyEmail" name="email" type="email" placeholder="office@example.com" data-profile-field="email">
               </div>
               <div class="field span-2">
                 <label for="address">Business Address</label>
-                <input id="address" placeholder="Not set">
+                <input id="address" name="address" placeholder="Not set" data-profile-field="address">
               </div>
               <div class="field span-2">
-                <label for="notes">Internal Notes</label>
-                <textarea id="notes" placeholder="No notes yet"></textarea>
+                <label for="invoiceFooter">Invoice Footer</label>
+                <textarea id="invoiceFooter" name="invoiceFooter" maxlength="500" placeholder="Payment instructions or legal footer." data-branding-field="invoiceFooter" data-preview-footer></textarea>
+              </div>
+              <div class="field span-2">
+                <label for="invoiceTerms">Invoice Terms</label>
+                <textarea id="invoiceTerms" name="invoiceTerms" maxlength="1000" placeholder="Terms shown on invoices and quotes." data-branding-field="invoiceTerms"></textarea>
+              </div>
+              <div class="brand-preview span-2" data-brand-preview>
+                <div class="brand-preview-head">
+                  <div class="logo-preview small" data-preview-logo>FC</div>
+                  <div>
+                    <strong data-preview-title>FieldCore</strong>
+                    <small>Brand preview</small>
+                  </div>
+                </div>
+                <div class="brand-preview-bar" data-preview-bar></div>
+                <p data-preview-footer-text>Invoice footer preview will appear here.</p>
               </div>
               <div class="form-actions span-2">
-                <button class="primary-button" type="button">Save Settings</button>
+                <button class="primary-button" type="submit">Save Branding</button>
               </div>
+              <p class="fc-form-error span-2" data-branding-message hidden></p>
             </form>
           </div>
 

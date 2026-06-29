@@ -72,17 +72,19 @@ a{
   margin-bottom:44px
 }
 .brand-mark{
-  width:42px;
-  height:42px;
-  border-radius:11px;
+  width:46px;
+  height:46px;
+  border-radius:13px;
   display:grid;
   place-items:center;
   background:linear-gradient(145deg, #1a78ff 0%, #2557f4 60%, #233ee8 100%);
   color:#fff;
-  font-size:17px;
+  font-size:16px;
   font-weight:900;
-  letter-spacing:-.08em;
-  box-shadow:0 12px 24px rgba(35, 99, 255, .22)
+  letter-spacing:-.06em;
+  box-shadow:0 12px 24px rgba(35, 99, 255, .22);
+  overflow:hidden;
+  flex:0 0 46px
 }
 .brand-name{
   font-weight:830;
@@ -924,39 +926,86 @@ tbody tr:last-child td{
 }
 .logo-upload{
   display:grid;
-  grid-template-columns:88px minmax(0, 1fr);
+  grid-template-columns:96px minmax(0, 1fr);
   align-items:center;
-  gap:16px;
-  padding:14px;
+  gap:18px;
+  padding:18px;
   border:1px solid #d9e3f1;
-  border-radius:12px;
+  border-radius:16px;
   background:#f8fbff
 }
+
 .logo-preview{
-  width:72px;
-  height:72px;
-  border-radius:14px;
+  width:84px;
+  height:84px;
+  border-radius:18px;
   display:grid;
   place-items:center;
-  background:#e8f3ff;
+  background:#ffffff;
   color:#086ee8;
   font-size:18px;
   font-weight:900;
   overflow:hidden;
-  border:1px solid #cfe0f7
+  border:1px solid #cfe0f7;
+  box-shadow:0 10px 24px rgba(20, 35, 80, .06)
 }
+
 .logo-preview img{
   width:100%;
   height:100%;
   object-fit:contain;
+  padding:8px;
   background:#fff
 }
+
+.logo-upload-controls{
+  display:grid;
+  gap:10px;
+  min-width:0
+}
+
+.file-upload-row{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width:0
+}
+
+.file-upload-button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:max-content;
+  padding:10px 16px;
+  border-radius:10px;
+  border:1px solid #bfd1e8;
+  background:#fff;
+  color:#0b132b;
+  font-size:14px;
+  font-weight:800;
+  cursor:pointer;
+  box-shadow:0 6px 16px rgba(20, 35, 80, .05)
+}
+
+.file-upload-button:hover{
+  border-color:var(--blue);
+  color:var(--blue)
+}
+
+.file-name{
+  min-width:0;
+  color:#516179;
+  font-size:14px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+
 .logo-upload small{
   display:block;
   color:#64748b;
   font-size:13px;
-  line-height:1.4;
-  margin-top:8px
+  line-height:1.4
 }
 .settings-checks{
   display:grid;
@@ -987,4 +1036,58 @@ tbody tr:last-child td{
   .logo-upload{
     grid-template-columns:1fr
   }
+}
+
+.brand-mark img{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  padding:5px;
+  border-radius:inherit;
+  background:#fff
+}
+.logo-preview.small{
+  width:64px;
+  height:64px;
+  border-radius:14px;
+  font-size:15px;
+  flex:0 0 64px
+}
+.brand-preview{
+  border:1px solid #dfe8f4;
+  border-radius:12px;
+  background:#f8fbff;
+  padding:18px;
+  display:grid;
+  gap:14px
+}
+.brand-preview-head{
+  display:flex;
+  align-items:center;
+  gap:12px
+}
+.brand-preview-head strong{
+  display:block;
+  font-size:16px;
+  font-weight:820;
+  color:#0b132b
+}
+.brand-preview-head small{
+  display:block;
+  color:#64748b;
+  font-size:13px;
+  margin-top:3px
+}
+.brand-preview-bar{
+  height:8px;
+  border-radius:999px;
+  background:var(--blue)
+}
+.brand-preview p{
+  color:#40516f;
+  font-size:14px;
+  line-height:1.45
+}
+.fc-form-error.green{
+  color:var(--green)
 }

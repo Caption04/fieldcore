@@ -2,7 +2,7 @@
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-  const state = { user: null, customers: [], services: [], workers: [], jobs: [] };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], jobs: [] };
 
   const tableConfigs = {
     customers: {
@@ -53,6 +53,109 @@
     return payload.data;
   }
 
+
+  function defaultBranding() {
+    return {
+      brandName: 'FieldCore',
+      logoUrl: '',
+      primaryColor: '#2363ff',
+      secondaryColor: '#263ff1',
+      accentColor: '#12a96d',
+      supportEmail: '',
+      supportPhone: '',
+      websiteUrl: '',
+      invoiceFooter: '',
+      invoiceTerms: ''
+    };
+  }
+
+  function currentBranding() {
+    return { ...defaultBranding(), ...(state.branding || {}) };
+  }
+
+  function initials(value) {
+    return String(value || 'FC').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'FC';
+  }
+
+  function applyBranding() {
+    const branding = currentBranding();
+    const name = branding.brandName || state.profile && (state.profile.tradingName || state.profile.name) || 'FieldCore';
+    document.documentElement.style.setProperty('--blue', branding.primaryColor || '#2363ff');
+    document.documentElement.style.setProperty('--blue2', branding.secondaryColor || '#263ff1');
+    document.documentElement.style.setProperty('--green', branding.accentColor || '#12a96d');
+    document.querySelectorAll('.brand-name').forEach((node) => { node.textContent = name; });
+    document.querySelectorAll('.brand-mark').forEach((node) => {
+      if (branding.logoUrl) node.innerHTML = `<img src="${escapeHtml(branding.logoUrl)}" alt="${escapeHtml(name)} logo">`;
+      else node.textContent = initials(name);
+    });
+    if (page === 'dashboard') {
+      const heading = document.querySelector('.hero-copy h2');
+      if (heading) heading.textContent = `Good morning, ${name}.`;
+    }
+    if (page === 'quotes' || page === 'invoices') {
+      const copy = document.querySelector('.hero-copy p');
+      if (copy && branding.supportEmail) copy.textContent = `${name} documents use ${branding.supportEmail} for customer replies.`;
+    }
+    updateBrandingPreview();
+  }
+
+  async function loadCompanyBranding() {
+    try {
+      const [profile, branding] = await Promise.all([api('/company/profile'), api('/company/branding')]);
+      state.profile = profile;
+      state.branding = branding;
+      applyBranding();
+      populateBrandingForm();
+    } catch (error) {
+      state.branding = defaultBranding();
+      applyBranding();
+    }
+  }
+
+  function setFieldValue(selector, value) {
+    const field = document.querySelector(selector);
+    if (field) field.value = value || '';
+  }
+
+  function populateBrandingForm() {
+    if (!document.querySelector('[data-branding-form]')) return;
+    const profile = state.profile || {};
+    const branding = currentBranding();
+    document.querySelectorAll('[data-profile-field]').forEach((field) => { field.value = profile[field.dataset.profileField] || ''; });
+    document.querySelectorAll('[data-branding-field]').forEach((field) => { field.value = branding[field.dataset.brandingField] || ''; });
+    setFieldValue('[data-branding-field="primaryColor"]', branding.primaryColor || '#2363ff');
+    setFieldValue('[data-branding-field="secondaryColor"]', branding.secondaryColor || '#263ff1');
+    updateBrandingPreview();
+  }
+
+  function updateBrandingPreview() {
+    const branding = currentBranding();
+    const nameInput = document.querySelector('[data-branding-field="brandName"]');
+    const companyInput = document.querySelector('[data-profile-field="name"]');
+    const logoInput = document.querySelector('[data-branding-field="logoUrl"]');
+    const colorInput = document.querySelector('[data-branding-field="primaryColor"]');
+    const footerInput = document.querySelector('[data-branding-field="invoiceFooter"]');
+    const name = nameInput && nameInput.value || companyInput && companyInput.value || branding.brandName || 'FieldCore';
+    const logoUrl = logoInput && logoInput.value || branding.logoUrl;
+    const primaryColor = colorInput && colorInput.value || branding.primaryColor || '#2363ff';
+    const footer = footerInput && footerInput.value || branding.invoiceFooter || 'Invoice footer preview will appear here.';
+    const title = document.querySelector('[data-preview-title]');
+    const logo = document.querySelector('[data-preview-logo]');
+    const bar = document.querySelector('[data-preview-bar]');
+    const footerText = document.querySelector('[data-preview-footer-text]');
+    if (title) title.textContent = name;
+    if (logo) logo.innerHTML = logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(name)} logo">` : initials(name);
+    if (bar) bar.style.background = primaryColor;
+    if (footerText) footerText.textContent = footer;
+  }
+
+  function formPayload(selector) {
+    const payload = {};
+    document.querySelectorAll(selector).forEach((field) => {
+      payload[field.name] = field.value || '';
+    });
+    return payload;
+  }
   function formatDate(value) {
     if (!value) return '-';
     const date = new Date(value);
@@ -239,19 +342,67 @@
       });
     });
 
+    document.querySelectorAll('[data-branding-field], [data-profile-field]').forEach((field) => {
+      field.addEventListener('input', updateBrandingPreview);
+    });
+
     const input = document.querySelector('[data-logo-input]');
     const preview = document.querySelector('[data-logo-preview]');
-    if (!input || !preview) return;
-    input.addEventListener('change', () => {
-      const file = input.files && input.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.addEventListener('load', () => {
-        preview.innerHTML = `<img src="${reader.result}" alt="Company logo preview">`;
+    const fileName = document.querySelector('[data-logo-file-name]');
+
+    if (input && preview) {
+      input.addEventListener('change', () => {
+        const file = input.files && input.files[0];
+
+        if (!file) {
+          if (fileName) fileName.textContent = 'No file selected';
+          return;
+        }
+
+        if (fileName) fileName.textContent = file.name;
+
+        const reader = new FileReader();
+        reader.addEventListener('load', () => {
+          preview.innerHTML = `<img src="${reader.result}" alt="Company logo preview">`;
+        });
+        reader.readAsDataURL(file);
       });
-      reader.readAsDataURL(file);
+    }
+
+    const form = document.querySelector('[data-branding-form]');
+    if (!form) return;
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = document.querySelector('[data-branding-message]');
+      if (message) {
+        message.hidden = true;
+        message.classList.remove('green');
+      }
+      try {
+
+        const logoInput = document.querySelector('[data-logo-input]');
+        if (logoInput && logoInput.files && logoInput.files[0]) {
+          state.branding = await uploadLogo(logoInput.files[0]);
+          const logoUrlField = document.querySelector('[data-branding-field="logoUrl"]');
+          if (logoUrlField) logoUrlField.value = state.branding.logoUrl || '';
+        }
+        state.profile = await api('/company/profile', { method: 'PATCH', body: JSON.stringify(formPayload('[data-profile-field]')) });
+        state.branding = await api('/company/branding', { method: 'PATCH', body: JSON.stringify(formPayload('[data-branding-field]')) });
+        applyBranding();
+        if (message) {
+          message.textContent = 'Branding saved.';
+          message.classList.add('green');
+          message.hidden = false;
+        }
+      } catch (error) {
+        if (message) {
+          message.textContent = error.message;
+          message.hidden = false;
+        }
+      }
     });
   }
+
   function showLogin(errorMessage) {
     const config = {
       title: 'Log In',
@@ -276,11 +427,27 @@
     };
   }
 
+  async function uploadLogo(file) {
+  const formData = new FormData();
+  formData.append('logo', file);
+
+  const response = await fetch(`${API_BASE}/company/branding/logo`, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error && payload.error.message || `HTTP ${response.status}`);
+  return payload.data;
+}
+
   async function load() {
     setStatus('Connecting to API...', true);
     try {
       state.user = await api('/auth/session');
       if (!state.user) throw new Error('Authentication required');
+      await loadCompanyBranding();
     } catch (error) {
       setStatus('Log in to load company data.', false);
       showLogin();

@@ -8,8 +8,55 @@ async function main() {
   const hash = await bcrypt.hash(password, 12);
   const company = await prisma.company.upsert({
     where: { id: 'demo-company' },
-    update: {},
-    create: { id: 'demo-company', name: 'FieldCore Demo Services' }
+    update: {
+      name: 'FieldCore Demo Services',
+      legalName: 'FieldCore Demo Services (Private) Limited',
+      tradingName: 'FieldCore Demo Services',
+      registrationNumber: 'DEMO-2026',
+      taxNumber: 'TAX-DEMO-001',
+      address: 'Demo House, Harare',
+      phone: '+263 000 000 000',
+      email: 'support@fieldcore.test'
+    },
+    create: {
+      id: 'demo-company',
+      name: 'FieldCore Demo Services',
+      legalName: 'FieldCore Demo Services (Private) Limited',
+      tradingName: 'FieldCore Demo Services',
+      registrationNumber: 'DEMO-2026',
+      taxNumber: 'TAX-DEMO-001',
+      address: 'Demo House, Harare',
+      phone: '+263 000 000 000',
+      email: 'support@fieldcore.test'
+    }
+  });
+
+
+  await prisma.companyBranding.upsert({
+    where: { companyId: company.id },
+    update: {
+      brandName: 'FieldCore Demo Services',
+      primaryColor: '#1d65bc',
+      secondaryColor: '#ffe386',
+      accentColor: '#12a96d',
+      supportEmail: 'support@fieldcore.test',
+      supportPhone: '+263 000 000 000',
+      websiteUrl: 'https://fieldcore.test',
+      invoiceFooter: 'Thank you for choosing FieldCore Demo Services.',
+      invoiceTerms: 'Payment is due within 14 days unless otherwise agreed.'
+    },
+    create: {
+      companyId: company.id,
+      brandName: 'FieldCore Demo Services',
+      primaryColor: '#1d65bc',
+      secondaryColor: '#ffe386',
+      accentColor: '#12a96d',
+      supportEmail: 'support@fieldcore.test',
+      supportPhone: '+263 000 000 000',
+      websiteUrl: 'https://fieldcore.test',
+      invoiceFooter: 'Thank you for choosing FieldCore Demo Services.',
+      invoiceTerms: 'Payment is due within 14 days unless otherwise agreed.'
+    }
   });
 
   const owner = await prisma.user.upsert({

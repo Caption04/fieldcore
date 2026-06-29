@@ -15,7 +15,19 @@ const rootDir = path.resolve(__dirname, '..');
 const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:3000';
 
 app.disable('x-powered-by');
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https://www.paynow.co.zw"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        connectSrc: ["'self'"],
+      },
+    },
+  })
+);
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
@@ -32,6 +44,7 @@ const authLimiter = rateLimit({
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api', apiRouter);
+app.use('/uploads', express.static(path.join(rootDir, 'uploads')));
 app.use(express.static(rootDir, { extensions: ['html'] }));
 
 app.use((req, res) => {

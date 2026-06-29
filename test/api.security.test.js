@@ -48,12 +48,20 @@ function createMockPrisma(seed) {
   const id = (prefix) => `${prefix}-${next++}`;
 
   function companyById(companyId) { return db.companies.find((item) => item.id === companyId); }
+  function brandingByCompanyId(companyId) { return db.companyBrandings.find((item) => item.companyId === companyId); }
   function userById(userId) { return db.users.find((item) => item.id === userId); }
   function customerById(customerId) { return db.customers.find((item) => item.id === customerId); }
   function serviceById(serviceId) { return db.services.find((item) => item.id === serviceId); }
   function workerById(workerId) { return db.workerProfiles.find((item) => item.id === workerId); }
   function jobById(jobId) { return db.jobs.find((item) => item.id === jobId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
+
+  function enrichCompany(company, include) {
+    if (!company) return null;
+    const result = { ...company };
+    if (include && include.branding) result.branding = clone(brandingByCompanyId(company.id)) || null;
+    return result;
+  }
 
   function enrichUser(user) {
     if (!user) return null;
@@ -152,7 +160,20 @@ function createMockPrisma(seed) {
         return args.select ? applySelect(enriched, args.select) : clone(enriched);
       }
     },
-    company: makeModel('companies'),
+    company: makeModel('companies', enrichCompany),
+    companyBranding: {
+      ...makeModel('companyBrandings'),
+      upsert: async (args) => {
+        const index = db.companyBrandings.findIndex((item) => item.companyId === args.where.companyId);
+        if (index === -1) {
+          const record = { id: id('branding'), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...stripUndefined(args.create) };
+          db.companyBrandings.push(record);
+          return clone(record);
+        }
+        db.companyBrandings[index] = { ...db.companyBrandings[index], ...stripUndefined(args.update), updatedAt: new Date().toISOString() };
+        return clone(db.companyBrandings[index]);
+      }
+    },
     customer: makeModel('customers'),
     workerProfile: makeModel('workerProfiles', enrichWorker),
     service: makeModel('services'),
@@ -179,7 +200,11 @@ function createMockPrisma(seed) {
 async function buildApp() {
   const hash = await bcrypt.hash('Password123!', 4);
   const seed = {
-    companies: [{ id: 'company-a', name: 'Company A' }, { id: 'company-b', name: 'Company B' }],
+    companies: [{ id: 'company-a', name: 'Company A', email: 'hello@a.test', phone: '+1 A' }, { id: 'company-b', name: 'Company B', email: 'hello@b.test', phone: '+1 B' }],
+    companyBrandings: [
+      { id: 'branding-a', companyId: 'company-a', brandName: 'Brand A', primaryColor: '#111111', secondaryColor: '#222222', accentColor: '#333333', supportEmail: 'support@a.test', supportPhone: '+1 A', invoiceFooter: 'Footer A', invoiceTerms: 'Terms A' },
+      { id: 'branding-b', companyId: 'company-b', brandName: 'Brand B', primaryColor: '#444444', secondaryColor: '#555555', accentColor: '#666666', supportEmail: 'support@b.test', supportPhone: '+1 B', invoiceFooter: 'Footer B', invoiceTerms: 'Terms B' }
+    ],
     users: [
       { id: 'owner-a', companyId: 'company-a', email: 'owner-a@test.local', name: 'Owner A', role: 'OWNER', passwordHash: hash },
       { id: 'admin-a', companyId: 'company-a', email: 'admin-a@test.local', name: 'Admin A', role: 'ADMIN', passwordHash: hash },
@@ -331,6 +356,75 @@ test('worker dashboard does not expose admin financial or pipeline aggregates', 
   assert.equal(response.status, 200);
   assert.equal(response.body.data.totals.unpaidInvoices, 0);
   assert.deepEqual(response.body.data.pipeline, { leads: 0, quoted: 0, won: 0 });
+  assertNoPasswordHash(response.body);
+});
+
+test('owner can update branding', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const response = await owner.patch('/api/company/branding').send({ brandName: 'Owner Brand', primaryColor: '#123abc', supportEmail: 'owner-brand@test.local' });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.brandName, 'Owner Brand');
+  assert.equal(response.body.data.primaryColor, '#123abc');
+  assertNoPasswordHash(response.body);
+});
+
+test('admin can update branding', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const response = await admin.patch('/api/company/branding').send({ brandName: 'Admin Brand', secondaryColor: '#abcdef', supportPhone: '+263 123' });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.brandName, 'Admin Brand');
+  assert.equal(response.body.data.secondaryColor, '#abcdef');
+  assertNoPasswordHash(response.body);
+});
+
+test('worker cannot update branding', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+  const response = await worker.patch('/api/company/branding').send({ brandName: 'Worker Brand', primaryColor: '#123456' });
+  assert.equal(response.status, 403);
+  assertNoPasswordHash(response.body);
+});
+
+test('company A cannot access company B branding', async () => {
+  const app = await buildApp();
+  const adminA = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+  const aBranding = await adminA.get('/api/company/branding');
+  const bBranding = await adminB.get('/api/company/branding');
+  assert.equal(aBranding.status, 200);
+  assert.equal(bBranding.status, 200);
+  assert.equal(aBranding.body.data.brandName, 'Brand A');
+  assert.equal(bBranding.body.data.brandName, 'Brand B');
+  assert.notEqual(aBranding.body.data.companyId, bBranding.body.data.companyId);
+  assertNoPasswordHash(aBranding.body);
+  assertNoPasswordHash(bBranding.body);
+});
+
+test('invalid branding color fails', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const response = await admin.patch('/api/company/branding').send({ primaryColor: 'blue' });
+  assert.equal(response.status, 400);
+  assertNoPasswordHash(response.body);
+});
+
+test('invalid branding email fails', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const response = await admin.patch('/api/company/branding').send({ supportEmail: 'not-an-email' });
+  assert.equal(response.status, 400);
+  assertNoPasswordHash(response.body);
+});
+
+test('branding responses do not leak sensitive user data', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+  const response = await worker.get('/api/company/branding');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.brandName, 'Brand A');
+  assert.equal(JSON.stringify(response.body).includes('user'), false);
   assertNoPasswordHash(response.body);
 });
 test('all sampled API responses omit passwordHash', async () => {

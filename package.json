@@ -1,35 +1,36 @@
 {
-  "name": "fieldcore-local",
-  "version": "0.2.0",
-  "private": true,
-  "description": "FieldCore field-service SaaS with Express, PostgreSQL, Prisma, and the existing static UI.",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "build": "prisma generate",
-    "migrate": "prisma migrate dev",
-    "seed": "prisma db seed",
-    "test": "node --test"
-  },
-  "dependencies": {
-    "@prisma/client": "^5.22.0",
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
-    "express-rate-limit": "^7.4.1",
-    "helmet": "^8.2.0",
-    "jsonwebtoken": "^9.0.2",
-    "morgan": "^1.10.0",
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
-    "prisma": "^5.22.0",
-    "supertest": "^7.2.2"
-  },
-  "prisma": {
-    "seed": "node prisma/seed.js"
-  }
+    "name": "fieldcore-local",
+    "version": "0.2.0",
+    "private": true,
+    "description": "FieldCore field-service SaaS with Express, PostgreSQL, Prisma, and the existing static UI.",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node server.js",
+        "build": "prisma generate",
+        "migrate": "prisma migrate dev",
+        "seed": "prisma db seed",
+        "test": "node --test"
+    },
+    "dependencies": {
+        "@prisma/client": "^5.22.0",
+        "bcryptjs": "^3.0.3",
+        "cookie-parser": "^1.4.7",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^4.21.2",
+        "express-rate-limit": "^7.4.1",
+        "helmet": "^8.2.0",
+        "jsonwebtoken": "^9.0.2",
+        "morgan": "^1.10.0",
+        "multer": "^2.2.0",
+        "zod": "^3.24.1"
+    },
+    "devDependencies": {
+        "prisma": "^5.22.0",
+        "supertest": "^7.2.2"
+    },
+    "prisma": {
+        "seed": "node prisma/seed.js"
+    }
 }

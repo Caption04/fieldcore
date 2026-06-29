@@ -1,3 +1,7 @@
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const multer = require('multer');
 const express = require('express');
 const { z } = require('zod');
 const { prisma } = require('../db');
@@ -21,6 +25,30 @@ const router = express.Router();
 const idParam = z.object({ id: z.string().min(1) });
 const amount = z.coerce.number().nonnegative().default(0);
 const optionalDate = z.preprocess((value) => value ? new Date(String(value)) : undefined, z.date().optional());
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Must be a valid hex color');
+const optionalText = (max) => z.string().trim().max(max).optional().or(z.literal('')).transform((value) => value || undefined);
+const optionalEmail = z.string().email().optional().or(z.literal('')).transform((value) => value || undefined);
+const optionalUrl = z
+  .string()
+  .trim()
+  .optional()
+  .or(z.literal(''))
+  .refine((value) => {
+    if (!value) return true;
+
+    if (/^\/uploads\/logos\/[a-zA-Z0-9._-]+$/.test(value)) {
+      return true;
+    }
+
+    try {
+      const url = new URL(value);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'Must be a valid URL or uploaded logo path')
+  .transform((value) => value || undefined);
+const optionalColor = hexColor.optional().or(z.literal('')).transform((value) => value || undefined);
 const adminRoles = ['OWNER', 'ADMIN'];
 
 function validate(schema, source = 'body') {
@@ -131,6 +159,88 @@ async function validateScheduleRelations(req, body) {
   if (body.workerId) await requireWorker(req, body.workerId);
 }
 
+const uploadDir = path.resolve(__dirname, '../../uploads/logos');
+fs.mkdirSync(uploadDir, { recursive: true });
+
+const logoUpload = multer({
+  storage: multer.diskStorage({
+    destination: uploadDir,
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${req.companyId}-${crypto.randomUUID()}${ext}`);
+    }
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!allowed.includes(file.mimetype)) return cb(new AppError('Only PNG, JPG, and WEBP logos are allowed', 400));
+    cb(null, true);
+  }
+});
+
+const companyProfileSchema = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  legalName: optionalText(160),
+  tradingName: optionalText(160),
+  registrationNumber: optionalText(80),
+  taxNumber: optionalText(80),
+  address: optionalText(300),
+  phone: optionalText(60),
+  email: optionalEmail
+});
+
+const companyBrandingSchema = z.object({
+  brandName: optionalText(120),
+  logoUrl: optionalUrl,
+  primaryColor: optionalColor,
+  secondaryColor: optionalColor,
+  accentColor: optionalColor,
+  supportEmail: optionalEmail,
+  supportPhone: optionalText(60),
+  websiteUrl: optionalUrl,
+  invoiceFooter: optionalText(500),
+  invoiceTerms: optionalText(1000)
+});
+
+function brandingDefaults(company) {
+  return {
+    id: null,
+    companyId: company.id,
+    brandName: company.tradingName || company.name || 'FieldCore',
+    logoUrl: null,
+    primaryColor: '#2363ff',
+    secondaryColor: '#263ff1',
+    accentColor: '#12a96d',
+    supportEmail: company.email || null,
+    supportPhone: company.phone || null,
+    websiteUrl: null,
+    invoiceFooter: null,
+    invoiceTerms: null
+  };
+}
+
+async function getCompanyWithBranding(companyId) {
+  return prisma.company.findUnique({ where: { id: companyId }, include: { branding: true } });
+}
+
+function publicBranding(company) {
+  return normalize(company.branding || brandingDefaults(company));
+}
+
+function profileResponse(company) {
+  return normalize({
+    id: company.id,
+    name: company.name,
+    legalName: company.legalName,
+    tradingName: company.tradingName,
+    registrationNumber: company.registrationNumber,
+    taxNumber: company.taxNumber,
+    address: company.address,
+    phone: company.phone,
+    email: company.email,
+    branding: publicBranding(company)
+  });
+}
 const registerSchema = z.object({
   companyName: z.string().min(2),
   name: z.string().min(2),
@@ -190,6 +300,56 @@ router.get('/auth/me', requireAuth, (req, res) => sendData(res, publicUser(req.u
 
 router.use(requireAuth);
 
+router.get('/company/profile', asyncHandler(async (req, res) => {
+  const company = await getCompanyWithBranding(req.companyId);
+  sendData(res, profileResponse(company));
+}));
+
+router.patch('/company/profile', requireRole(...adminRoles), validate(companyProfileSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.company.update({ where: { id: req.companyId }, data: req.body, include: { branding: true } });
+  await audit(req, 'UPDATE', 'Company', data.id, { section: 'profile' });
+  sendData(res, profileResponse(data));
+}));
+
+router.get('/company/branding', asyncHandler(async (req, res) => {
+  const company = await getCompanyWithBranding(req.companyId);
+  sendData(res, publicBranding(company));
+}));
+
+router.patch('/company/branding', requireRole(...adminRoles), validate(companyBrandingSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.companyBranding.upsert({
+    where: { companyId: req.companyId },
+    update: req.body,
+    create: { ...req.body, companyId: req.companyId }
+  });
+  await audit(req, 'UPDATE', 'CompanyBranding', data.id, { section: 'branding' });
+  sendData(res, normalize(data));
+}));
+
+router.post(
+  '/company/branding/logo',
+  requireRole(...adminRoles),
+  logoUpload.single('logo'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new AppError('Logo file is required', 400);
+
+    const logoUrl = `/uploads/logos/${req.file.filename}`;
+
+    const data = await prisma.companyBranding.upsert({
+      where: { companyId: req.companyId },
+      update: { logoUrl },
+      create: {
+        companyId: req.companyId,
+        logoUrl
+      }
+    });
+
+    await audit(req, 'UPDATE', 'CompanyBranding', data.id, { section: 'logo' });
+
+    sendData(res, normalize(data));
+  })
+);
+
 router.get('/dashboard', asyncHandler(async (req, res) => {
   const companyId = req.companyId;
   const jobWhere = { companyId, ...workerJobScope(req) };
@@ -198,7 +358,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
 
-  const [jobsToday, activeWorkers, recentJobs, schedule, workers, pipeline, unpaid] = await Promise.all([
+  const [company, jobsToday, activeWorkers, recentJobs, schedule, workers, pipeline, unpaid] = await Promise.all([
+    getCompanyWithBranding(companyId),
     prisma.job.count({ where: { ...jobWhere, scheduledStart: { gte: start, lt: end } } }),
     req.user.role === 'WORKER' ? Promise.resolve(req.user.worker && req.user.worker.active ? 1 : 0) : prisma.workerProfile.count({ where: { companyId, active: true } }),
     prisma.job.findMany({ where: jobWhere, include: { customer: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { createdAt: 'desc' }, take: 5 }),
@@ -216,7 +377,7 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     if (item.status === 'SENT') pipe.quoted += item._count;
     if (item.status === 'ACCEPTED') pipe.won += item._count;
   }
-  sendData(res, normalize({ totals, schedule, workers, recentJobs, pipeline: pipe }));
+  sendData(res, normalize({ branding: publicBranding(company), company: profileResponse(company), totals, schedule, workers, recentJobs, pipeline: pipe }));
 }));
 
 const customerSchema = z.object({
@@ -355,8 +516,11 @@ router.post('/jobs/:id/complete', validate(idParam, 'params'), asyncHandler(asyn
 
 const quoteSchema = z.object({ customerId: z.string().min(1), serviceId: z.string().optional(), jobId: z.string().optional(), title: z.string().min(2), status: z.enum(['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED']).optional(), amount: amount.optional(), validUntil: optionalDate });
 router.get('/quotes', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const result = await paged(prisma.quote, req, { where: { companyId: req.companyId }, include: { customer: true, service: true, job: true }, orderBy: { createdAt: 'desc' } });
-  sendData(res, normalize(result.data), 200, result.meta);
+  const [company, result] = await Promise.all([
+    getCompanyWithBranding(req.companyId),
+    paged(prisma.quote, req, { where: { companyId: req.companyId }, include: { customer: true, service: true, job: true }, orderBy: { createdAt: 'desc' } })
+  ]);
+  sendData(res, normalize(result.data.map((item) => ({ ...item, branding: publicBranding(company) }))), 200, result.meta);
 }));
 router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncHandler(async (req, res) => {
   await validateQuoteRelations(req, req.body);
@@ -386,8 +550,11 @@ router.post('/quotes/:id/reject', requireRole(...adminRoles), validate(idParam, 
 
 const invoiceSchema = z.object({ customerId: z.string().min(1), serviceId: z.string().optional(), jobId: z.string().optional(), number: z.string().optional(), status: z.enum(['DRAFT', 'SENT', 'PAID', 'OVERDUE', 'VOID']).optional(), amount: amount.optional(), dueDate: optionalDate });
 router.get('/invoices', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const result = await paged(prisma.invoice, req, { where: { companyId: req.companyId }, include: { customer: true, service: true, job: true, payments: true }, orderBy: { createdAt: 'desc' } });
-  sendData(res, normalize(result.data), 200, result.meta);
+  const [company, result] = await Promise.all([
+    getCompanyWithBranding(req.companyId),
+    paged(prisma.invoice, req, { where: { companyId: req.companyId }, include: { customer: true, service: true, job: true, payments: true }, orderBy: { createdAt: 'desc' } })
+  ]);
+  sendData(res, normalize(result.data.map((item) => ({ ...item, branding: publicBranding(company) }))), 200, result.meta);
 }));
 router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), asyncHandler(async (req, res) => {
   await validateInvoiceRelations(req, req.body);
