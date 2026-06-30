@@ -547,7 +547,7 @@ tbody tr:last-child td{
 .schedule-grid{
   display:grid;
   grid-template-columns:92px repeat(7, minmax(0, 1fr));
-  grid-auto-rows:76px;
+  grid-auto-rows:minmax(72px, auto);
   min-width:970px;
   border-left:1px solid #e7edf6;
   border-top:1px solid #e7edf6
@@ -1208,4 +1208,64 @@ tbody tr:last-child td{
   .receipt-card-head {
     align-items: flex-start;
   }
+}
+
+.settings-subform {
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.schedule-cell .event {
+  display: grid;
+  gap: 4px;
+  min-height: 50px;
+}
+
+.schedule-cell .event strong {
+  display: block;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.schedule-cell .event small {
+  display: block;
+  color: inherit;
+  opacity: .78;
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 700;
+}
+.logout-button {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border-radius: 9px;
+  font-size: 20px;
+  margin-left: auto;
+}
+
+.modal-copy {
+  color: #40516f;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.modal-warning {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #ffd8ad;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #9a4a12;
+  font-size: 13px;
+  font-weight: 760;
+  white-space: pre-line;
+}
+
+.fc-confirm-dialog {
+  width: min(560px, 100%);
 }

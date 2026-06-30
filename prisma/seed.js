@@ -77,10 +77,16 @@ async function main() {
     create: { companyId: company.id, email: 'worker@fieldcore.test', name: 'Sam Technician', role: 'WORKER', passwordHash: hash }
   });
 
+  const fieldTechnicianRole = await prisma.workerRole.upsert({
+    where: { companyId_name: { companyId: company.id, name: 'Field Technician' } },
+    update: { active: true },
+    create: { companyId: company.id, name: 'Field Technician', active: true }
+  });
+
   const worker = await prisma.workerProfile.upsert({
     where: { userId: workerUser.id },
-    update: { companyId: company.id, title: 'Field Technician', phone: '+1 555 0104', active: true },
-    create: { companyId: company.id, userId: workerUser.id, title: 'Field Technician', phone: '+1 555 0104', active: true }
+    update: { companyId: company.id, roleId: fieldTechnicianRole.id, title: 'Field Technician', phone: '+1 555 0104', active: true },
+    create: { companyId: company.id, userId: workerUser.id, roleId: fieldTechnicianRole.id, title: 'Field Technician', phone: '+1 555 0104', active: true }
   });
 
   const customer = await prisma.customer.upsert({

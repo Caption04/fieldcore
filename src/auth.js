@@ -31,7 +31,7 @@ const SAFE_USER_SELECT = {
 const SAFE_AUTH_USER_SELECT = {
   ...SAFE_USER_SELECT,
   company: { select: { id: true, name: true } },
-  worker: { select: { id: true, title: true, phone: true, active: true } }
+  worker: { select: { id: true, roleId: true, title: true, phone: true, active: true, role: { select: { id: true, name: true } } } }
 };
 
 const SAFE_LOGIN_USER_SELECT = {
@@ -52,7 +52,7 @@ function publicUser(user) {
     name: user.name,
     role: user.role,
     company: user.company ? { id: user.company.id, name: user.company.name } : undefined,
-    worker: user.worker ? { id: user.worker.id, title: user.worker.title, phone: user.worker.phone, active: user.worker.active } : undefined
+    worker: user.worker ? { id: user.worker.id, roleId: user.worker.roleId, title: user.worker.title, phone: user.worker.phone, active: user.worker.active, role: user.worker.role } : undefined
   };
 }
 

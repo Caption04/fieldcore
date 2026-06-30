@@ -1,4 +1,4 @@
-﻿(function(){
+(function(){
   const pages=[
     ["dashboard","Dashboard","index.html","dashboard"],["jobs","Jobs","jobs.html","briefcase"],["schedule","Schedule","schedule.html","schedule"],["map","Map","map.html","map"],["customers","Customers","customers.html","users"],["quotes","Quotes","quotes.html","file"],["invoices","Invoices","invoices.html","receipt"],["reports","Reports","reports.html","chart"],["settings","Settings","settings.html","settings"]
   ];
@@ -22,7 +22,7 @@
     const content=Array.from(document.body.children);
     const shell=document.createElement('section');
     shell.className='app-shell';
-    shell.innerHTML=`<aside class="sidebar" aria-label="Primary navigation"><a class="brand" href="index.html"><span class="brand-mark">FC</span><span class="brand-name">FieldCore</span></a><nav class="nav">${nav(current)}</nav>${current==="settings"?"":"<div class=\"quick-card\"><strong>Quick Create</strong><p>Create a new job, quote, or invoice in seconds.</p><a href=\"jobs.html\">+ New Job</a></div>"}<div class="user"><span class="user-photo"></span><span><strong>Jack Thompson</strong><small>Admin</small></span><span class="user-caret">⌄</span></div></aside><main class="content"><button class="menu-toggle" type="button">Menu</button><div class="page-mount"></div></main>`;
+    shell.innerHTML=`<aside class="sidebar" aria-label="Primary navigation"><a class="brand" href="index.html"><span class="brand-mark">FC</span><span class="brand-name">FieldCore</span></a><nav class="nav">${nav(current)}</nav>${current==="settings"?"":"<div class=\"quick-card\"><strong>Quick Create</strong><p>Create a new job, quote, or invoice in seconds.</p><a href=\"jobs.html\">+ New Job</a></div>"}<div class="user"><span class="user-photo"></span><span><strong data-current-user-name>Signed in</strong><small data-current-user-role>Account</small></span><button class="icon-button logout-button" type="button" data-logout title="Log out">×</button></div></aside><main class="content"><button class="menu-toggle" type="button">Menu</button><div class="page-mount"></div></main>`;
     const mount=shell.querySelector('.page-mount');
     content.forEach(n=>mount.appendChild(n));
     document.body.appendChild(shell);

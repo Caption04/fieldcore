@@ -28,6 +28,7 @@ function stripUndefined(input) {
 function matchesWhere(record, where = {}) {
   return Object.entries(where).every(([key, expected]) => {
     const actual = record[key];
+    if (expected instanceof Date) return new Date(actual).getTime() === expected.getTime();
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
       if ('in' in expected) return expected.in.includes(actual);
       if ('gte' in expected && !(new Date(actual) >= new Date(expected.gte))) return false;
@@ -59,6 +60,7 @@ function createMockPrisma(seed) {
   function customerById(customerId) { return db.customers.find((item) => item.id === customerId); }
   function serviceById(serviceId) { return db.services.find((item) => item.id === serviceId); }
   function workerById(workerId) { return db.workerProfiles.find((item) => item.id === workerId); }
+  function roleById(roleId) { return db.workerRoles.find((item) => item.id === roleId); }
   function jobById(jobId) { return db.jobs.find((item) => item.id === jobId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
   function quoteLineItems(quoteId) { return db.quoteLineItems.filter((item) => item.quoteId === quoteId); }
@@ -74,7 +76,7 @@ function createMockPrisma(seed) {
 
   function enrichUser(user) {
     if (!user) return null;
-    return { ...user, company: companyById(user.companyId), worker: db.workerProfiles.find((worker) => worker.userId === user.id) || null };
+    return { ...user, company: companyById(user.companyId), worker: enrichWorker(db.workerProfiles.find((worker) => worker.userId === user.id) || null, { role: true }) };
   }
 
   function enrichWorker(worker, include) {
@@ -226,6 +228,13 @@ function createMockPrisma(seed) {
     quoteLineItem: makeModel('quoteLineItems'),
     quoteStatusHistory: makeModel('quoteStatusHistories'),
     companyInvoiceCounter: makeModel('companyInvoiceCounters'),
+    companySchedulingSettings: makeModel('companySchedulingSettings'),
+    workerRole: makeModel('workerRoles'),
+    roleAvailability: makeModel('roleAvailabilities'),
+    workerAvailability: makeModel('workerAvailabilities'),
+    workerTimeOff: makeModel('workerTimeOff'),
+    scheduleConflict: makeModel('scheduleConflicts'),
+    recurringJobRule: makeModel('recurringJobRules'),
     invoiceLineItem: makeModel('invoiceLineItems'),
     invoiceStatusHistory: makeModel('invoiceStatusHistories'),
     receipt: makeModel('receipts'),
@@ -256,9 +265,9 @@ async function buildApp() {
       { id: 'worker-c', companyId: 'company-b', email: 'worker-c@test.local', name: 'Worker C', role: 'WORKER', passwordHash: hash }
     ],
     workerProfiles: [
-      { id: 'wp-a', companyId: 'company-a', userId: 'worker-a', title: 'Tech', active: true },
-      { id: 'wp-b', companyId: 'company-a', userId: 'worker-b', title: 'Tech', active: true },
-      { id: 'wp-c', companyId: 'company-b', userId: 'worker-c', title: 'Tech', active: true }
+      { id: 'wp-a', companyId: 'company-a', userId: 'worker-a', roleId: 'role-tech-a', title: 'Tech', active: true },
+      { id: 'wp-b', companyId: 'company-a', userId: 'worker-b', roleId: 'role-tech-a', title: 'Tech', active: true },
+      { id: 'wp-c', companyId: 'company-b', userId: 'worker-c', roleId: 'role-tech-b', title: 'Tech', active: true }
     ],
     customers: [
       { id: 'customer-a', companyId: 'company-a', name: 'Customer A', createdAt: '2026-01-01T00:00:00.000Z' },
@@ -281,6 +290,19 @@ async function buildApp() {
     invoiceLineItems: [{ id: 'ili-a', companyId: 'company-a', invoiceId: 'invoice-a', serviceId: 'service-a', description: 'Service A', quantity: 1, unitPrice: 100, discountAmount: 0, taxAmount: 0, lineTotal: 100, sortOrder: 0 }],
     invoiceStatusHistories: [],
     receipts: [],
+    workerRoles: [
+      { id: 'role-tech-a', companyId: 'company-a', name: 'Tech', active: true },
+      { id: 'role-tech-b', companyId: 'company-b', name: 'Tech', active: true }
+    ],
+    roleAvailabilities: [],
+    companySchedulingSettings: [
+      { id: 'settings-a', companyId: 'company-a', defaultJobDurationMinutes: 60, defaultTravelBufferMinutes: 0, allowOverbooking: false, timezone: 'UTC', workingDayStart: '08:00', workingDayEnd: '17:00' },
+      { id: 'settings-b', companyId: 'company-b', defaultJobDurationMinutes: 60, defaultTravelBufferMinutes: 0, allowOverbooking: false, timezone: 'UTC', workingDayStart: '08:00', workingDayEnd: '17:00' }
+    ],
+    workerAvailabilities: [],
+    workerTimeOff: [],
+    scheduleConflicts: [],
+    recurringJobRules: [],
     scheduleItems: [],
     payments: [],
     workerLocations: [],
@@ -564,6 +586,146 @@ test('job invoice creation skips stale invoice counter numbers', async () => {
   const invoiceAgain = await admin.post('/api/jobs/job-other-worker/create-invoice').send({});
   assert.equal(invoiceAgain.status, 200);
   assert.equal(invoiceAgain.body.data.id, invoice.body.data.id);
+});
+test('admin can save job defaults in scheduling settings', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const saved = await admin.patch('/api/company/scheduling-settings').send({
+    defaultJobDurationMinutes: 120,
+    defaultTravelBufferMinutes: 15,
+    defaultJobStatus: 'SCHEDULED',
+    requireCompletionNotes: false,
+    requireProofPhotos: false,
+    autoCreateScheduleOnAssign: true,
+    workingDayStart: '07:00',
+    workingDayEnd: '18:00'
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.data.defaultJobDurationMinutes, 120);
+  assert.equal(saved.body.data.defaultJobStatus, 'SCHEDULED');
+  assert.equal(saved.body.data.requireCompletionNotes, false);
+  assert.equal(saved.body.data.requireProofPhotos, false);
+  assert.equal(saved.body.data.autoCreateScheduleOnAssign, true);
+
+  const loaded = await admin.get('/api/company/scheduling-settings');
+  assert.equal(loaded.status, 200);
+  assert.equal(loaded.body.data.defaultJobDurationMinutes, 120);
+  assert.equal(loaded.body.data.defaultJobStatus, 'SCHEDULED');
+  assert.equal(loaded.body.data.workingDayStart, '07:00');
+});
+test('admin can schedule and worker sees only own schedule', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-b@test.local');
+
+  const scheduled = await admin.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-02T10:00:00.000Z', durationMinutes: 60 });
+  assert.equal(scheduled.status, 201);
+  assert.equal(scheduled.body.data.workerId, 'wp-b');
+  assert.equal(scheduled.body.data.conflictStatus, 'CLEAR');
+
+  const workerSchedule = await worker.get('/api/schedule');
+  assert.equal(workerSchedule.status, 200);
+  assert.equal(workerSchedule.body.data.length, 1);
+  assert.equal(workerSchedule.body.data[0].jobId, 'job-other-worker');
+});
+
+test('schedule company and worker scoping is enforced', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const workerSchedule = await worker.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-02T10:00:00.000Z', durationMinutes: 60, adminOverride: true });
+  assert.equal(workerSchedule.status, 403);
+
+  const otherCompanyJob = await admin.post('/api/jobs/job-b/schedule').send({ workerId: 'wp-a', startsAt: '2026-02-02T10:00:00.000Z', durationMinutes: 60 });
+  assert.equal(otherCompanyJob.status, 404);
+
+  const otherCompanyWorker = await admin.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-c', startsAt: '2026-02-02T10:00:00.000Z', durationMinutes: 60 });
+  assert.equal(otherCompanyWorker.status, 404);
+});
+
+test('overlaps travel buffer time off availability and working hours block scheduling', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const first = await admin.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-02T10:00:00.000Z', durationMinutes: 60, travelBufferMinutes: 30 });
+  assert.equal(first.status, 201);
+
+  const secondJob = await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Overlap target', total: 50 });
+  assert.equal(secondJob.status, 201);
+  const overlap = await admin.post('/api/jobs/' + secondJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-02T11:15:00.000Z', durationMinutes: 30 });
+  assert.equal(overlap.status, 409);
+  assert.equal(overlap.body.error.details.conflicts.some((item) => item.type === 'OVERLAP'), true);
+
+  const timeOff = await admin.post('/api/workers/wp-b/time-off').send({ startsAt: '2026-02-03T09:00:00.000Z', endsAt: '2026-02-03T12:00:00.000Z', status: 'APPROVED' });
+  assert.equal(timeOff.status, 201);
+  const timeOffJob = await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Time off target', total: 50 });
+  const timeOffBlocked = await admin.post('/api/jobs/' + timeOffJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-03T10:00:00.000Z', durationMinutes: 30 });
+  assert.equal(timeOffBlocked.status, 409);
+  assert.equal(timeOffBlocked.body.error.details.conflicts.some((item) => item.type === 'TIME_OFF'), true);
+
+  const roleAvailability = await admin.put('/api/worker-roles/role-tech-a/availability').send([{ dayOfWeek: 4, startTime: '08:00', endTime: '12:00' }]);
+  assert.equal(roleAvailability.status, 200);
+  const roleAvailabilityJob = await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Role availability target', total: 50 });
+  const roleAvailabilityBlocked = await admin.post('/api/jobs/' + roleAvailabilityJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-05T13:00:00.000Z', durationMinutes: 30 });
+  assert.equal(roleAvailabilityBlocked.status, 409);
+  assert.equal(roleAvailabilityBlocked.body.error.details.conflicts.some((item) => item.type === 'OUTSIDE_AVAILABILITY'), true);
+  const roleAvailabilityOverride = await admin.post('/api/jobs/' + roleAvailabilityJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-05T13:00:00.000Z', durationMinutes: 30, adminOverride: true });
+  assert.equal(roleAvailabilityOverride.status, 201);
+  assert.equal(roleAvailabilityOverride.body.data.conflictStatus, 'OVERRIDE');
+  const availability = await admin.put('/api/workers/wp-b/availability').send([{ dayOfWeek: 3, startTime: '08:00', endTime: '12:00' }]);
+  assert.equal(availability.status, 200);
+  const availabilityJob = await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Availability target', total: 50 });
+  const availabilityBlocked = await admin.post('/api/jobs/' + availabilityJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-04T13:00:00.000Z', durationMinutes: 30 });
+  assert.equal(availabilityBlocked.status, 409);
+  assert.equal(availabilityBlocked.body.error.details.conflicts.some((item) => item.type === 'OUTSIDE_AVAILABILITY'), true);
+  const availabilityOverride = await admin.post('/api/jobs/' + availabilityJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-04T13:00:00.000Z', durationMinutes: 30, adminOverride: true });
+  assert.equal(availabilityOverride.status, 201);
+  assert.equal(availabilityOverride.body.data.conflictStatus, 'OVERRIDE');
+
+  const settings = await admin.patch('/api/company/scheduling-settings').send({ workingDayStart: '08:00', workingDayEnd: '17:00' });
+  assert.equal(settings.status, 200);
+  const lateJob = await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Late target', total: 50 });
+  const outsideHours = await admin.post('/api/jobs/' + lateJob.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-05T18:00:00.000Z', durationMinutes: 30 });
+  assert.equal(outsideHours.status, 409);
+  assert.equal(outsideHours.body.error.details.conflicts.some((item) => item.type === 'OUTSIDE_WORKING_HOURS'), true);
+});
+
+test('admin override reschedule and unschedule update schedules safely', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const first = await admin.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-02T10:00:00.000Z', durationMinutes: 60 });
+  assert.equal(first.status, 201);
+  const other = await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Override target', total: 50 });
+  const override = await admin.post('/api/jobs/' + other.body.data.id + '/schedule').send({ workerId: 'wp-b', startsAt: '2026-02-02T10:30:00.000Z', durationMinutes: 30, adminOverride: true });
+  assert.equal(override.status, 201);
+  assert.equal(override.body.data.conflictStatus, 'OVERRIDE');
+
+  const rescheduled = await admin.post('/api/jobs/' + other.body.data.id + '/reschedule').send({ workerId: 'wp-b', startsAt: '2026-02-06T10:00:00.000Z', durationMinutes: 30 });
+  assert.equal(rescheduled.status, 201);
+  const schedule = await admin.get('/api/schedule');
+  assert.equal(schedule.body.data.filter((item) => item.jobId === other.body.data.id && item.status === 'SCHEDULED').length, 1);
+
+  const unscheduled = await admin.post('/api/jobs/' + other.body.data.id + '/unschedule').send({});
+  assert.equal(unscheduled.status, 200);
+  assert.equal(unscheduled.body.data.scheduledStart, null);
+});
+
+test('recurring rule creates next job and avoids duplicate period generation', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const rule = await admin.post('/api/recurring-jobs').send({ customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-b', title: 'Weekly maintenance', frequency: 'WEEKLY', startDate: '2026-02-02T00:00:00.000Z', preferredTime: '10:00', durationMinutes: 60 });
+  assert.equal(rule.status, 201);
+
+  const first = await admin.post('/api/recurring-jobs/' + rule.body.data.id + '/generate-next').send({});
+  assert.equal(first.status, 201);
+  assert.equal(first.body.data.job.title, 'Weekly maintenance');
+
+  const duplicate = await admin.post('/api/recurring-jobs/' + rule.body.data.id + '/generate-next').send({});
+  assert.equal(duplicate.status, 201);
+  assert.notEqual(duplicate.body.data.job.id, first.body.data.job.id);
+  assert.notEqual(duplicate.body.data.job.scheduledStart, first.body.data.job.scheduledStart);
 });
 test('paid invoices cannot be edited and workers cannot access receipts', async () => {
   const app = await buildApp();

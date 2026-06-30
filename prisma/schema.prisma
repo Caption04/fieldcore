@@ -55,6 +55,45 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum TimeOffStatus {
+  APPROVED
+  PENDING
+  REJECTED
+}
+
+enum ScheduleStatus {
+  SCHEDULED
+  DISPATCHED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  RESCHEDULED
+}
+
+enum ScheduleConflictStatus {
+  CLEAR
+  CONFLICT
+  OVERRIDE
+}
+
+enum ScheduleConflictType {
+  OVERLAP
+  TIME_OFF
+  OUTSIDE_AVAILABILITY
+  OUTSIDE_WORKING_HOURS
+  INVALID_TIME
+  JOB_NOT_SCHEDULABLE
+}
+
+enum RecurringFrequency {
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
 model Company {
   id                   String                 @id @default(cuid())
   name                 String
@@ -70,6 +109,7 @@ model Company {
   users                User[]
   customers            Customer[]
   workers              WorkerProfile[]
+  workerRoles          WorkerRole[]
   services             Service[]
   jobs                 Job[]
   scheduleItems        ScheduleItem[]
@@ -86,6 +126,12 @@ model Company {
   quoteStatusHistory   QuoteStatusHistory[]
   invoiceStatusHistory InvoiceStatusHistory[]
   branding             CompanyBranding?
+  schedulingSettings   CompanySchedulingSettings?
+  workerAvailabilities WorkerAvailability[]
+  roleAvailabilities   RoleAvailability[]
+  workerTimeOff        WorkerTimeOff[]
+  scheduleConflicts    ScheduleConflict[]
+  recurringJobRules    RecurringJobRule[]
 }
 
 model CompanyBranding {
@@ -141,7 +187,24 @@ model Customer {
   jobs      Job[]
   quotes    Quote[]
   invoices  Invoice[]
+  recurringJobRules RecurringJobRule[]
 
+  @@index([companyId])
+}
+
+model WorkerRole {
+  id           String             @id @default(cuid())
+  companyId    String
+  name         String
+  description  String?
+  active       Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  workers      WorkerProfile[]
+  availability RoleAvailability[]
+
+  @@unique([companyId, name])
   @@index([companyId])
 }
 
@@ -149,6 +212,7 @@ model WorkerProfile {
   id              String           @id @default(cuid())
   companyId       String
   userId          String           @unique
+  roleId          String?
   title           String?
   phone           String?
   active          Boolean          @default(true)
@@ -156,11 +220,17 @@ model WorkerProfile {
   updatedAt       DateTime         @updatedAt
   company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role            WorkerRole?      @relation(fields: [roleId], references: [id], onDelete: SetNull)
   jobs            Job[]
   scheduleItems   ScheduleItem[]
   workerLocations WorkerLocation[]
+  availability    WorkerAvailability[]
+  timeOff         WorkerTimeOff[]
+  conflicts       ScheduleConflict[]
+  recurringRules  RecurringJobRule[]
 
   @@index([companyId])
+  @@index([companyId, roleId])
 }
 
 model Service {
@@ -178,6 +248,7 @@ model Service {
   invoices         Invoice[]
   quoteLineItems   QuoteLineItem[]
   invoiceLineItems InvoiceLineItem[]
+  recurringJobRules RecurringJobRule[]
 
   @@index([companyId])
 }
@@ -193,6 +264,10 @@ model Job {
   status               JobStatus      @default(NEW)
   scheduledStart       DateTime?
   scheduledEnd         DateTime?
+  durationMinutes      Int?
+  travelBufferMinutes  Int?
+  rescheduledFromId    String?
+  recurrenceRuleId     String?
   completedAt          DateTime?
   completionNotes      String?
   customerSignatureUrl String?
@@ -207,26 +282,34 @@ model Job {
   quotes               Quote[]
   invoices             Invoice[]
   photos               JobPhoto[]
+  scheduleConflicts    ScheduleConflict[]
 
   @@index([companyId])
   @@index([companyId, customerId])
 }
 
 model ScheduleItem {
-  id        String         @id @default(cuid())
-  companyId String
-  jobId     String
-  workerId  String?
-  startsAt  DateTime
-  endsAt    DateTime?
-  notes     String?
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  company   Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job       Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  worker    WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  id                  String                 @id @default(cuid())
+  companyId           String
+  jobId               String
+  workerId            String?
+  startsAt            DateTime
+  endsAt              DateTime?
+  status              ScheduleStatus         @default(SCHEDULED)
+  conflictStatus      ScheduleConflictStatus @default(CLEAR)
+  travelBufferMinutes Int                    @default(0)
+  notes               String?
+  createdById         String?
+  updatedById         String?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  company             Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job                 Job                    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker              WorkerProfile?         @relation(fields: [workerId], references: [id], onDelete: SetNull)
 
   @@index([companyId])
+  @@index([companyId, workerId, startsAt])
+  @@index([companyId, jobId])
 }
 
 model Quote {
@@ -434,6 +517,120 @@ model WorkerLocation {
   @@index([companyId, workerId, recordedAt])
 }
 
+model CompanySchedulingSettings {
+  id                       String   @id @default(cuid())
+  companyId                String   @unique
+  defaultJobDurationMinutes Int     @default(60)
+  defaultTravelBufferMinutes Int    @default(0)
+  allowOverbooking          Boolean @default(false)
+  defaultJobStatus          JobStatus @default(NEW)
+  requireCompletionNotes    Boolean @default(true)
+  requireProofPhotos        Boolean @default(true)
+  autoCreateScheduleOnAssign Boolean @default(false)
+  timezone                 String   @default("UTC")
+  workingDayStart          String   @default("08:00")
+  workingDayEnd            String   @default("17:00")
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  company                  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+model WorkerAvailability {
+  id        String        @id @default(cuid())
+  companyId String
+  workerId  String
+  dayOfWeek Int
+  startTime String
+  endTime   String
+  timezone  String        @default("UTC")
+  active    Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  company   Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker    WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, workerId, dayOfWeek])
+}
+
+model RoleAvailability {
+  id        String     @id @default(cuid())
+  companyId String
+  roleId    String
+  dayOfWeek Int
+  startTime String
+  endTime   String
+  timezone  String     @default("UTC")
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role      WorkerRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, roleId, dayOfWeek])
+}
+
+model WorkerTimeOff {
+  id        String        @id @default(cuid())
+  companyId String
+  workerId  String
+  startsAt  DateTime
+  endsAt    DateTime
+  reason    String?
+  status    TimeOffStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  company   Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker    WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, workerId, startsAt])
+}
+
+model ScheduleConflict {
+  id               String               @id @default(cuid())
+  companyId        String
+  jobId            String
+  workerId         String
+  conflictingJobId String?
+  conflictType     ScheduleConflictType
+  message          String
+  resolved         Boolean              @default(false)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  company          Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job              Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker           WorkerProfile        @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, jobId])
+  @@index([companyId, workerId])
+}
+
+model RecurringJobRule {
+  id              String             @id @default(cuid())
+  companyId       String
+  customerId      String
+  serviceId       String?
+  workerId        String?
+  title           String
+  description     String?
+  frequency       RecurringFrequency
+  interval        Int                @default(1)
+  startDate       DateTime
+  endDate         DateTime?
+  preferredTime   String?
+  durationMinutes Int
+  active          Boolean            @default(true)
+  nextRunAt       DateTime
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  company         Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer        Customer           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service         Service?           @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  worker          WorkerProfile?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, nextRunAt])
+}
 model JobPhoto {
   id        String   @id @default(cuid())
   companyId String

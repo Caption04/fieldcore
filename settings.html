@@ -22,6 +22,7 @@
           <button class="settings-tab active" type="button" data-settings-target="company">Company Information</button>
           <button class="settings-tab" type="button" data-settings-target="team">Team &amp; Roles</button>
           <button class="settings-tab" type="button" data-settings-target="jobs">Job Defaults</button>
+          <button class="settings-tab" type="button" data-settings-target="scheduling">Scheduling</button>
           <button class="settings-tab" type="button" data-settings-target="billing">Billing</button>
           <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
           <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
@@ -174,39 +175,110 @@
               <h2>Job Defaults</h2>
               <span class="badge gray">Operations</span>
             </div>
-            <form class="form-grid">
+            <form class="form-grid" data-job-defaults-form>
               <div class="field">
                 <label for="jobDuration">Default Job Duration</label>
-                <select id="jobDuration">
-                  <option>1 hour</option>
-                  <option>2 hours</option>
-                  <option>4 hours</option>
-                  <option>Full day</option>
+                <select id="jobDuration" name="defaultJobDurationMinutes" data-scheduling-field="defaultJobDurationMinutes">
+                  <option value="60">1 hour</option>
+                  <option value="120">2 hours</option>
+                  <option value="240">4 hours</option>
+                  <option value="480">Full day</option>
                 </select>
               </div>
               <div class="field">
                 <label for="jobStatus">Default Job Status</label>
-                <select id="jobStatus">
-                  <option>NEW</option>
-                  <option>SCHEDULED</option>
+                <select id="jobStatus" name="defaultJobStatus" data-scheduling-field="defaultJobStatus">
+                  <option value="NEW">NEW</option>
+                  <option value="SCHEDULED">SCHEDULED</option>
+                  <option value="ON_HOLD">ON HOLD</option>
                 </select>
               </div>
               <div class="field">
                 <label for="workdayStart">Workday Start</label>
-                <input id="workdayStart" type="time" value="08:00">
+                <input id="workdayStart" name="workingDayStart" type="time" data-scheduling-field="workingDayStart">
               </div>
               <div class="field">
                 <label for="workdayEnd">Workday End</label>
-                <input id="workdayEnd" type="time" value="17:00">
+                <input id="workdayEnd" name="workingDayEnd" type="time" data-scheduling-field="workingDayEnd">
               </div>
               <div class="settings-checks span-2">
-                <label><input type="checkbox" checked> Require completion notes</label>
-                <label><input type="checkbox" checked> Require proof-of-work photos</label>
-                <label><input type="checkbox"> Auto-create schedule item when assigning a worker</label>
+                <label><input type="checkbox" name="requireCompletionNotes" data-scheduling-field="requireCompletionNotes"> Require completion notes</label>
+                <label><input type="checkbox" name="requireProofPhotos" data-scheduling-field="requireProofPhotos"> Require proof-of-work photos</label>
+                <label><input type="checkbox" name="autoCreateScheduleOnAssign" data-scheduling-field="autoCreateScheduleOnAssign"> Auto-create schedule item when assigning a worker</label>
               </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="submit">Save Job Defaults</button>
+              </div>
+              <p class="fc-form-error span-2" data-job-defaults-message hidden></p>
             </form>
           </div>
-
+          <div class="panel settings-panel" data-settings-panel="scheduling" hidden>
+            <div class="panel-head">
+              <h3>Scheduling Engine</h3>
+            </div>
+            <form class="form-grid" data-scheduling-form>
+              <div class="field">
+                <label for="defaultJobDurationMinutes">Default Duration</label>
+                <input id="defaultJobDurationMinutes" name="defaultJobDurationMinutes" type="number" min="1" data-scheduling-field="defaultJobDurationMinutes">
+              </div>
+              <div class="field">
+                <label for="defaultTravelBufferMinutes">Travel Buffer</label>
+                <input id="defaultTravelBufferMinutes" name="defaultTravelBufferMinutes" type="number" min="0" data-scheduling-field="defaultTravelBufferMinutes">
+              </div>
+              <div class="field">
+                <label for="workingDayStart">Working Day Start</label>
+                <input id="workingDayStart" name="workingDayStart" type="time" data-scheduling-field="workingDayStart">
+              </div>
+              <div class="field">
+                <label for="workingDayEnd">Working Day End</label>
+                <input id="workingDayEnd" name="workingDayEnd" type="time" data-scheduling-field="workingDayEnd">
+              </div>
+              <div class="field span-2">
+                <label for="timezone">Timezone</label>
+                <input id="timezone" name="timezone" type="text" data-scheduling-field="timezone">
+              </div>
+              <div class="settings-checks span-2">
+                <label><input type="checkbox" name="allowOverbooking" data-scheduling-field="allowOverbooking"> Allow admin overbooking</label>
+              </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="submit">Save Scheduling</button>
+              </div>
+              <p class="fc-form-error span-2" data-scheduling-message hidden></p>
+            </form>
+            <form class="form-grid settings-subform" data-availability-form>
+              <div class="panel-head span-2">
+                <h3>Role Availability</h3>
+              </div>
+              <div class="field">
+                <label for="availabilityRoleId">Role</label>
+                <select id="availabilityRoleId" name="roleId" data-availability-role required></select>
+              </div>
+              <div class="field">
+                <label for="availabilityDayOfWeek">Day</label>
+                <select id="availabilityDayOfWeek" name="dayOfWeek" required>
+                  <option value="1">Monday</option>
+                  <option value="2">Tuesday</option>
+                  <option value="3">Wednesday</option>
+                  <option value="4">Thursday</option>
+                  <option value="5">Friday</option>
+                  <option value="6">Saturday</option>
+                  <option value="0">Sunday</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="availabilityStartTime">Start</label>
+                <input id="availabilityStartTime" name="startTime" type="time" value="08:00" required>
+              </div>
+              <div class="field">
+                <label for="availabilityEndTime">End</label>
+                <input id="availabilityEndTime" name="endTime" type="time" value="17:00" required>
+              </div>
+              <div class="form-actions span-2">
+                <button class="secondary-button" type="submit">Save Availability</button>
+              </div>
+              <p class="fc-form-error span-2" data-availability-message hidden></p>
+            </form>
+          </div>
           <div class="panel settings-panel" data-settings-panel="billing" hidden>
             <div class="panel-head">
               <h2>Billing</h2>

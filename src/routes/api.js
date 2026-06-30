@@ -119,6 +119,19 @@ async function requireWorker(req, id) {
   return record;
 }
 
+async function requireWorkerRole(req, id) {
+  if (!id) return null;
+  const record = await prisma.workerRole.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Worker role not found');
+  return record;
+}
+
+async function ensureWorkerRole(req, name, tx = prisma) {
+  const clean = String(name || '').trim();
+  if (!clean) return null;
+  return tx.workerRole.upsert({ where: { companyId_name: { companyId: req.companyId, name: clean } }, update: { active: true }, create: { companyId: req.companyId, name: clean } });
+}
+
 async function requireJob(req, id, options = {}) {
   const assignedOnly = options.assignedOnly !== false;
   const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...(assignedOnly ? workerJobScope(req) : {}) } });
@@ -352,6 +365,160 @@ async function createReceiptForPayment(tx, payment, invoice) {
   return tx.receipt.create({ data: { companyId: payment.companyId, invoiceId: invoice.id, paymentId: payment.id, receiptNumber: 'RCT-' + String(count + 1).padStart(4, '0'), amount: payment.amount } });
 }
 
+const scheduleInclude = { job: { include: { customer: true, service: true } }, worker: { include: SAFE_WORKER_INCLUDE } };
+const activeScheduleStatuses = ['SCHEDULED', 'DISPATCHED', 'IN_PROGRESS'];
+const scheduleStatusValues = ['SCHEDULED', 'DISPATCHED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'RESCHEDULED'];
+const conflictTypeValues = ['OVERLAP', 'TIME_OFF', 'OUTSIDE_AVAILABILITY', 'OUTSIDE_WORKING_HOURS', 'INVALID_TIME', 'JOB_NOT_SCHEDULABLE'];
+const recurrenceValues = ['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'];
+
+const schedulingSettingsSchema = z.object({
+  defaultJobDurationMinutes: z.coerce.number().int().positive().optional(),
+  defaultTravelBufferMinutes: z.coerce.number().int().min(0).optional(),
+  allowOverbooking: z.boolean().optional(),
+  defaultJobStatus: z.enum(['NEW', 'SCHEDULED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  requireCompletionNotes: z.boolean().optional(),
+  requireProofPhotos: z.boolean().optional(),
+  autoCreateScheduleOnAssign: z.boolean().optional(),
+  timezone: z.string().trim().min(1).optional(),
+  workingDayStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  workingDayEnd: z.string().regex(/^\d{2}:\d{2}$/).optional()
+});
+const scheduleWriteSchema = z.object({ jobId: z.string().min(1), workerId: z.string().min(1), startsAt: z.coerce.date(), endsAt: optionalDate, durationMinutes: z.coerce.number().int().positive().optional(), travelBufferMinutes: z.coerce.number().int().min(0).optional(), notes: optionalText(1000), adminOverride: z.boolean().optional() });
+const schedulePatchSchema = z.object({ workerId: z.string().min(1).optional(), startsAt: optionalDate, endsAt: optionalDate, durationMinutes: z.coerce.number().int().positive().optional(), travelBufferMinutes: z.coerce.number().int().min(0).optional(), notes: optionalText(1000), status: z.enum(scheduleStatusValues).optional(), adminOverride: z.boolean().optional() });
+const conflictCheckSchema = scheduleWriteSchema.partial({ jobId: true }).extend({ jobId: z.string().min(1).optional(), workerId: z.string().min(1), startsAt: z.coerce.date() });
+const availabilitySchema = z.array(z.object({ dayOfWeek: z.coerce.number().int().min(0).max(6), startTime: z.string().regex(/^\d{2}:\d{2}$/), endTime: z.string().regex(/^\d{2}:\d{2}$/), timezone: z.string().trim().min(1).optional(), active: z.boolean().optional() })).max(21);
+const workerRoleSchema = z.object({ name: z.string().trim().min(2).max(120), description: optionalText(300), active: z.boolean().optional() });
+const timeOffSchema = z.object({ startsAt: z.coerce.date(), endsAt: z.coerce.date(), reason: optionalText(300), status: z.enum(['APPROVED', 'PENDING', 'REJECTED']).optional() });
+const recurringJobSchema = z.object({ customerId: z.string().min(1), serviceId: z.string().optional(), workerId: z.string().optional(), title: z.string().min(2), description: optionalText(1000), frequency: z.enum(recurrenceValues), interval: z.coerce.number().int().positive().optional(), startDate: z.coerce.date(), endDate: optionalDate, preferredTime: z.string().regex(/^\d{2}:\d{2}$/).optional(), durationMinutes: z.coerce.number().int().positive(), active: z.boolean().optional(), nextRunAt: optionalDate });
+
+function minutesFromTime(value) {
+  const [hours, minutes] = String(value || '00:00').split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesOfDay(date) {
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function addMinutes(date, minutes) {
+  return new Date(date.getTime() + minutes * 60000);
+}
+
+function rangesOverlap(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
+}
+
+function schedulingDefaults() {
+  return { defaultJobDurationMinutes: 60, defaultTravelBufferMinutes: 0, allowOverbooking: false, defaultJobStatus: 'NEW', requireCompletionNotes: true, requireProofPhotos: true, autoCreateScheduleOnAssign: false, timezone: 'UTC', workingDayStart: '08:00', workingDayEnd: '17:00' };
+}
+
+async function getSchedulingSettings(companyId) {
+  const existing = await prisma.companySchedulingSettings.findUnique({ where: { companyId } });
+  return { ...schedulingDefaults(), ...(existing || {}) };
+}
+
+async function requireScheduleItem(req, id) {
+  const where = { id, companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) };
+  const record = await prisma.scheduleItem.findFirst({ where, include: scheduleInclude });
+  if (!record) throw notFound('Schedule item not found');
+  return record;
+}
+
+function scheduleWindow(input, job, settings) {
+  const startsAt = new Date(input.startsAt);
+  const duration = Number(input.durationMinutes || job.durationMinutes || settings.defaultJobDurationMinutes || 60);
+  const endsAt = input.endsAt ? new Date(input.endsAt) : addMinutes(startsAt, duration);
+  const travelBufferMinutes = Number(input.travelBufferMinutes ?? job.travelBufferMinutes ?? settings.defaultTravelBufferMinutes ?? 0);
+  return { startsAt, endsAt, durationMinutes: duration, travelBufferMinutes };
+}
+
+async function checkScheduleConflicts(req, input, options = {}) {
+  const settings = await getSchedulingSettings(req.companyId);
+  const job = options.job || (input.jobId ? await requireJob(req, input.jobId, { assignedOnly: req.user.role === 'WORKER' }) : { id: input.jobId, status: 'NEW' });
+  const worker = await requireWorker(req, input.workerId);
+  const window = scheduleWindow(input, job, settings);
+  const conflicts = [];
+  const add = (type, message, relatedJobId) => conflicts.push({ type, message, ...(relatedJobId ? { relatedJobId } : {}) });
+
+  if (!worker.active) add('OUTSIDE_AVAILABILITY', 'Worker is inactive.');
+  if (!(window.startsAt instanceof Date) || Number.isNaN(window.startsAt.getTime()) || !(window.endsAt instanceof Date) || Number.isNaN(window.endsAt.getTime()) || window.endsAt <= window.startsAt) add('INVALID_TIME', 'Schedule start and end must be valid and end after start.');
+  if (job.status === 'CANCELLED') add('JOB_NOT_SCHEDULABLE', 'Cancelled jobs cannot be scheduled.');
+  if (job.status === 'COMPLETED') add('JOB_NOT_SCHEDULABLE', 'Completed jobs cannot be scheduled.');
+
+  if (!conflicts.some((item) => item.type === 'INVALID_TIME')) {
+    const startMinute = minutesOfDay(window.startsAt);
+    const endMinute = minutesOfDay(window.endsAt);
+    if (startMinute < minutesFromTime(settings.workingDayStart) || endMinute > minutesFromTime(settings.workingDayEnd)) add('OUTSIDE_WORKING_HOURS', 'Schedule is outside company working hours.');
+
+    const workerAvailability = await prisma.workerAvailability.findMany({ where: { companyId: req.companyId, workerId: worker.id, active: true, dayOfWeek: window.startsAt.getDay() } });
+    const roleAvailability = !workerAvailability.length && worker.roleId ? await prisma.roleAvailability.findMany({ where: { companyId: req.companyId, roleId: worker.roleId, active: true, dayOfWeek: window.startsAt.getDay() } }) : [];
+    const availability = workerAvailability.length ? workerAvailability : roleAvailability;
+    if (availability.length && !availability.some((slot) => startMinute >= minutesFromTime(slot.startTime) && endMinute <= minutesFromTime(slot.endTime))) add('OUTSIDE_AVAILABILITY', workerAvailability.length ? 'Schedule is outside worker availability.' : 'Schedule is outside role availability.');
+
+    const timeOff = await prisma.workerTimeOff.findMany({ where: { companyId: req.companyId, workerId: worker.id, status: 'APPROVED' } });
+    for (const item of timeOff) {
+      if (rangesOverlap(window.startsAt, window.endsAt, new Date(item.startsAt), new Date(item.endsAt))) add('TIME_OFF', 'Worker has approved time off during this schedule.');
+    }
+
+    const existing = await prisma.scheduleItem.findMany({ where: { companyId: req.companyId, workerId: worker.id, status: { in: activeScheduleStatuses } }, include: { job: true } });
+    const blockedStart = addMinutes(window.startsAt, -window.travelBufferMinutes);
+    const blockedEnd = addMinutes(window.endsAt, window.travelBufferMinutes);
+    for (const item of existing) {
+      if (item.jobId === job.id || item.id === options.excludeScheduleId) continue;
+      const itemStart = addMinutes(new Date(item.startsAt), -Number(item.travelBufferMinutes || 0));
+      const itemEnd = addMinutes(new Date(item.endsAt || item.startsAt), Number(item.travelBufferMinutes || 0));
+      if (rangesOverlap(blockedStart, blockedEnd, itemStart, itemEnd)) add('OVERLAP', 'Worker already has a scheduled job in this time window.', item.jobId);
+    }
+  }
+
+  return { hasConflict: conflicts.length > 0, conflicts, window, settings, job, worker };
+}
+
+async function writeScheduleConflicts(tx, req, jobId, workerId, conflicts, resolved) {
+  for (const conflict of conflicts) {
+    await tx.scheduleConflict.create({ data: { companyId: req.companyId, jobId, workerId, conflictingJobId: conflict.relatedJobId, conflictType: conflict.type, message: conflict.message, resolved } });
+  }
+}
+
+async function scheduleJob(req, job, input, options = {}) {
+  const result = await checkScheduleConflicts(req, { ...input, jobId: job.id }, { job, excludeScheduleId: options.excludeScheduleId });
+  const canOverride = adminRoles.includes(req.user.role) && (input.adminOverride || result.settings.allowOverbooking);
+  if (result.hasConflict && !canOverride) throw new AppError(409, 'Schedule conflict detected', { conflicts: result.conflicts });
+  const conflictStatus = result.hasConflict ? 'OVERRIDE' : 'CLEAR';
+  const data = await prisma.$transaction(async (tx) => {
+    if (options.rescheduleExistingId) await tx.scheduleItem.update({ where: { id: options.rescheduleExistingId }, data: { status: 'RESCHEDULED', conflictStatus: 'CLEAR', updatedById: req.user.id } });
+    const existing = !options.forceNew ? await tx.scheduleItem.findFirst({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } } }) : null;
+    const scheduleData = { companyId: req.companyId, jobId: job.id, workerId: result.worker.id, startsAt: result.window.startsAt, endsAt: result.window.endsAt, status: 'SCHEDULED', conflictStatus, travelBufferMinutes: result.window.travelBufferMinutes, notes: input.notes, createdById: req.user.id, updatedById: req.user.id };
+    const schedule = existing ? await tx.scheduleItem.update({ where: { id: existing.id }, data: scheduleData, include: scheduleInclude }) : await tx.scheduleItem.create({ data: scheduleData, include: scheduleInclude });
+    const updatedJob = await tx.job.update({ where: { id: job.id }, data: { workerId: result.worker.id, scheduledStart: result.window.startsAt, scheduledEnd: result.window.endsAt, durationMinutes: result.window.durationMinutes, travelBufferMinutes: result.window.travelBufferMinutes, status: 'SCHEDULED', ...(options.rescheduleExistingId ? { rescheduledFromId: options.rescheduleExistingId } : {}) } });
+    if (result.hasConflict) await writeScheduleConflicts(tx, req, job.id, result.worker.id, result.conflicts, canOverride);
+    return { schedule, job: updatedJob, conflicts: result.conflicts };
+  });
+  if (result.hasConflict && canOverride) await audit(req, 'OVERRIDE_SCHEDULE_CONFLICT', 'Job', job.id, { conflicts: result.conflicts });
+  return data;
+}
+
+function nextRecurrenceDate(rule, fromDate) {
+  const next = new Date(fromDate);
+  const interval = Number(rule.interval || 1);
+  if (rule.frequency === 'DAILY') next.setDate(next.getDate() + interval);
+  if (rule.frequency === 'WEEKLY') next.setDate(next.getDate() + 7 * interval);
+  if (rule.frequency === 'BIWEEKLY') next.setDate(next.getDate() + 14 * interval);
+  if (rule.frequency === 'MONTHLY') next.setMonth(next.getMonth() + interval);
+  if (rule.frequency === 'QUARTERLY') next.setMonth(next.getMonth() + 3 * interval);
+  if (rule.frequency === 'YEARLY') next.setFullYear(next.getFullYear() + interval);
+  return next;
+}
+
+function dateWithPreferredTime(date, preferredTime) {
+  const next = new Date(date);
+  if (preferredTime) {
+    const [hours, minutes] = preferredTime.split(':').map(Number);
+    next.setHours(hours, minutes, 0, 0);
+  }
+  return next;
+}
+
 const registerSchema = z.object({
   companyName: z.string().min(2),
   name: z.string().min(2),
@@ -532,18 +699,55 @@ const workerCreateSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().transform((v) => v.toLowerCase()),
   password: z.string().min(8),
+  roleId: z.string().optional(),
   title: z.string().optional(),
   phone: z.string().optional(),
   active: z.boolean().optional()
 });
-const workerPatchSchema = z.object({ title: z.string().optional(), phone: z.string().optional(), active: z.boolean().optional() });
+const workerPatchSchema = z.object({ roleId: z.string().nullable().optional(), title: z.string().optional(), phone: z.string().optional(), active: z.boolean().optional() });
 
+router.get('/worker-roles', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const roles = await prisma.workerRole.findMany({ where: { companyId: req.companyId }, orderBy: { name: 'asc' } });
+  sendData(res, normalize(roles));
+}));
+
+router.post('/worker-roles', requireRole(...adminRoles), validate(workerRoleSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.workerRole.upsert({ where: { companyId_name: { companyId: req.companyId, name: req.body.name } }, update: { description: req.body.description, active: req.body.active ?? true }, create: { ...req.body, active: req.body.active ?? true, companyId: req.companyId } });
+  await audit(req, 'CREATE', 'WorkerRole', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/worker-roles/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(workerRoleSchema.partial()), asyncHandler(async (req, res) => {
+  await requireWorkerRole(req, req.params.id);
+  const data = await prisma.workerRole.update({ where: { id: req.params.id }, data: req.body });
+  await audit(req, 'UPDATE', 'WorkerRole', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/worker-roles/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const role = await requireWorkerRole(req, req.params.id);
+  const data = await prisma.roleAvailability.findMany({ where: { companyId: req.companyId, roleId: role.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
+  sendData(res, normalize(data));
+}));
+
+router.put('/worker-roles/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
+  const role = await requireWorkerRole(req, req.params.id);
+  const data = await prisma.$transaction(async (tx) => {
+    await tx.roleAvailability.deleteMany({ where: { companyId: req.companyId, roleId: role.id } });
+    for (const item of req.body) await tx.roleAvailability.create({ data: { ...item, timezone: item.timezone || 'UTC', active: item.active !== false, companyId: req.companyId, roleId: role.id } });
+    return tx.roleAvailability.findMany({ where: { companyId: req.companyId, roleId: role.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
+  });
+  await audit(req, 'UPDATE', 'RoleAvailability', role.id);
+  sendData(res, normalize(data));
+}));
 router.get('/workers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const result = await paged(prisma.workerProfile, req, { where: { companyId: req.companyId }, include: SAFE_WORKER_INCLUDE, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(result.data.map((w) => ({ ...w, user: publicUser(w.user) }))), 200, result.meta);
 }));
 
 router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema), asyncHandler(async (req, res) => {
+  let role = req.body.roleId ? await requireWorkerRole(req, req.body.roleId) : null;
+  if (!role && req.body.title) role = await ensureWorkerRole(req, req.body.title);
   const user = await prisma.user.create({
     data: {
       companyId: req.companyId,
@@ -551,7 +755,7 @@ router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema)
       name: req.body.name,
       role: 'WORKER',
       passwordHash: await hashPassword(req.body.password),
-      worker: { create: { companyId: req.companyId, title: req.body.title, phone: req.body.phone, active: req.body.active ?? true } }
+      worker: { create: { companyId: req.companyId, roleId: role && role.id, title: req.body.title || role && role.name, phone: req.body.phone, active: req.body.active ?? true } }
     },
     select: SAFE_LOGIN_USER_SELECT
   });
@@ -561,7 +765,9 @@ router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema)
 
 router.patch('/workers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(workerPatchSchema), asyncHandler(async (req, res) => {
   await requireWorker(req, req.params.id);
-  const data = await prisma.workerProfile.update({ where: { id: req.params.id }, data: req.body, include: SAFE_WORKER_INCLUDE });
+  const body = { ...req.body };
+  if (body.roleId) await requireWorkerRole(req, body.roleId);
+  const data = await prisma.workerProfile.update({ where: { id: req.params.id }, data: body, include: SAFE_WORKER_INCLUDE });
   await audit(req, 'UPDATE', 'WorkerProfile', data.id);
   sendData(res, normalize({ ...data, user: publicUser(data.user) }));
 }));
@@ -578,9 +784,18 @@ router.post('/services', requireRole(...adminRoles), validate(serviceSchema), as
 }));
 
 const jobSchema = z.object({
-  customerId: z.string().min(1), serviceId: z.string().optional(), workerId: z.string().optional(), title: z.string().min(2),
-  description: z.string().optional(), status: z.enum(['NEW', 'SCHEDULED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
-  scheduledStart: optionalDate, scheduledEnd: optionalDate, total: amount.optional()
+  customerId: z.string().min(1),
+  serviceId: z.string().optional(),
+  workerId: z.string().optional(),
+  title: z.string().min(2),
+  description: z.string().optional(),
+  status: z.enum(['NEW', 'SCHEDULED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  scheduledStart: optionalDate,
+  scheduledEnd: optionalDate,
+  durationMinutes: z.coerce.number().int().positive().optional(),
+  travelBufferMinutes: z.coerce.number().int().min(0).optional(),
+  total: amount.optional(),
+  adminOverride: z.boolean().optional()
 });
 
 router.get('/jobs', asyncHandler(async (req, res) => {
@@ -590,8 +805,81 @@ router.get('/jobs', asyncHandler(async (req, res) => {
 
 router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandler(async (req, res) => {
   await validateJobRelations(req, req.body);
-  const data = await prisma.job.create({ data: { ...req.body, companyId: req.companyId }, include: { customer: true, worker: { include: SAFE_WORKER_INCLUDE } } });
-  if (data.scheduledStart) await prisma.scheduleItem.create({ data: { companyId: req.companyId, jobId: data.id, workerId: data.workerId, startsAt: data.scheduledStart, endsAt: data.scheduledEnd } });
+
+  const wantsSchedule = Boolean(req.body.scheduledStart);
+
+  if (wantsSchedule && !req.body.workerId) {
+    throw new AppError(400, 'Worker is required when scheduling a job.');
+  }
+
+  if (wantsSchedule) {
+    const fakeJob = {
+      id: '__new_job__',
+      status: req.body.status || 'NEW',
+      durationMinutes: req.body.durationMinutes,
+      travelBufferMinutes: req.body.travelBufferMinutes
+    };
+
+    const conflictCheck = await checkScheduleConflicts(
+      req,
+      {
+        jobId: fakeJob.id,
+        workerId: req.body.workerId,
+        startsAt: req.body.scheduledStart,
+        endsAt: req.body.scheduledEnd,
+        durationMinutes: req.body.durationMinutes,
+        travelBufferMinutes: req.body.travelBufferMinutes
+      },
+      { job: fakeJob }
+    );
+
+    const canOverride = adminRoles.includes(req.user.role) && (req.body.adminOverride || conflictCheck.settings.allowOverbooking);
+
+    if (conflictCheck.hasConflict && !canOverride) {
+      throw new AppError(409, 'Schedule conflict detected', { conflicts: conflictCheck.conflicts });
+    }
+  }
+
+  const {
+    scheduledStart,
+    scheduledEnd,
+    adminOverride,
+    ...jobData
+  } = req.body;
+
+  const data = await prisma.job.create({
+    data: {
+      ...jobData,
+      companyId: req.companyId,
+      status: wantsSchedule ? 'NEW' : (jobData.status || 'NEW')
+    },
+    include: {
+      customer: true,
+      service: true,
+      worker: { include: SAFE_WORKER_INCLUDE }
+    }
+  });
+
+  if (wantsSchedule) {
+    const scheduled = await scheduleJob(req, data, {
+      workerId: req.body.workerId,
+      startsAt: scheduledStart,
+      endsAt: scheduledEnd,
+      durationMinutes: req.body.durationMinutes,
+      travelBufferMinutes: req.body.travelBufferMinutes,
+      adminOverride: req.body.adminOverride
+    });
+
+    await audit(req, 'CREATE', 'Job', data.id, { scheduled: true, scheduleItemId: scheduled.schedule.id });
+
+    return sendData(res, normalize({
+      ...scheduled.job,
+      customer: data.customer,
+      service: data.service,
+      worker: scheduled.schedule.worker
+    }), 201);
+  }
+
   await audit(req, 'CREATE', 'Job', data.id);
   sendData(res, normalize(data), 201);
 }));
@@ -1018,16 +1306,223 @@ router.get('/invoices/:id/receipts', requireRole(...adminRoles), validate(idPara
   sendData(res, normalize(data));
 }));
 
-const scheduleSchema = z.object({ jobId: z.string().min(1), workerId: z.string().optional(), startsAt: z.coerce.date(), endsAt: optionalDate, notes: z.string().optional() });
-router.get('/schedule', asyncHandler(async (req, res) => {
-  const result = await paged(prisma.scheduleItem, req, { where: { companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) }, include: { job: { include: { customer: true } }, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { startsAt: 'asc' } });
+function scheduleWhere(req, extra = {}) {
+  return { companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}), ...extra };
+}
+
+async function listSchedule(req, extra = {}) {
+  const result = await paged(prisma.scheduleItem, req, { where: scheduleWhere(req, extra), include: scheduleInclude, orderBy: { startsAt: 'asc' } });
+  return result;
+}
+
+function rangeFromQuery(req, fallbackDays) {
+  const start = req.query.start ? new Date(String(req.query.start)) : new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = req.query.end ? new Date(String(req.query.end)) : addMinutes(start, fallbackDays * 24 * 60);
+  return { startsAt: { gte: start, lt: end } };
+}
+
+router.get('/company/scheduling-settings', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await getSchedulingSettings(req.companyId)));
+}));
+
+router.patch('/company/scheduling-settings', requireRole(...adminRoles), validate(schedulingSettingsSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.companySchedulingSettings.upsert({ where: { companyId: req.companyId }, update: req.body, create: { ...schedulingDefaults(), ...req.body, companyId: req.companyId } });
+  await audit(req, 'UPDATE', 'CompanySchedulingSettings', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/schedule/check-conflicts', requireRole(...adminRoles), validate(conflictCheckSchema), asyncHandler(async (req, res) => {
+  const result = await checkScheduleConflicts(req, req.body);
+  sendData(res, normalize({ hasConflict: result.hasConflict, conflicts: result.conflicts }));
+}));
+
+router.get('/schedule/calendar', asyncHandler(async (req, res) => {
+  const result = await listSchedule(req, rangeFromQuery(req, 31));
   sendData(res, normalize(result.data), 200, result.meta);
 }));
-router.post('/schedule', requireRole(...adminRoles), validate(scheduleSchema), asyncHandler(async (req, res) => {
-  await validateScheduleRelations(req, req.body);
-  const data = await prisma.scheduleItem.create({ data: { ...req.body, companyId: req.companyId } });
-  await audit(req, 'CREATE', 'ScheduleItem', data.id);
+router.get('/schedule/day', asyncHandler(async (req, res) => {
+  const result = await listSchedule(req, rangeFromQuery(req, 1));
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+router.get('/schedule/week', asyncHandler(async (req, res) => {
+  const result = await listSchedule(req, rangeFromQuery(req, 7));
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+router.get('/schedule/month', asyncHandler(async (req, res) => {
+  const result = await listSchedule(req, rangeFromQuery(req, 31));
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/schedule', asyncHandler(async (req, res) => {
+  const result = await listSchedule(req);
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/schedule', requireRole(...adminRoles), validate(scheduleWriteSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.body.jobId, { assignedOnly: false });
+  await requireWorker(req, req.body.workerId);
+  const data = await scheduleJob(req, job, req.body);
+  await audit(req, 'CREATE', 'ScheduleItem', data.schedule.id, { jobId: job.id });
+  sendData(res, normalize(data.schedule), 201);
+}));
+
+router.get('/schedule/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await requireScheduleItem(req, req.params.id)));
+}));
+
+router.patch('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(schedulePatchSchema), asyncHandler(async (req, res) => {
+  const existing = await requireScheduleItem(req, req.params.id);
+  const job = await requireJob(req, existing.jobId, { assignedOnly: false });
+  if (req.body.status && ['CANCELLED', 'COMPLETED'].includes(req.body.status)) {
+    const data = await prisma.scheduleItem.update({ where: { id: existing.id }, data: { status: req.body.status, notes: req.body.notes, updatedById: req.user.id }, include: scheduleInclude });
+    await audit(req, 'UPDATE', 'ScheduleItem', data.id);
+    return sendData(res, normalize(data));
+  }
+  const payload = { ...existing, ...req.body, workerId: req.body.workerId || existing.workerId, startsAt: req.body.startsAt || existing.startsAt, endsAt: req.body.endsAt || existing.endsAt };
+  const data = await scheduleJob(req, job, payload, { excludeScheduleId: existing.id });
+  await audit(req, 'UPDATE', 'ScheduleItem', data.schedule.id, { jobId: job.id });
+  sendData(res, normalize(data.schedule));
+}));
+
+router.delete('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireScheduleItem(req, req.params.id);
+  const data = await prisma.$transaction(async (tx) => {
+    const schedule = await tx.scheduleItem.update({ where: { id: existing.id }, data: { status: 'CANCELLED', conflictStatus: 'CLEAR', updatedById: req.user.id }, include: scheduleInclude });
+    await tx.job.update({ where: { id: existing.jobId }, data: { scheduledStart: null, scheduledEnd: null, status: 'NEW' } });
+    return schedule;
+  });
+  await audit(req, 'DELETE', 'ScheduleItem', data.id, { jobId: existing.jobId });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const data = await scheduleJob(req, job, req.body);
+  await audit(req, 'SCHEDULE', 'Job', job.id, { scheduleItemId: data.schedule.id });
+  sendData(res, normalize(data.schedule), 201);
+}));
+
+router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const existing = await prisma.scheduleItem.findFirst({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } } });
+  const data = await scheduleJob(req, job, req.body, { forceNew: true, rescheduleExistingId: existing && existing.id, excludeScheduleId: existing && existing.id });
+  await audit(req, 'RESCHEDULE', 'Job', job.id, { fromScheduleItemId: existing && existing.id, scheduleItemId: data.schedule.id });
+  sendData(res, normalize(data.schedule), 201);
+}));
+
+router.post('/jobs/:id/unschedule', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const active = await prisma.scheduleItem.findMany({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } } });
+  const data = await prisma.$transaction(async (tx) => {
+    for (const item of active) await tx.scheduleItem.update({ where: { id: item.id }, data: { status: 'CANCELLED', conflictStatus: 'CLEAR', updatedById: req.user.id } });
+    return tx.job.update({ where: { id: job.id }, data: { scheduledStart: null, scheduledEnd: null, workerId: null, status: job.status === 'SCHEDULED' ? 'NEW' : job.status }, include: { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE } } });
+  });
+  await audit(req, 'UNSCHEDULE', 'Job', job.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/workers/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const worker = await requireWorker(req, req.params.id);
+  const data = await prisma.workerAvailability.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
+  sendData(res, normalize(data));
+}));
+
+router.put('/workers/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
+  const worker = await requireWorker(req, req.params.id);
+  const data = await prisma.$transaction(async (tx) => {
+    await tx.workerAvailability.deleteMany({ where: { companyId: req.companyId, workerId: worker.id } });
+    for (const item of req.body) await tx.workerAvailability.create({ data: { ...item, timezone: item.timezone || 'UTC', active: item.active !== false, companyId: req.companyId, workerId: worker.id } });
+    return tx.workerAvailability.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
+  });
+  await audit(req, 'UPDATE', 'WorkerAvailability', worker.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/workers/:id/time-off', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const worker = await requireWorker(req, req.params.id);
+  const data = await prisma.workerTimeOff.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: { startsAt: 'asc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/workers/:id/time-off', requireRole(...adminRoles), validate(idParam, 'params'), validate(timeOffSchema), asyncHandler(async (req, res) => {
+  const worker = await requireWorker(req, req.params.id);
+  if (req.body.endsAt <= req.body.startsAt) throw new AppError(400, 'Time off end must be after start');
+  const data = await prisma.workerTimeOff.create({ data: { ...req.body, status: req.body.status || 'APPROVED', companyId: req.companyId, workerId: worker.id } });
+  await audit(req, 'CREATE', 'WorkerTimeOff', data.id, { workerId: worker.id });
   sendData(res, normalize(data), 201);
+}));
+
+router.patch('/workers/:id/time-off/:timeOffId', requireRole(...adminRoles), validate(z.object({ id: z.string().min(1), timeOffId: z.string().min(1) }), 'params'), validate(timeOffSchema.partial()), asyncHandler(async (req, res) => {
+  const worker = await requireWorker(req, req.params.id);
+  const existing = await prisma.workerTimeOff.findFirst({ where: { id: req.params.timeOffId, companyId: req.companyId, workerId: worker.id } });
+  if (!existing) throw notFound('Time off not found');
+  const data = await prisma.workerTimeOff.update({ where: { id: existing.id }, data: req.body });
+  await audit(req, 'UPDATE', 'WorkerTimeOff', data.id, { workerId: worker.id });
+  sendData(res, normalize(data));
+}));
+
+router.get('/recurring-jobs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.recurringJobRule, req, { where: { companyId: req.companyId }, orderBy: { nextRunAt: 'asc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/recurring-jobs', requireRole(...adminRoles), validate(recurringJobSchema), asyncHandler(async (req, res) => {
+  await requireCustomer(req, req.body.customerId);
+  if (req.body.serviceId) await requireService(req, req.body.serviceId);
+  if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  const nextRunAt = req.body.nextRunAt || dateWithPreferredTime(req.body.startDate, req.body.preferredTime);
+  const data = await prisma.recurringJobRule.create({ data: { ...req.body, interval: req.body.interval || 1, active: req.body.active !== false, nextRunAt, companyId: req.companyId } });
+  await audit(req, 'CREATE', 'RecurringJobRule', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/recurring-jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(recurringJobSchema.partial()), asyncHandler(async (req, res) => {
+  const existing = await prisma.recurringJobRule.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!existing) throw notFound('Recurring job rule not found');
+  if (req.body.customerId) await requireCustomer(req, req.body.customerId);
+  if (req.body.serviceId) await requireService(req, req.body.serviceId);
+  if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  const data = await prisma.recurringJobRule.update({ where: { id: existing.id }, data: req.body });
+  await audit(req, 'UPDATE', 'RecurringJobRule', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.delete('/recurring-jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await prisma.recurringJobRule.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!existing) throw notFound('Recurring job rule not found');
+  const data = await prisma.recurringJobRule.update({ where: { id: existing.id }, data: { active: false } });
+  await audit(req, 'DELETE', 'RecurringJobRule', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/recurring-jobs/:id/generate-next', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const rule = await prisma.recurringJobRule.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!rule) throw notFound('Recurring job rule not found');
+  if (!rule.active) throw new AppError(409, 'Recurring job rule is inactive');
+  const runAt = dateWithPreferredTime(rule.nextRunAt, rule.preferredTime);
+  if (rule.endDate && runAt > new Date(rule.endDate)) throw new AppError(409, 'Recurring job rule has ended');
+  const duplicate = await prisma.job.findFirst({ where: { companyId: req.companyId, recurrenceRuleId: rule.id, scheduledStart: runAt } });
+  if (duplicate) return sendData(res, normalize(duplicate));
+  const data = await prisma.$transaction(async (tx) => {
+    const job = await tx.job.create({ data: { companyId: req.companyId, customerId: rule.customerId, serviceId: rule.serviceId, workerId: rule.workerId, title: rule.title, description: rule.description, durationMinutes: rule.durationMinutes, recurrenceRuleId: rule.id, status: 'NEW' } });
+    await tx.recurringJobRule.update({ where: { id: rule.id }, data: { nextRunAt: nextRecurrenceDate(rule, runAt) } });
+    return job;
+  });
+  let generatedJob = data;
+  let schedule = null;
+  let conflicts = [];
+  if (rule.workerId) {
+    const check = await checkScheduleConflicts(req, { jobId: data.id, workerId: rule.workerId, startsAt: runAt, durationMinutes: rule.durationMinutes }, { job: data });
+    conflicts = check.conflicts;
+    if (!check.hasConflict) {
+      const scheduled = await scheduleJob(req, data, { workerId: rule.workerId, startsAt: runAt, durationMinutes: rule.durationMinutes });
+      schedule = scheduled.schedule;
+      generatedJob = scheduled.job;
+    } else await writeScheduleConflicts(prisma, req, data.id, rule.workerId, conflicts, false);
+  }
+  await audit(req, 'GENERATE_NEXT', 'RecurringJobRule', rule.id, { jobId: data.id, conflicts });
+  sendData(res, normalize({ job: generatedJob, schedule, conflicts }), 201);
 }));
 
 router.post('/worker-location', requireRole('WORKER'), validate(z.object({ latitude: z.coerce.number(), longitude: z.coerce.number() })), asyncHandler(async (req, res) => {

@@ -3,7 +3,7 @@
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], jobs: [], invoices: [] };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], availability: {} };
 
   const tableConfigs = {
     customers: {
@@ -29,6 +29,12 @@
       emptyTitle: 'No invoices yet',
       emptyText: 'Create your first invoice to start billing.',
       row: (item) => [item.number, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.total || item.amount || 0)), money.format(Number(item.balanceDue || 0)), formatDate(item.dueDate), rowActions('invoices', item)]
+    },
+    schedule: {
+      columns: ['Job', 'Customer', 'Worker', 'Status', 'Start', 'End', 'Conflict'],
+      emptyTitle: 'No scheduled work',
+      emptyText: 'Schedule jobs to workers to fill this calendar.',
+      row: (item) => [item.job && item.job.title || '-', item.job && item.job.customer && item.job.customer.name || '-', item.worker && item.worker.user && item.worker.user.name || '-', badge(item.status), formatDateTime(item.startsAt), formatDateTime(item.endsAt), badge(item.conflictStatus || 'CLEAR')]
     }
   };
 
@@ -50,7 +56,12 @@
       ...options
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error && payload.error.message || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(payload.error && payload.error.message || `HTTP ${response.status}`);
+      error.details = payload.error && payload.error.details;
+      error.status = response.status;
+      throw error;
+    }
     return payload.data;
   }
 
@@ -189,6 +200,8 @@
     if (resource === 'quotes' && item.status === 'SENT') add('Accept', 'quote-accept');
     if (resource === 'quotes' && item.status === 'SENT') add('Reject', 'quote-reject');
     if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Complete', 'job-complete');
+    if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add(item.scheduledStart ? 'Reschedule' : 'Schedule', item.scheduledStart ? 'job-reschedule' : 'job-schedule');
+    if (resource === 'jobs' && item.scheduledStart && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Unschedule', 'job-unschedule');
     if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice');
     if (resource === 'invoices') {
       const status = String(item.status || '').toUpperCase();
@@ -211,6 +224,80 @@
     });
   }
 
+  function scheduleDayIndex(value) {
+    const day = new Date(value).getDay();
+    return day === 0 ? 6 : day - 1;
+  }
+
+  function hourLabel(hour) {
+    const normalized = ((hour % 24) + 24) % 24;
+    if (normalized === 0) return '12 AM';
+    if (normalized < 12) return normalized + ' AM';
+    if (normalized === 12) return '12 PM';
+    return (normalized - 12) + ' PM';
+  }
+
+  function minutesFromTime(value) {
+    const parts = String(value || '00:00').split(':').map(Number);
+    return (parts[0] || 0) * 60 + (parts[1] || 0);
+  }
+
+  function scheduleHours(settings) {
+    const start = Math.floor(minutesFromTime(settings && settings.workingDayStart || '08:00') / 60);
+    const end = Math.ceil(minutesFromTime(settings && settings.workingDayEnd || '17:00') / 60);
+    const safeStart = Math.max(0, Math.min(23, start));
+    const safeEnd = Math.max(safeStart + 1, Math.min(24, end));
+    return Array.from({ length: safeEnd - safeStart + 1 }, (_, index) => safeStart + index);
+  }
+
+  function scheduleRowIndex(value, hours) {
+    const hour = new Date(value).getHours();
+    if (!hours.length) return 0;
+    if (hour <= hours[0]) return 0;
+    if (hour >= hours[hours.length - 1]) return hours.length - 1;
+    return hour - hours[0];
+  }
+
+  function buildScheduleGrid(grid, settings) {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const hours = scheduleHours(settings);
+    grid.style.gridTemplateColumns = '92px repeat(7, minmax(0, 1fr))';
+    grid.innerHTML = '<div class="schedule-head">Time</div>' + days.map((day) => `<div class="schedule-head">${day}</div>`).join('') + hours.map((hour) => '<div class="time-cell">' + hourLabel(hour) + '</div>' + days.map(() => '<div class="schedule-cell"></div>').join('')).join('');
+    return hours;
+  }
+
+  function eventTone(item) {
+    const status = String(item.conflictStatus || item.status || '').toLowerCase();
+    if (status.includes('conflict') || status.includes('override')) return 'orange';
+    if (status.includes('complete')) return 'green';
+    return '';
+  }
+
+  function renderSchedule(data, settings) {
+    const card = document.querySelector('.table-card');
+    const grid = document.querySelector('.schedule-grid');
+    if (!card || !grid) return;
+    const hours = buildScheduleGrid(grid, settings);
+    const cells = Array.from(grid.querySelectorAll('.schedule-cell'));
+    const empty = card.querySelector('.empty-state');
+    if (empty) empty.hidden = data.length > 0;
+    data.forEach((item) => {
+      if (!item.startsAt) return;
+      const row = scheduleRowIndex(item.startsAt, hours);
+      const column = scheduleDayIndex(item.startsAt);
+      const cell = cells[row * 7 + column];
+      if (!cell) return;
+      const title = item.job && item.job.title || 'Scheduled job';
+      const worker = item.worker && item.worker.user && item.worker.user.name || 'Unassigned';
+      const conflict = item.conflictStatus && item.conflictStatus !== 'CLEAR' ? ' - ' + item.conflictStatus.replace(/_/g, ' ') : '';
+      const event = document.createElement('div');
+      event.className = ['event', eventTone(item)].filter(Boolean).join(' ');
+      event.innerHTML = `<strong>${escapeHtml(title)}</strong><small>${escapeHtml(formatDateTime(item.startsAt))} - ${escapeHtml(worker)}${escapeHtml(conflict)}</small>`;
+      cell.appendChild(event);
+    });
+    const footer = card.querySelector('.table-footer');
+    if (footer) footer.remove();
+  }
   function renderTable(resource, data) {
     const config = tableConfigs[resource];
     const card = document.querySelector('.table-card');
@@ -291,8 +378,13 @@
     await Promise.all(requests);
   }
 
+  function optionLabel(item) {
+    if (item && item.user) return [item.user.name || item.user.email || 'Worker', item.role && item.role.name || item.title].filter(Boolean).join(' - ');
+    return item.name || item.title || item.number || 'Record';
+  }
+
   function optionList(items, label) {
-    return `<option value="">${label}</option>${items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.title || item.number || item.user && item.user.name || 'Record')}</option>`).join('')}`;
+    return `<option value="">${label}</option>${items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(optionLabel(item))}</option>`).join('')}`;
   }
 
   function field(name, label, type, attrs) {
@@ -305,11 +397,30 @@
 
   function formFor(resource) {
     if (resource === 'customers') return { title: 'New Customer', action: '/customers', fields: field('name', 'Name', 'text', 'required') + field('email', 'Email', 'email') + field('phone', 'Phone') + field('address', 'Address') };
-    if (resource === 'jobs') return { title: 'New Job', action: '/jobs', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + select('workerId', 'Worker', optionList(state.workers, 'No worker'), false) + field('scheduledStart', 'Scheduled Start', 'datetime-local') + field('total', 'Total', 'number', 'min="0" step="0.01"') };
+    if (resource === 'jobs') return {
+  title: 'New Job',
+  action: '/jobs',
+  fields:
+    field('title', 'Title', 'text', 'required') +
+    select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) +
+    select('serviceId', 'Service', optionList(state.services, 'No service'), false) +
+    select('workerId', 'Worker', optionList(state.workers, 'No worker'), false) +
+    field('scheduledStart', 'Scheduled Start', 'datetime-local') +
+    field('durationMinutes', 'Duration Minutes', 'number', 'min="1" value="60"') +
+    field('travelBufferMinutes', 'Travel Buffer Minutes', 'number', 'min="0" value="0"') +
+    field('total', 'Total', 'number', 'min="0" step="0.01"')
+};
     if (resource === 'quotes') return { title: 'New Quote', action: '/quotes', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('validUntil', 'Valid Until', 'date') };
     if (resource === 'invoices') return { title: 'New Invoice', action: '/invoices', fields: field('number', 'Number') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('jobId', 'Job', optionList(state.jobs, 'No job'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('dueDate', 'Due Date', 'date') };
   }
 
+  function localDateTimeValue(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (number) => String(number).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
   function openModal(config) {
     closeModal();
     const modal = document.createElement('div');
@@ -327,13 +438,44 @@
         delete body.amount;
       }
       try {
-        await api(config.action, { method: 'POST', body: JSON.stringify(body) });
-        closeModal();
-        await load();
-      } catch (err) {
-        error.textContent = err.message;
-        error.hidden = false;
-      }
+            if (config.action === '/jobs' && body.scheduledStart && body.workerId) {
+              const check = await api('/schedule/check-conflicts', {
+                method: 'POST',
+                body: JSON.stringify({
+                  workerId: body.workerId,
+                  startsAt: body.scheduledStart,
+                  durationMinutes: Number(body.durationMinutes || 60),
+                  travelBufferMinutes: Number(body.travelBufferMinutes || 0)
+                })
+              });
+
+              if (check.hasConflict) {
+                const detail = check.conflicts.map((item) => item.message).join('\n');
+                const override = await openConfirmModal({
+                  title: 'Schedule Conflict',
+                  message: 'This schedule has a conflict. You can edit the time, worker, or buffer, or override it if you intentionally want to allow it.',
+                  detail,
+                  cancelLabel: 'Edit Schedule',
+                  okLabel: 'Override Anyway',
+                  closeExisting: false
+                });
+
+                if (!override) return;
+                body.adminOverride = true;
+              }
+            }
+
+            await api(config.action, { method: 'POST', body: JSON.stringify(body) });
+            closeModal();
+            await load();
+          } catch (err) {
+            if (err.status === 409 && err.details && err.details.conflicts) {
+              error.textContent = err.details.conflicts.map((item) => item.message).join('\n');
+            } else {
+              error.textContent = err.message;
+            }
+            error.hidden = false;
+          }
     });
     document.body.appendChild(modal);
   }
@@ -397,6 +539,137 @@
     openReceiptModal(invoice || {}, Array.isArray(receipts) ? receipts : []);
   }
 
+  function openConfirmModal(config) {
+  if (config.closeExisting !== false) closeModal();
+
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal fc-confirm-modal';
+
+    const cancelLabel = config.cancelLabel || 'Cancel';
+    const okLabel = config.okLabel || 'Continue';
+
+    modal.innerHTML = `<div class="fc-dialog fc-confirm-dialog">
+      <div class="panel-head">
+        <h3>${escapeHtml(config.title || 'Confirm')}</h3>
+        <button class="icon-button" type="button" data-result="cancel">&times;</button>
+      </div>
+      <p class="modal-copy">${escapeHtml(config.message || '')}</p>
+      ${config.detail ? `<div class="modal-warning">${escapeHtml(config.detail)}</div>` : ''}
+      <div class="fc-form-actions">
+        <button class="secondary-button" type="button" data-result="cancel">${escapeHtml(cancelLabel)}</button>
+        <button class="primary-button" type="button" data-result="ok">${escapeHtml(okLabel)}</button>
+      </div>
+    </div>`;
+
+    modal.addEventListener('click', (event) => {
+      const result = event.target === modal
+        ? 'cancel'
+        : event.target.closest('[data-result]') && event.target.closest('[data-result]').dataset.result;
+
+      if (!result) return;
+
+      modal.remove();
+      resolve(result === 'ok');
+    });
+
+    document.body.appendChild(modal);
+  });
+}
+
+  function openInputModal(config) {
+    openModal({ title: config.title, fields: field(config.name || 'value', config.label || 'Value', config.type || 'text', config.attrs || '') });
+    const modal = document.querySelector('.fc-modal');
+    const form = modal.querySelector('form');
+    const input = form.querySelector('[name="' + (config.name || 'value') + '"]');
+    if (config.value != null) input.value = config.value;
+    form.querySelector('.fc-form-actions').innerHTML = '<button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Save</button>';
+    return new Promise((resolve) => {
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal || event.target.closest('[data-close]')) resolve(null);
+      }, { once: true });
+      form.onsubmit = (event) => {
+        event.preventDefault();
+        const value = input.value;
+        closeModal();
+        resolve(value);
+      };
+    });
+  }
+  async function openScheduleModal(jobId, mode) {
+    await preloadLookups();
+    const job = state.jobs.find((item) => item.id === jobId) || await api('/jobs/' + jobId);
+    const title = mode === 'reschedule' ? 'Reschedule Job' : 'Schedule Job';
+    openModal({
+      title,
+      fields: `<div class="field span-2"><label>Job</label><input value="${escapeHtml(job.title || 'Job')}" disabled></div>` +
+        select('workerId', 'Worker', optionList(state.workers, 'Select worker'), true) +
+        field('startsAt', 'Start', 'datetime-local', 'required') +
+        field('durationMinutes', 'Duration Minutes', 'number', 'min="1" value="' + escapeHtml(job.durationMinutes || 60) + '"') +
+        field('travelBufferMinutes', 'Travel Buffer Minutes', 'number', 'min="0" value="' + escapeHtml(job.travelBufferMinutes || 0) + '"') +
+        `<div class="field span-2"><label for="fc-notes">Notes</label><textarea id="fc-notes" name="notes"></textarea></div>`
+    });
+    const modal = document.querySelector('.fc-modal');
+    const form = modal.querySelector('form');
+    form.workerId.value = job.workerId || '';
+    form.startsAt.value = localDateTimeValue(job.scheduledStart);
+    form.querySelector('.fc-form-actions').innerHTML = '<button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Save</button>';
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const error = modal.querySelector('.fc-form-error');
+      error.hidden = true;
+      const body = Object.fromEntries(new FormData(form).entries());
+      Object.keys(body).forEach((key) => { if (body[key] === '') delete body[key]; });
+      body.durationMinutes = Number(body.durationMinutes || 60);
+      body.travelBufferMinutes = Number(body.travelBufferMinutes || 0);
+      try {
+        const check = await api('/schedule/check-conflicts', { method: 'POST', body: JSON.stringify({ ...body, jobId }) });
+        if (check.hasConflict) {
+          const message = check.conflicts.map((item) => item.message).join('\n');
+          const override = await openConfirmModal({
+            title: 'Schedule Conflict',
+            message: 'This schedule has a conflict. You can edit the time, worker, or buffer, or override it if you intentionally want to allow it.',
+            detail: message,
+            cancelLabel: 'Edit Schedule',
+            okLabel: 'Override Anyway',
+            closeExisting: false
+          });
+          if (!override) return;
+          body.adminOverride = true;
+        }
+        await api('/jobs/' + jobId + '/' + (mode === 'reschedule' ? 'reschedule' : 'schedule'), { method: 'POST', body: JSON.stringify(body) });
+        closeModal();
+        await load();
+      } catch (err) {
+        if (err.status === 409 && err.details && err.details.conflicts) {
+          const detail = err.details.conflicts.map((item) => item.message).join('\n');
+          const override = await openConfirmModal({
+            title: 'Schedule Conflict',
+            message: 'This schedule has a conflict. You can edit the time, worker, or buffer, or override it if you intentionally want to allow it.',
+            detail,
+            cancelLabel: 'Edit Schedule',
+            okLabel: 'Override Anyway',
+            closeExisting: false
+          });
+          if (override) {
+            body.adminOverride = true;
+            try {
+              await api('/jobs/' + jobId + '/' + (mode === 'reschedule' ? 'reschedule' : 'schedule'), { method: 'POST', body: JSON.stringify(body) });
+              closeModal();
+              await load();
+              return;
+            } catch (retryError) {
+              error.textContent = retryError.message;
+              error.hidden = false;
+              return;
+            }
+          }
+        }
+        error.textContent = err.message;
+        error.hidden = false;
+      }
+    };
+  }
   function closeModal() {
     const modal = document.querySelector('.fc-modal');
     if (modal) modal.remove();
@@ -426,6 +699,15 @@
       if (action === 'quote-accept') await api('/quotes/' + id + '/accept', { method: 'POST', body: '{}' });
       if (action === 'quote-reject') await api('/quotes/' + id + '/reject', { method: 'POST', body: '{}' });
       if (action === 'job-complete') await api('/jobs/' + id + '/complete', { method: 'POST', body: JSON.stringify({ completionNotes: 'Completed from FieldCore web app', adminOverride: true }) });
+      if (action === 'job-schedule') {
+        await openScheduleModal(id, 'schedule');
+        return;
+      }
+      if (action === 'job-reschedule') {
+        await openScheduleModal(id, 'reschedule');
+        return;
+      }
+      if (action === 'job-unschedule') await api('/jobs/' + id + '/unschedule', { method: 'POST', body: '{}' });
       if (action === 'job-invoice') await api('/jobs/' + id + '/create-invoice', { method: 'POST', body: '{}' });
       if (action === 'invoice-send') await api('/invoices/' + id + '/send', { method: 'POST', body: '{}' });
       if (action === 'invoice-void') await api('/invoices/' + id + '/void', { method: 'POST', body: '{}' });
@@ -434,7 +716,7 @@
         return;
       }
       if (action === 'invoice-pay') {
-        const amount = window.prompt('Payment amount');
+        const amount = await openInputModal({ title: 'Record Payment', label: 'Payment Amount', name: 'amount', type: 'number', attrs: 'min="0.01" step="0.01" required' });
         if (!amount) return;
         await api('/invoices/' + id + '/payments', { method: 'POST', body: JSON.stringify({ amount: Number(amount), method: 'CASH', status: 'CONFIRMED' }) });
       }
@@ -444,6 +726,77 @@
     }
   }
 
+  function settingsPayload(form) {
+    const body = Object.fromEntries(new FormData(form).entries());
+    form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => { body[field.name] = field.checked; });
+    ['defaultJobDurationMinutes', 'defaultTravelBufferMinutes'].forEach((key) => { if (body[key] !== '' && body[key] != null) body[key] = Number(body[key]); });
+    Object.keys(body).forEach((key) => { if (body[key] === '') delete body[key]; });
+    return body;
+  }
+
+  async function saveSettingsForm(form, messageSelector, successText) {
+    const message = document.querySelector(messageSelector);
+    if (message) { message.hidden = true; message.classList.remove('green'); }
+    try {
+      await api('/company/scheduling-settings', { method: 'PATCH', body: JSON.stringify(settingsPayload(form)) });
+      await loadSchedulingSettings();
+      if (message) { message.textContent = successText; message.classList.add('green'); message.hidden = false; }
+    } catch (error) {
+      if (message) { message.textContent = error.message; message.hidden = false; }
+    }
+  }
+  function availabilityCacheKey(roleId) {
+    return roleId || '';
+  }
+
+  function selectedAvailabilitySlot(slots, dayOfWeek) {
+    return (slots || []).find((slot) => Number(slot.dayOfWeek) === Number(dayOfWeek) && slot.active !== false);
+  }
+
+  function setAvailabilityFields(slot) {
+    const start = document.querySelector('[name="startTime"]');
+    const end = document.querySelector('[name="endTime"]');
+    if (start) start.value = slot && slot.startTime || '08:00';
+    if (end) end.value = slot && slot.endTime || '17:00';
+  }
+
+  async function loadSelectedAvailability() {
+    const form = document.querySelector('[data-availability-form]');
+    if (!form || !form.roleId.value) return;
+    const message = document.querySelector('[data-availability-message]');
+    if (message) { message.hidden = true; message.classList.remove('green'); }
+    try {
+      const key = availabilityCacheKey(form.roleId.value);
+      state.availability[key] = await api('/worker-roles/' + form.roleId.value + '/availability');
+      setAvailabilityFields(selectedAvailabilitySlot(state.availability[key], form.dayOfWeek.value));
+    } catch (error) {
+      if (message) { message.textContent = error.message; message.hidden = false; }
+    }
+  }
+
+  async function loadSchedulingSettings() {
+    if (!document.querySelector('[data-scheduling-form]')) return;
+    try {
+      const [settings, workers, roles] = await Promise.all([api('/company/scheduling-settings'), api('/workers').catch(() => []), api('/worker-roles').catch(() => [])]);
+      state.workers = workers;
+      state.roles = roles;
+      document.querySelectorAll('[data-scheduling-field]').forEach((field) => {
+        if (field.type === 'checkbox') field.checked = Boolean(settings[field.dataset.schedulingField]);
+        else field.value = settings[field.dataset.schedulingField] == null ? '' : settings[field.dataset.schedulingField];
+      });
+      const roleSelect = document.querySelector('[data-availability-role]');
+      if (roleSelect) {
+        const previous = roleSelect.value;
+        roleSelect.innerHTML = optionList(state.roles, 'Select role');
+        const firstRole = roleSelect.querySelector('option[value]:not([value=""])');
+        roleSelect.value = previous || firstRole && firstRole.value || '';
+        await loadSelectedAvailability();
+      }
+    } catch (error) {
+      const message = document.querySelector('[data-scheduling-message]');
+      if (message) { message.textContent = error.message; message.hidden = false; }
+    }
+  }
   function setupSettings() {
     const tabs = Array.from(document.querySelectorAll('[data-settings-target]'));
     const panels = Array.from(document.querySelectorAll('[data-settings-panel]'));
@@ -485,6 +838,48 @@
           preview.innerHTML = `<img src="${reader.result}" alt="Company logo preview">`;
         });
         reader.readAsDataURL(file);
+      });
+    }
+
+    const jobDefaultsForm = document.querySelector('[data-job-defaults-form]');
+    if (jobDefaultsForm) {
+      jobDefaultsForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await saveSettingsForm(jobDefaultsForm, '[data-job-defaults-message]', 'Job defaults saved.');
+      });
+    }
+
+    const schedulingForm = document.querySelector('[data-scheduling-form]');
+    if (schedulingForm) {
+      schedulingForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await saveSettingsForm(schedulingForm, '[data-scheduling-message]', 'Scheduling saved.');
+      });
+    }
+
+    const availabilityForm = document.querySelector('[data-availability-form]');
+    if (availabilityForm) {
+      availabilityForm.roleId.addEventListener('change', loadSelectedAvailability);
+      availabilityForm.dayOfWeek.addEventListener('change', () => {
+        const slots = state.availability[availabilityCacheKey(availabilityForm.roleId.value)] || [];
+        setAvailabilityFields(selectedAvailabilitySlot(slots, availabilityForm.dayOfWeek.value));
+      });
+      availabilityForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const message = document.querySelector('[data-availability-message]');
+        if (message) { message.hidden = true; message.classList.remove('green'); }
+        const body = Object.fromEntries(new FormData(availabilityForm).entries());
+        try {
+          const key = availabilityCacheKey(body.roleId);
+          const existing = state.availability[key] || await api('/worker-roles/' + body.roleId + '/availability');
+          const next = existing.filter((slot) => Number(slot.dayOfWeek) !== Number(body.dayOfWeek)).map((slot) => ({ dayOfWeek: Number(slot.dayOfWeek), startTime: slot.startTime, endTime: slot.endTime, active: slot.active !== false }));
+          next.push({ dayOfWeek: Number(body.dayOfWeek), startTime: body.startTime, endTime: body.endTime, active: true });
+          state.availability[key] = await api('/worker-roles/' + body.roleId + '/availability', { method: 'PUT', body: JSON.stringify(next) });
+          setAvailabilityFields(selectedAvailabilitySlot(state.availability[key], body.dayOfWeek));
+          if (message) { message.textContent = 'Role availability saved.'; message.classList.add('green'); message.hidden = false; }
+        } catch (error) {
+          if (message) { message.textContent = error.message; message.hidden = false; }
+        }
       });
     }
 
@@ -566,7 +961,10 @@
     try {
       state.user = await api('/auth/session');
       if (!state.user) throw new Error('Authentication required');
+      document.querySelectorAll('[data-current-user-name]').forEach((node) => { node.textContent = state.user.name || state.user.email || 'Signed in'; });
+      document.querySelectorAll('[data-current-user-role]').forEach((node) => { node.textContent = state.user.role || 'Account'; });
       await loadCompanyBranding();
+      if (page === 'settings') await loadSchedulingSettings();
     } catch (error) {
       setStatus('Log in to load company data.', false);
       showLogin();
@@ -576,7 +974,12 @@
     try {
       await preloadLookups();
       if (page === 'dashboard') renderDashboard(await api('/dashboard'));
-      if (tableConfigs[page]) {
+      if (page === 'schedule') {
+        const [data, settings] = await Promise.all([api('/schedule'), api('/company/scheduling-settings').catch(() => ({ workingDayStart: '08:00', workingDayEnd: '17:00' }))]);
+        state.schedule = data;
+        renderSchedule(data, settings);
+      }
+      if (tableConfigs[page] && page !== 'schedule') {
         const data = await api(`/${page}`);
         state[page] = data;
         renderTable(page, data);
@@ -589,7 +992,15 @@
     }
   }
 
-  document.addEventListener('click', handleRowAction);
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-logout]');
+    if (!button) return;
+    const ok = await openConfirmModal({ title: 'Log Out', message: 'Log out of FieldCore and return to the login screen?', okLabel: 'Log Out' });
+    if (!ok) return;
+    await api('/auth/logout', { method: 'POST', body: '{}' });
+    state.user = null;
+    showLogin();
+  });  document.addEventListener('click', handleRowAction);
   setupCreateButtons();
   setupSettings();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', load);
