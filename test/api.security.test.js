@@ -119,6 +119,15 @@ function createMockPrisma(seed) {
     return result;
   }
 
+  function enrichBookingRequest(request, include) {
+    if (!request) return null;
+    const result = { ...request };
+    if (include && include.customer) result.customer = clone(customerById(request.customerId)) || null;
+    if (include && include.service) result.service = clone(serviceById(request.serviceId)) || null;
+    if (include && include.convertedJob) result.convertedJob = clone(jobById(request.convertedJobId)) || null;
+    return result;
+  }
+
   function enrichPayment(payment, include) {
     if (!payment) return null;
     const result = { ...payment };
@@ -244,6 +253,7 @@ function createMockPrisma(seed) {
     workerLocation: makeModel('workerLocations'),
     jobProofPhoto: makeModel('jobProofPhotos'),
     jobSignature: makeModel('jobSignatures'),
+    bookingRequest: makeModel('bookingRequests', enrichBookingRequest),
     jobActivity: makeModel('jobActivities', (activity, include) => {
       const result = { ...activity };
       if (include && include.worker) result.worker = enrichWorker(workerById(activity.workerId), include.worker.include);
@@ -325,6 +335,7 @@ async function buildApp() {
     workerLocations: [],
     jobProofPhotos: [],
     jobSignatures: [],
+    bookingRequests: [],
     jobActivities: [],
     auditLogs: []
   };
@@ -914,3 +925,67 @@ test('company A cannot access company B job activity', async () => {
   assertNoPasswordHash(note.body);
 });
 
+
+test('public user can submit valid booking request', async () => {
+  const app = await buildApp();
+  const response = await request(app).post('/api/public/booking-requests').send({ customerName: 'Public Customer', email: 'ignored@test.local', customerEmail: 'public@test.local', customerPhone: '0770000000', address: '123 Test Street', serviceId: 'service-a', preferredDate: '2026-07-02', preferredTimeWindow: 'MORNING', notes: 'Please help', status: 'CONVERTED', companyId: 'company-b' });
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.companyId, 'company-a');
+  assert.equal(response.body.data.status, 'NEW');
+  assert.equal(response.body.data.customerName, 'Public Customer');
+  assert.equal(response.body.data.serviceId, 'service-a');
+  assertNoPasswordHash(response.body);
+});
+
+test('public booking request validation and public services are safe', async () => {
+  const app = await buildApp();
+  const missingName = await request(app).post('/api/public/booking-requests').send({ customerEmail: 'public@test.local' });
+  assert.equal(missingName.status, 400);
+  const missingContact = await request(app).post('/api/public/booking-requests').send({ customerName: 'Public Customer' });
+  assert.equal(missingContact.status, 400);
+  const services = await request(app).get('/api/public/services');
+  assert.equal(services.status, 200);
+  assert.deepEqual(Object.keys(services.body.data[0]).sort(), ['basePrice', 'description', 'id', 'name']);
+  assertNoPasswordHash(services.body);
+});
+
+test('admin can list review decline and convert booking requests', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const created = await request(app).post('/api/public/booking-requests').send({ customerName: 'Convert Me', customerEmail: 'convert@test.local', customerPhone: '0771111111', address: 'Convert Address', serviceId: 'service-a', preferredTimeWindow: 'AFTERNOON', notes: 'Needs a job' });
+  assert.equal(created.status, 201);
+  const workerList = await worker.get('/api/booking-requests');
+  assert.equal(workerList.status, 403);
+  const list = await admin.get('/api/booking-requests');
+  assert.equal(list.status, 200);
+  assert.equal(list.body.data.some((item) => item.id === created.body.data.id), true);
+  const reviewed = await admin.post('/api/booking-requests/' + created.body.data.id + '/review').send({});
+  assert.equal(reviewed.status, 200);
+  assert.equal(reviewed.body.data.status, 'REVIEWED');
+  const converted = await admin.post('/api/booking-requests/' + created.body.data.id + '/convert').send({});
+  assert.equal(converted.status, 201);
+  assert.equal(converted.body.data.status, 'CONVERTED');
+  assert.ok(converted.body.data.convertedJobId);
+  assert.equal(app.locals.testDb.jobs.some((job) => job.id === converted.body.data.convertedJobId && job.customerId === converted.body.data.customerId), true);
+  const convertedAgain = await admin.post('/api/booking-requests/' + created.body.data.id + '/convert').send({});
+  assert.equal(convertedAgain.status, 200);
+  assert.equal(convertedAgain.body.data.convertedJobId, converted.body.data.convertedJobId);
+  const declineSource = await request(app).post('/api/public/booking-requests').send({ customerName: 'Decline Me', customerPhone: '0772222222' });
+  const declined = await admin.post('/api/booking-requests/' + declineSource.body.data.id + '/decline').send({});
+  assert.equal(declined.status, 200);
+  assert.equal(declined.body.data.status, 'DECLINED');
+  assertNoPasswordHash(converted.body);
+});
+
+test('company A cannot see company B booking requests', async () => {
+  const app = await buildApp();
+  app.locals.testDb.bookingRequests.push({ id: 'booking-b', companyId: 'company-b', customerName: 'Company B Request', customerPhone: '555', status: 'NEW', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+  const admin = await login(app, 'admin-a@test.local');
+  const list = await admin.get('/api/booking-requests');
+  assert.equal(list.status, 200);
+  assert.equal(list.body.data.some((item) => item.id === 'booking-b'), false);
+  const detail = await admin.get('/api/booking-requests/booking-b');
+  assert.equal(detail.status, 404);
+  assertNoPasswordHash(list.body);
+});

@@ -30,6 +30,12 @@
       emptyText: 'Create your first invoice to start billing.',
       row: (item) => [item.number, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.total || item.amount || 0)), money.format(Number(item.balanceDue || 0)), formatDate(item.dueDate), rowActions('invoices', item)]
     },
+    'booking-requests': {
+      columns: ['Customer', 'Contact', 'Service', 'Preferred', 'Status', 'Created', 'Actions'],
+      emptyTitle: 'No booking requests yet',
+      emptyText: 'Public service requests will appear here.',
+      row: (item) => [item.customerName, [item.customerEmail, item.customerPhone].filter(Boolean).join(' / ') || '-', item.service && item.service.name || item.serviceName || '-', [formatDate(item.preferredDate), item.preferredTimeWindow && String(item.preferredTimeWindow).replace(/_/g, ' ')].filter(Boolean).join(' / ') || '-', badge(item.status), formatDate(item.createdAt), rowActions('booking-requests', item)]
+    },
     schedule: {
       columns: ['Job', 'Customer', 'Worker', 'Status', 'Start', 'End', 'Conflict'],
       emptyTitle: 'No scheduled work',
@@ -259,6 +265,12 @@
     if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add(item.scheduledStart ? 'Reschedule' : 'Schedule', item.scheduledStart ? 'job-reschedule' : 'job-schedule');
     if (resource === 'jobs' && item.scheduledStart && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Unschedule', 'job-unschedule');
     if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice');
+    if (resource === 'booking-requests') {
+      add('View', 'booking-view', true);
+      if (item.status === 'NEW') add('Mark Reviewed', 'booking-review');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Decline', 'booking-decline');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Convert to Job', 'booking-convert');
+    }
     if (resource === 'invoices') {
       const status = String(item.status || '').toUpperCase();
       const hasReceipts = Array.isArray(item.receipts) && item.receipts.length > 0;
@@ -492,6 +504,7 @@
     if (resource === 'jobs') setStats(countStatuses(data, ['NEW', 'IN_PROGRESS', 'COMPLETED', 'PAUSED'], ['Open jobs', 'Active work', 'Finished', 'Paused']));
     if (resource === 'quotes') setStats(countStatuses(data, ['SENT', 'ACCEPTED', 'SENT', 'DRAFT'], ['Open quotes', 'Accepted', 'Sent', 'Drafts']));
     if (resource === 'invoices') setStats(countStatuses(data, ['ALL', 'PAID', 'SENT', 'OVERDUE', 'DRAFT'], ['Total invoices', 'Paid', 'Unpaid', 'Overdue', 'Drafts']));
+    if (resource === 'booking-requests') setStats(countStatuses(data, ['NEW', 'REVIEWED', 'CONVERTED', 'DECLINED'], ['Awaiting review', 'Ready to convert', 'Jobs created', 'Not proceeding']));
   }
 
   function average(values) {
@@ -1196,12 +1209,41 @@
     }
   }
 
+
+  function bookingDetail(label, value) {
+    const q = String.fromCharCode(34);
+    return '<div class=' + q + 'job-detail-item' + q + '><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || '-') + '</strong></div>';
+  }
+
+  function openBookingRequestModal(item) {
+    const q = String.fromCharCode(34);
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal';
+    const service = item.service && item.service.name || item.serviceName || '-';
+    const contact = [item.customerEmail, item.customerPhone].filter(Boolean).join(' / ') || '-';
+    const preferred = [formatDate(item.preferredDate), item.preferredTimeWindow && String(item.preferredTimeWindow).replace(/_/g, ' ')].filter(Boolean).join(' / ') || '-';
+    modal.innerHTML = '<div class=' + q + 'fc-dialog job-detail-dialog' + q + '><div class=' + q + 'panel-head' + q + '><div><h3>Booking Request</h3><p class=' + q + 'modal-copy' + q + '>' + escapeHtml(item.customerName || 'Customer') + '</p></div><button class=' + q + 'icon-button' + q + ' type=' + q + 'button' + q + ' data-close>&times;</button></div><div class=' + q + 'job-detail-grid' + q + '>' + bookingDetail('Customer', item.customerName) + bookingDetail('Contact', contact) + bookingDetail('Service', service) + bookingDetail('Preferred', preferred) + bookingDetail('Address', item.address) + bookingDetail('Status', String(item.status || '-').replace(/_/g, ' ')) + bookingDetail('Created', formatDateTime(item.createdAt)) + bookingDetail('Converted Job', item.convertedJob && item.convertedJob.title) + '</div>' + (item.notes ? '<div class=' + q + 'job-notes' + q + '><span>Notes</span><p>' + escapeHtml(item.notes) + '</p></div>' : '') + '<div class=' + q + 'fc-form-actions' + q + '><button class=' + q + 'secondary-button' + q + ' type=' + q + 'button' + q + ' data-close>Close</button></div></div>';
+    modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('[data-close]')) modal.remove(); });
+    document.body.appendChild(modal);
+  }
   async function handleRowAction(event) {
     const button = event.target.closest('[data-row-action]');
     if (!button) return;
     const id = button.dataset.id;
     const action = button.dataset.rowAction;
     try {
+      if (action === 'booking-view') {
+        const item = state['booking-requests'].find((record) => record.id === id) || await api('/booking-requests/' + id);
+        openBookingRequestModal(item);
+        return;
+      }
+      if (action === 'booking-review') await api('/booking-requests/' + id + '/review', { method: 'POST', body: '{}' });
+      if (action === 'booking-decline') {
+        const ok = await openConfirmModal({ title: 'Decline Booking Request', message: 'Decline this customer booking request?', okLabel: 'Decline' });
+        if (!ok) return;
+        await api('/booking-requests/' + id + '/decline', { method: 'POST', body: '{}' });
+      }
+      if (action === 'booking-convert') await api('/booking-requests/' + id + '/convert', { method: 'POST', body: '{}' });
       if (action === 'quote-send') await api('/quotes/' + id + '/send', { method: 'POST', body: '{}' });
       if (action === 'quote-accept') await api('/quotes/' + id + '/accept', { method: 'POST', body: '{}' });
       if (action === 'quote-reject') await api('/quotes/' + id + '/reject', { method: 'POST', body: '{}' });

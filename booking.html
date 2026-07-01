@@ -1,0 +1,30 @@
+<html lang=en>
+  <head>
+    <meta charset=UTF-8>
+    <meta name=viewport content=width=device-width,initial-scale=1.0>
+    <title>Book Service</title>
+    <link rel=stylesheet href=assets/app.css>
+    <script defer src=assets/booking.js></script>
+  </head>
+  <body class=public-booking-page>
+    <main class=public-booking>
+      <section class=public-booking-card>
+        <div class=brand public-booking-brand><span class=brand-mark data-public-logo>FC</span><span class=brand-name data-public-brand>FieldCore</span></div>
+        <div class=hero-copy><h2>Book a Service</h2><p>Tell us what you need and the team will contact you shortly.</p></div>
+        <form class=form-grid data-booking-form>
+          <div class=field><label for=customerName>Name</label><input id=customerName name=customerName required maxlength=160></div>
+          <div class=field><label for=customerEmail>Email</label><input id=customerEmail name=customerEmail type=email></div>
+          <div class=field><label for=customerPhone>Phone</label><input id=customerPhone name=customerPhone maxlength=60></div>
+          <div class=field><label for=address>Address</label><input id=address name=address maxlength=300></div>
+          <div class=field><label for=serviceId>Service</label><select id=serviceId name=serviceId data-service-select><option value=>Loading services...</option></select></div>
+          <div class=field><label for=serviceName>Other Service</label><input id=serviceName name=serviceName maxlength=160></div>
+          <div class=field><label for=preferredDate>Preferred Date</label><input id=preferredDate name=preferredDate type=date></div>
+          <div class=field><label for=preferredTimeWindow>Preferred Time</label><select id=preferredTimeWindow name=preferredTimeWindow><option value=ANY_TIME>Any time</option><option value=MORNING>Morning</option><option value=AFTERNOON>Afternoon</option><option value=EVENING>Evening</option></select></div>
+          <div class=field span-2><label for=notes>Job Details</label><textarea id=notes name=notes maxlength=2000></textarea></div>
+          <div class=fc-form-actions span-2><button class=primary-button type=submit>Submit Request</button></div>
+          <p class=fc-form-error span-2 data-booking-message hidden></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

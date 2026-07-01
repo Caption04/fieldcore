@@ -54,6 +54,7 @@ const optionalColor = hexColor.optional().or(z.literal('')).transform((value) =>
 const adminRoles = ['OWNER', 'ADMIN'];
 const jobStatusValues = ['NEW', 'SCHEDULED', 'DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
 const activityTypeValues = ['ASSIGNED','ARRIVED','STARTED','PAUSED','RESUMED','COMPLETED','ADMIN_NOTE','STATUS_CHANGED','PROOF_PHOTO_ADDED','PROOF_PHOTO_REMOVED','SIGNATURE_ADDED','SIGNATURE_REMOVED'];
+const bookingRequestStatusValues = ['NEW', 'REVIEWED', 'CONVERTED', 'DECLINED', 'CANCELLED'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -715,6 +716,53 @@ router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), as
   sendData(res, { updated: true });
 }));
 
+
+const bookingRequestInclude = { customer: true, service: true, convertedJob: true };
+const publicTimeWindow = z.enum(['MORNING', 'AFTERNOON', 'EVENING', 'ANY_TIME']).optional().or(z.literal('')).transform((value) => value || undefined);
+const publicBookingRequestSchema = z.object({
+  customerName: z.string().trim().min(2).max(160),
+  customerEmail: optionalEmail,
+  customerPhone: optionalText(60),
+  address: optionalText(300),
+  serviceId: optionalText(120),
+  serviceName: optionalText(160),
+  preferredDate: optionalDate,
+  preferredTimeWindow: publicTimeWindow,
+  notes: optionalText(2000),
+  source: optionalText(80)
+}).refine((data) => data.customerEmail || data.customerPhone, { message: 'Email or phone is required', path: ['customerEmail'] });
+
+async function publicBookingCompany() {
+  const company = await prisma.company.findFirst({ orderBy: { createdAt: 'asc' }, include: { branding: true } });
+  if (!company) throw notFound('Company not found');
+  return company;
+}
+
+function publicCompanySummary(company) {
+  const branding = publicBranding(company);
+  return { brandName: branding.brandName, logoUrl: branding.logoUrl, primaryColor: branding.primaryColor, secondaryColor: branding.secondaryColor, accentColor: branding.accentColor, supportEmail: branding.supportEmail, supportPhone: branding.supportPhone };
+}
+
+router.get('/public/company', asyncHandler(async (req, res) => {
+  sendData(res, normalize(publicCompanySummary(await publicBookingCompany())));
+}));
+
+router.get('/public/services', asyncHandler(async (req, res) => {
+  const company = await publicBookingCompany();
+  const services = await prisma.service.findMany({ where: { companyId: company.id, active: true }, orderBy: { name: 'asc' }, select: { id: true, name: true, description: true, price: true } });
+  sendData(res, normalize(services.map((service) => ({ id: service.id, name: service.name, description: service.description || null, basePrice: service.price }))));
+}));
+
+router.post('/public/booking-requests', validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
+  const company = await publicBookingCompany();
+  let service = null;
+  if (req.body.serviceId) {
+    service = await prisma.service.findFirst({ where: { id: req.body.serviceId, companyId: company.id, active: true } });
+    if (!service) throw notFound('Service not found');
+  }
+  const data = await prisma.bookingRequest.create({ data: { companyId: company.id, status: 'NEW', customerName: req.body.customerName, customerEmail: req.body.customerEmail, customerPhone: req.body.customerPhone, address: req.body.address, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: req.body.source || 'public_booking' } });
+  sendData(res, normalize(data), 201);
+}));
 router.use(requireAuth);
 
 router.get('/company/profile', asyncHandler(async (req, res) => {
@@ -892,6 +940,72 @@ router.delete('/customers/:id', requireRole(...adminRoles), validate(idParam, 'p
   sendData(res, { deleted: true });
 }));
 
+
+async function requireBookingRequest(req, id, db = prisma) {
+  const record = await db.bookingRequest.findFirst({ where: { id, companyId: req.companyId }, include: bookingRequestInclude });
+  if (!record) throw notFound('Booking request not found');
+  return record;
+}
+
+async function findOrCreateBookingCustomer(db, req, request) {
+  if (request.customerId) {
+    const linked = await db.customer.findFirst({ where: { id: request.customerId, companyId: req.companyId } });
+    if (linked) return linked;
+  }
+  let existing = null;
+  if (request.customerEmail) existing = await db.customer.findFirst({ where: { companyId: req.companyId, email: request.customerEmail } });
+  if (!existing && request.customerPhone) existing = await db.customer.findFirst({ where: { companyId: req.companyId, phone: request.customerPhone } });
+  if (existing) return existing;
+  return db.customer.create({ data: { companyId: req.companyId, name: request.customerName, email: request.customerEmail, phone: request.customerPhone, address: request.address, notes: request.notes } });
+}
+
+function bookingJobTitle(request) {
+  const serviceName = request.service && request.service.name || request.serviceName || 'Service Request';
+  return serviceName + ' - ' + request.customerName;
+}
+
+function bookingJobDescription(request) {
+  return [request.notes, request.address ? 'Address: ' + request.address : null, request.preferredDate ? 'Preferred date: ' + new Date(request.preferredDate).toISOString().slice(0, 10) : null, request.preferredTimeWindow ? 'Preferred time: ' + String(request.preferredTimeWindow).replace(/_/g, ' ') : null].filter(Boolean).join('\n');
+}
+
+async function setBookingRequestStatus(req, id, status, action) {
+  const existing = await requireBookingRequest(req, id);
+  if (existing.status === 'CONVERTED') throw new AppError(409, 'Converted booking requests cannot be changed');
+  const data = await prisma.bookingRequest.update({ where: { id: existing.id }, data: { status }, include: bookingRequestInclude });
+  await audit(req, action, 'BookingRequest', existing.id, { fromStatus: existing.status, toStatus: status });
+  return data;
+}
+
+router.get('/booking-requests', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.bookingRequest, req, { where: { companyId: req.companyId }, include: bookingRequestInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/booking-requests/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await requireBookingRequest(req, req.params.id)));
+}));
+
+router.post('/booking-requests/:id/review', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await setBookingRequestStatus(req, req.params.id, 'REVIEWED', 'REVIEW')));
+}));
+
+router.post('/booking-requests/:id/decline', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await setBookingRequestStatus(req, req.params.id, 'DECLINED', 'DECLINE')));
+}));
+
+router.post('/booking-requests/:id/convert', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireBookingRequest(req, req.params.id);
+  if (existing.convertedJobId) {
+    const job = await prisma.job.findFirst({ where: { id: existing.convertedJobId, companyId: req.companyId }, include: jobInclude });
+    return sendData(res, normalize({ ...existing, convertedJob: job || existing.convertedJob }));
+  }
+  if (['DECLINED', 'CANCELLED'].includes(existing.status)) throw new AppError(409, 'Declined or cancelled booking requests cannot be converted');
+  const customer = await findOrCreateBookingCustomer(prisma, req, existing);
+  const job = await prisma.job.create({ data: { companyId: req.companyId, customerId: customer.id, serviceId: existing.serviceId, title: bookingJobTitle(existing), description: bookingJobDescription(existing), status: 'NEW', total: existing.service && existing.service.price || 0 }, include: jobInclude });
+  const updated = await prisma.bookingRequest.update({ where: { id: existing.id }, data: { status: 'CONVERTED', customerId: customer.id, convertedJobId: job.id }, include: bookingRequestInclude });
+  await audit(req, 'CONVERT', 'BookingRequest', existing.id, { customerId: customer.id, jobId: job.id });
+  sendData(res, normalize({ ...updated, convertedJob: job }), 201);
+}));
 const workerCreateSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().transform((v) => v.toLowerCase()),

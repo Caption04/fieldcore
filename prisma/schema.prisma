@@ -112,6 +112,14 @@ enum RecurringFrequency {
   YEARLY
 }
 
+enum BookingRequestStatus {
+  NEW
+  REVIEWED
+  CONVERTED
+  DECLINED
+  CANCELLED
+}
+
 model Company {
   id                   String                 @id @default(cuid())
   name                 String
@@ -152,6 +160,7 @@ model Company {
   workerTimeOff        WorkerTimeOff[]
   scheduleConflicts    ScheduleConflict[]
   recurringJobRules    RecurringJobRule[]
+  bookingRequests      BookingRequest[]
 }
 
 model CompanyBranding {
@@ -211,6 +220,7 @@ model Customer {
   quotes    Quote[]
   invoices  Invoice[]
   recurringJobRules RecurringJobRule[]
+  bookingRequests BookingRequest[]
 
   @@index([companyId])
 }
@@ -274,6 +284,7 @@ model Service {
   quoteLineItems   QuoteLineItem[]
   invoiceLineItems InvoiceLineItem[]
   recurringJobRules RecurringJobRule[]
+  bookingRequests BookingRequest[]
 
   @@index([companyId])
 }
@@ -319,6 +330,7 @@ model Job {
   signature            JobSignature?
   scheduleConflicts    ScheduleConflict[]
   activities           JobActivity[]
+  bookingRequest       BookingRequest?
 
   @@index([companyId])
   @@index([companyId, customerId])
@@ -686,6 +698,34 @@ model RecurringJobRule {
   worker          WorkerProfile?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
 
   @@index([companyId, nextRunAt])
+}
+
+model BookingRequest {
+  id                  String               @id @default(cuid())
+  companyId           String
+  customerId          String?
+  serviceId           String?
+  status              BookingRequestStatus @default(NEW)
+  customerName        String
+  customerEmail       String?
+  customerPhone       String?
+  address             String?
+  serviceName         String?
+  preferredDate       DateTime?
+  preferredTimeWindow String?
+  notes               String?
+  source              String?
+  convertedJobId      String?              @unique
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  company             Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer            Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  service             Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  convertedJob        Job?                 @relation(fields: [convertedJobId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, customerId])
+  @@index([companyId, serviceId])
 }
 model JobProofPhoto {
   id           String         @id @default(cuid())
