@@ -92,7 +92,8 @@ function createMockPrisma(seed) {
     if (include && include.customer) result.customer = clone(customerById(job.customerId));
     if (include && include.service) result.service = clone(serviceById(job.serviceId));
     if (include && include.worker) result.worker = enrichWorker(workerById(job.workerId), include.worker.include);
-    if (include && include.photos) result.photos = db.jobPhotos.filter((photo) => photo.jobId === job.id);
+    if (include && include.proofPhotos) result.proofPhotos = db.jobProofPhotos.filter((photo) => photo.jobId === job.id);
+    if (include && include.signature) result.signature = db.jobSignatures.find((signature) => signature.jobId === job.id) || null;
     return result;
   }
 
@@ -241,7 +242,15 @@ function createMockPrisma(seed) {
     scheduleItem: makeModel('scheduleItems'),
     payment: makeModel('payments', enrichPayment),
     workerLocation: makeModel('workerLocations'),
-    jobPhoto: makeModel('jobPhotos'),
+    jobProofPhoto: makeModel('jobProofPhotos'),
+    jobSignature: makeModel('jobSignatures'),
+    jobActivity: makeModel('jobActivities', (activity, include) => {
+      const result = { ...activity };
+      if (include && include.worker) result.worker = enrichWorker(workerById(activity.workerId), include.worker.include);
+      if (include && include.user) result.user = include.user.select ? applySelect(userById(activity.userId), include.user.select) : clone(userById(activity.userId));
+      if (include && include.job) result.job = enrichJob(jobById(activity.jobId), include.job.include);
+      return result;
+    }),
     auditLog: makeModel('auditLogs'),
     $transaction: (fn) => fn(createMockPrisma(db)),
     $disconnect: () => Promise.resolve()
@@ -250,6 +259,14 @@ function createMockPrisma(seed) {
 
 async function buildApp() {
   const hash = await bcrypt.hash('Password123!', 4);
+  const todayStart = new Date();
+  todayStart.setHours(9, 0, 0, 0);
+  const todayEnd = new Date(todayStart);
+  todayEnd.setHours(10, 0, 0, 0);
+  const otherWorkerStart = new Date(todayStart);
+  otherWorkerStart.setHours(11, 0, 0, 0);
+  const upcomingStart = new Date(todayStart);
+  upcomingStart.setDate(upcomingStart.getDate() + 1);
   const seed = {
     companies: [{ id: 'company-a', name: 'Company A', email: 'hello@a.test', phone: '+1 A' }, { id: 'company-b', name: 'Company B', email: 'hello@b.test', phone: '+1 B' }],
     companyBrandings: [
@@ -278,9 +295,9 @@ async function buildApp() {
       { id: 'service-b', companyId: 'company-b', name: 'Service B', active: true, price: 200, createdAt: '2026-01-01T00:00:00.000Z' }
     ],
     jobs: [
-      { id: 'job-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-a', title: 'Assigned A', status: 'SCHEDULED', total: 100, createdAt: '2026-01-02T00:00:00.000Z' },
-      { id: 'job-other-worker', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-b', title: 'Assigned B', status: 'SCHEDULED', total: 100, createdAt: '2026-01-03T00:00:00.000Z' },
-      { id: 'job-b', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', workerId: 'wp-c', title: 'Company B Job', status: 'SCHEDULED', total: 200, createdAt: '2026-01-04T00:00:00.000Z' }
+      { id: 'job-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-a', title: 'Assigned A', status: 'SCHEDULED', scheduledStart: todayStart.toISOString(), scheduledEnd: todayEnd.toISOString(), total: 100, createdAt: '2026-01-02T00:00:00.000Z' },
+      { id: 'job-other-worker', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-b', title: 'Assigned B', status: 'SCHEDULED', scheduledStart: otherWorkerStart.toISOString(), total: 100, createdAt: '2026-01-03T00:00:00.000Z' },
+      { id: 'job-b', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', workerId: 'wp-c', title: 'Company B Job', status: 'SCHEDULED', scheduledStart: upcomingStart.toISOString(), total: 200, createdAt: '2026-01-04T00:00:00.000Z' }
     ],
     quotes: [{ id: 'quote-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', title: 'Quote A', status: 'SENT', amount: 100, subtotal: 100, total: 100, createdAt: '2026-01-01T00:00:00.000Z' }],
     quoteLineItems: [{ id: 'qli-a', companyId: 'company-a', quoteId: 'quote-a', serviceId: 'service-a', description: 'Service A', quantity: 1, unitPrice: 100, discountAmount: 0, taxAmount: 0, lineTotal: 100, sortOrder: 0 }],
@@ -306,7 +323,9 @@ async function buildApp() {
     scheduleItems: [],
     payments: [],
     workerLocations: [],
-    jobPhotos: [],
+    jobProofPhotos: [],
+    jobSignatures: [],
+    jobActivities: [],
     auditLogs: []
   };
 
@@ -316,7 +335,9 @@ async function buildApp() {
     const resolved = require.resolve(mod);
     delete require.cache[resolved];
   }
-  return require('../src/app').app;
+  const app = require('../src/app').app;
+  app.locals.testDb = seed;
+  return app;
 }
 
 async function login(app, email) {
@@ -419,13 +440,42 @@ test('creating quote and invoice with another company job, customer, or service 
 });
 
 
-test('worker dashboard does not expose admin financial or pipeline aggregates', async () => {
+test('worker dashboard is worker-specific and assigned-only', async () => {
   const app = await buildApp();
   const worker = await login(app, 'worker-a@test.local');
+  const admin = await login(app, 'admin-a@test.local');
+
+  await worker.post('/api/jobs/job-a/arrive').send({});
+  await worker.post('/api/jobs/job-a/start').send({});
+  await admin.post('/api/jobs/job-other-worker/arrive').send({});
+  await admin.post('/api/jobs/job-other-worker/start').send({});
+
   const response = await worker.get('/api/dashboard');
   assert.equal(response.status, 200);
-  assert.equal(response.body.data.totals.unpaidInvoices, 0);
-  assert.deepEqual(response.body.data.pipeline, { leads: 0, quoted: 0, won: 0 });
+  assert.equal(response.body.data.role, 'WORKER');
+  assert.equal(Object.prototype.hasOwnProperty.call(response.body.data, 'totals'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(response.body.data, 'revenueMonthToDate'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(response.body.data, 'unpaidInvoices'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(response.body.data, 'pipeline'), false);
+  assert.deepEqual(response.body.data.jobsToday.map((item) => item.id), ['job-a']);
+  assert.equal(response.body.data.jobsToday[0].total, undefined);
+  assert.equal(response.body.data.today.activeJob.id, 'job-a');
+  assert.equal(response.body.data.today.activeJob.total, undefined);
+  assert.equal(response.body.data.recentActivity.every((item) => item.jobId === 'job-a'), true);
+  assert.equal(response.body.data.recentActivity.every((item) => !item.job || item.job.total === undefined), true);
+  assert.equal(JSON.stringify(response.body).includes('job-other-worker'), false);
+  assertNoPasswordHash(response.body);
+});
+
+test('admin dashboard still includes admin aggregates', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const response = await admin.get('/api/dashboard');
+  assert.equal(response.status, 200);
+  assert.ok(response.body.data.totals);
+  assert.equal(response.body.data.totals.unpaidInvoices, 100);
+  assert.deepEqual(response.body.data.pipeline, { leads: 0, quoted: 1, won: 0 });
+  assert.equal(Array.isArray(response.body.data.workers), true);
   assertNoPasswordHash(response.body);
 });
 
@@ -540,7 +590,7 @@ test('quote engine calculates totals and accept is idempotent', async () => {
 test('completed job creates one invoice and payments create one receipt', async () => {
   const app = await buildApp();
   const admin = await login(app, 'admin-a@test.local');
-  const complete = await admin.post('/api/jobs/job-other-worker/complete').send({ completionNotes: 'Done' });
+  const complete = await admin.post('/api/jobs/job-other-worker/complete').send({ completionNotes: 'Done', adminOverride: true });
   assert.equal(complete.status, 200);
   assert.equal(complete.body.data.status, 'COMPLETED');
 
@@ -576,7 +626,7 @@ test('job invoice creation skips stale invoice counter numbers', async () => {
   assert.equal(conflicting.status, 201);
   assert.equal(conflicting.body.data.number, 'INV-0007');
 
-  const complete = await admin.post('/api/jobs/job-other-worker/complete').send({ completionNotes: 'Done' });
+  const complete = await admin.post('/api/jobs/job-other-worker/complete').send({ completionNotes: 'Done', adminOverride: true });
   assert.equal(complete.status, 200);
 
   const invoice = await admin.post('/api/jobs/job-other-worker/create-invoice').send({});
@@ -739,3 +789,128 @@ test('paid invoices cannot be edited and workers cannot access receipts', async 
   const receipts = await worker.get('/api/invoices/invoice-a/receipts');
   assert.equal(receipts.status, 403);
 });
+
+test('worker job lifecycle and activity timeline are scoped and recorded', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+
+  const ownJobs = await worker.get('/api/worker/jobs');
+  assert.equal(ownJobs.status, 200);
+  assert.deepEqual(ownJobs.body.data.map((item) => item.id), ['job-a']);
+
+  const otherWorker = await worker.post('/api/jobs/job-other-worker/arrive').send({});
+  assert.equal(otherWorker.status, 404);
+
+  const arrived = await worker.post('/api/jobs/job-a/arrive').send({});
+  assert.equal(arrived.status, 200);
+  assert.equal(arrived.body.data.status, 'ARRIVED');
+  assert.ok(arrived.body.data.arrivedAt);
+
+  const started = await worker.post('/api/jobs/job-a/start').send({});
+  assert.equal(started.status, 200);
+  assert.equal(started.body.data.status, 'IN_PROGRESS');
+
+  const paused = await worker.post('/api/jobs/job-a/pause').send({});
+  assert.equal(paused.status, 200);
+  assert.equal(paused.body.data.status, 'PAUSED');
+
+  const resumed = await worker.post('/api/jobs/job-a/resume').send({});
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.data.status, 'IN_PROGRESS');
+
+  const missingNotes = await worker.post('/api/jobs/job-a/complete').send({});
+  assert.equal(missingNotes.status, 400);
+
+  const completed = await worker.post('/api/jobs/job-a/complete').send({ completionNotes: 'Finished cleanly' });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.data.status, 'COMPLETED');
+  assert.equal(completed.body.data.completionNotes, 'Finished cleanly');
+
+  const completedAgain = await worker.post('/api/jobs/job-a/complete').send({ completionNotes: 'Second note ignored' });
+  assert.equal(completedAgain.status, 200);
+  assert.equal(completedAgain.body.data.id, completed.body.data.id);
+  assert.equal(completedAgain.body.data.completionNotes, 'Finished cleanly');
+
+  const activity = await worker.get('/api/jobs/job-a/activity');
+  assert.equal(activity.status, 200);
+  assert.deepEqual(activity.body.data.map((item) => item.type).reverse(), ['ARRIVED', 'STARTED', 'PAUSED', 'RESUMED', 'COMPLETED']);
+  assertNoPasswordHash(activity.body);
+});
+
+test("job completion evidence uploads are scoped and required", async () => {
+  const app = await buildApp();
+  const admin = await login(app, "admin-a@test.local");
+  const worker = await login(app, "worker-a@test.local");
+
+  const otherWorker = await worker.post("/api/jobs/job-other-worker/proof-photos").attach("photo", Buffer.from("fake"), { filename: "proof.jpg", contentType: "image/jpeg" });
+  assert.equal(otherWorker.status, 404);
+
+  const invalid = await worker.post("/api/jobs/job-a/proof-photos").attach("photo", Buffer.from("fake"), { filename: "proof.txt", contentType: "text/plain" });
+  assert.equal(invalid.status, 400);
+
+  const configured = await admin.patch("/api/jobs/job-a").send({ requiresProofPhotos: true, minimumProofPhotos: 1, requiresSignature: true });
+  assert.equal(configured.status, 200);
+  await worker.post("/api/jobs/job-a/arrive").send({});
+  await worker.post("/api/jobs/job-a/start").send({});
+
+  const missingEvidence = await worker.post("/api/jobs/job-a/complete").send({ completionNotes: "Done" });
+  assert.equal(missingEvidence.status, 409);
+  assert.equal(missingEvidence.body.error.details.proofPhotos.required, true);
+  assert.equal(missingEvidence.body.error.details.signature.required, true);
+
+  const workerOverride = await worker.post("/api/jobs/job-a/complete").send({ adminOverride: true });
+  assert.equal(workerOverride.status, 403);
+
+  const photo = await worker.post("/api/jobs/job-a/proof-photos").field("caption", "Before panel").attach("photo", Buffer.from("fake image"), { filename: "proof.jpg", contentType: "image/jpeg" });
+  assert.equal(photo.status, 201);
+  assert.equal(photo.body.data.uploadedById, "worker-a");
+  const signature = await worker.post("/api/jobs/job-a/signature").field("signerName", "Customer A").attach("signature", Buffer.from("signature"), { filename: "signature.png", contentType: "image/png" });
+  assert.equal(signature.status, 201);
+  assert.equal(signature.body.data.capturedById, "worker-a");
+
+  const completed = await worker.post("/api/jobs/job-a/complete").send({ completionNotes: "Evidence complete" });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.data.status, "COMPLETED");
+  assert.equal(completed.body.data.completionEvidence.proofPhotosSatisfied, true);
+  assert.equal(completed.body.data.completionEvidence.signatureSatisfied, true);
+  assert.ok(completed.body.data.proofCompletedAt);
+  assert.ok(completed.body.data.signatureCompletedAt);
+  assert.ok(app.locals.testDb.jobActivities.some((item) => item.type === "PROOF_PHOTO_ADDED"));
+  assert.ok(app.locals.testDb.jobActivities.some((item) => item.type === "SIGNATURE_ADDED"));
+  assert.ok(app.locals.testDb.auditLogs.some((item) => item.entity === "JobProofPhoto"));
+  assert.ok(app.locals.testDb.auditLogs.some((item) => item.entity === "JobSignature"));
+});
+
+test('admin can operate any company job and add admin notes', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const arrived = await admin.post('/api/jobs/job-other-worker/arrive').send({});
+  assert.equal(arrived.status, 200);
+  assert.equal(arrived.body.data.status, 'ARRIVED');
+
+  const started = await admin.post('/api/jobs/job-other-worker/start').send({});
+  assert.equal(started.status, 200);
+  assert.equal(started.body.data.status, 'IN_PROGRESS');
+
+  const note = await admin.post('/api/jobs/job-other-worker/activity').send({ note: 'Customer requested admin follow-up' });
+  assert.equal(note.status, 201);
+  assert.equal(note.body.data.type, 'ADMIN_NOTE');
+
+  const activity = await admin.get('/api/jobs/job-other-worker/activity');
+  assert.equal(activity.status, 200);
+  assert.equal(activity.body.data.some((item) => item.type === 'ADMIN_NOTE'), true);
+  assertNoPasswordHash(activity.body);
+});
+
+test('company A cannot access company B job activity', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const activity = await admin.get('/api/jobs/job-b/activity');
+  assert.equal(activity.status, 404);
+  const note = await admin.post('/api/jobs/job-b/activity').send({ note: 'Nope' });
+  assert.equal(note.status, 404);
+  assertNoPasswordHash(activity.body);
+  assertNoPasswordHash(note.body);
+});
+

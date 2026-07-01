@@ -49,6 +49,59 @@
     });
   }
 
+
+  function syncModalScrollLock() {
+    document.body.classList.toggle('modal-open', Boolean(document.querySelector('.fc-modal')));
+  }
+
+  if (window.MutationObserver) {
+    new MutationObserver(syncModalScrollLock).observe(document.body, { childList: true });
+  }
+
+  function isWorker() {
+    return state.user && state.user.role === 'WORKER';
+  }
+
+  function setLinkLabel(link, label) {
+    if (!link) return;
+    const iconNode = link.querySelector('.nav-icon');
+    link.textContent = '';
+    if (iconNode) link.appendChild(iconNode);
+    link.appendChild(document.createTextNode(label));
+  }
+
+  function applyRoleUi() {
+    const allowedHrefs = new Set(['index.html', 'jobs.html', 'schedule.html', 'map.html', 'settings.html']);
+    document.querySelectorAll('.nav-link').forEach((link) => {
+      const href = (link.getAttribute('href') || '').split('/').pop();
+      const workerAllowed = allowedHrefs.has(href);
+      link.hidden = isWorker() && !workerAllowed;
+      if (href === 'jobs.html') setLinkLabel(link, isWorker() ? 'My Jobs' : 'Jobs');
+      if (href === 'schedule.html') setLinkLabel(link, isWorker() ? 'My Schedule' : 'Schedule');
+    });
+    document.body.classList.toggle('worker-role', Boolean(isWorker()));
+    document.querySelectorAll('.quick-card').forEach((node) => { node.hidden = Boolean(isWorker()); });
+    document.querySelectorAll('.primary-button').forEach((button) => {
+      if (!button.closest('form') && button.textContent.trim().toLowerCase().startsWith('+ new ')) button.hidden = Boolean(isWorker());
+    });
+    if (!isWorker()) return;
+    const title = document.querySelector('h1, h2');
+    const copy = title && title.parentElement ? title.parentElement.querySelector('p') : null;
+    if (page === 'jobs') {
+      if (title) title.textContent = 'My Jobs';
+      if (copy) copy.textContent = 'Your assigned work for today and upcoming jobs.';
+    }
+    if (page === 'schedule') {
+      if (title) title.textContent = 'My Schedule';
+      if (copy) copy.textContent = 'Your assigned schedule.';
+    }
+  }
+  function renderWorkerAccessDenied() {
+    const pageEl = document.querySelector('.page') || document.querySelector('.page-mount');
+    if (!pageEl) return;
+    pageEl.innerHTML = '<h2>Worker Workspace</h2><p>Use Dashboard, My Jobs, or My Schedule for assigned work.</p><div class=empty-state><div><strong>This area is for admin users.</strong><span>No admin data was loaded.</span></div></div>';
+  }
+
   async function api(path, options) {
     const response = await fetch(`${API_BASE}${path}`, {
       credentials: 'include',
@@ -194,12 +247,15 @@
 
 
   function rowActions(resource, item) {
+    if (isWorker()) {
+      return resource === 'jobs' ? workerJobActions(item, true) : '';
+    }
     const buttons = [];
     const add = (label, action, primary) => buttons.push('<button class="' + (primary ? 'primary-button' : 'secondary-button') + ' compact" type="button" data-row-action="' + action + '" data-id="' + escapeHtml(item.id) + '">' + label + '</button>');
     if (resource === 'quotes' && item.status === 'DRAFT') add('Send', 'quote-send');
     if (resource === 'quotes' && item.status === 'SENT') add('Accept', 'quote-accept');
     if (resource === 'quotes' && item.status === 'SENT') add('Reject', 'quote-reject');
-    if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Complete', 'job-complete');
+    if (resource === 'jobs') add('Details', 'job-detail', true);
     if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add(item.scheduledStart ? 'Reschedule' : 'Schedule', item.scheduledStart ? 'job-reschedule' : 'job-schedule');
     if (resource === 'jobs' && item.scheduledStart && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Unschedule', 'job-unschedule');
     if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice');
@@ -217,8 +273,10 @@
   function setStats(values) {
     document.querySelectorAll('.stat-card').forEach((card, index) => {
       if (!values[index]) return;
+      const label = card.querySelector('.stat-label');
       const value = card.querySelector('.stat-value');
       const trend = card.querySelector('.trend');
+      if (label && values[index].label) label.textContent = values[index].label;
       if (value) value.textContent = values[index].value;
       if (trend && values[index].trend) trend.textContent = values[index].trend;
     });
@@ -311,12 +369,16 @@
   }
 
   function renderDashboard(data) {
+    if ((state.user && state.user.role === 'WORKER') || data.role === 'WORKER') {
+      renderWorkerDashboard(data);
+      return;
+    }
     const totals = data.totals || {};
     setStats([
-      { value: totals.jobsToday || 0, trend: totals.jobsToday ? 'Scheduled today' : 'No jobs scheduled' },
-      { value: money.format(totals.revenueMonthToDate || 0), trend: 'Month to date' },
-      { value: money.format(totals.unpaidInvoices || 0), trend: totals.unpaidInvoices ? 'Outstanding' : 'Nothing outstanding' },
-      { value: totals.activeWorkers || 0, trend: totals.activeWorkers ? 'Available workers' : 'No workers online' }
+      { label: 'Jobs Today', value: totals.jobsToday || 0, trend: totals.jobsToday ? 'Scheduled today' : 'No jobs scheduled' },
+      { label: 'Revenue MTD', value: money.format(totals.revenueMonthToDate || 0), trend: 'Month to date' },
+      { label: 'Unpaid Invoices', value: money.format(totals.unpaidInvoices || 0), trend: totals.unpaidInvoices ? 'Outstanding' : 'Nothing outstanding' },
+      { label: 'Active Workers', value: totals.activeWorkers || 0, trend: totals.activeWorkers ? 'Available workers' : 'No workers online' }
     ]);
 
     fillPanel("Today's Schedule", data.schedule || [], (item) => [item.job && item.job.title || 'Scheduled job', formatDateTime(item.startsAt)]);
@@ -329,6 +391,78 @@
       { name: 'Won', value: pipeline.won || 0 }
     ], (item) => [item.name, `${item.value} records`]);
   }
+
+  function jobCustomer(job) {
+    return job && job.customer && job.customer.name || 'No customer';
+  }
+
+  function jobAddress(job) {
+    return job && job.customer && job.customer.address || job && job.address || '';
+  }
+
+  function workerJobActions(job, includeLifecycle) {
+    if (!job || !job.id) return '';
+    const status = String(job.status || '').toUpperCase();
+    const id = escapeHtml(job.id);
+    const buttons = ['<button class="secondary-button compact" type="button" data-row-action="job-detail" data-id="' + id + '">View Job</button>'];
+    const add = (label, action, primary) => buttons.push('<button class="' + (primary ? 'primary-button' : 'secondary-button') + ' compact" type="button" data-worker-dashboard-action="' + action + '" data-id="' + id + '">' + label + '</button>');
+    if (includeLifecycle && (status === 'SCHEDULED' || status === 'DISPATCHED')) add('Arrived', 'arrive');
+    if (includeLifecycle && (status === 'ARRIVED' || status === 'SCHEDULED' || status === 'DISPATCHED')) add('Start', 'start', status === 'ARRIVED');
+    if (includeLifecycle && status === 'IN_PROGRESS') add('Pause', 'pause');
+    if (includeLifecycle && status === 'PAUSED') add('Resume', 'resume');
+    if (includeLifecycle && (status === 'IN_PROGRESS' || status === 'PAUSED')) add('Complete', 'complete', true);
+    return '<div class="row-actions">' + buttons.join('') + '</div>';
+  }
+
+  function workerJobItem(job, includeLifecycle) {
+    const address = jobAddress(job);
+    return `<div class="list-item"><span class="initials">${escapeHtml(String(job.title || 'Job').slice(0, 2).toUpperCase())}</span><div><strong>${escapeHtml(job.title || 'Scheduled job')}</strong><small>${escapeHtml([formatDateTime(job.scheduledStart), jobCustomer(job), address].filter(Boolean).join(' - '))}</small></div><div>${badge(job.status)}${workerJobActions(job, includeLifecycle)}</div></div>`;
+  }
+
+  function renderWorkerPanel(title, items, emptyTitle, renderer) {
+    return `<div class="panel"><div class="panel-head"><h3>${escapeHtml(title)}</h3></div>${items.length ? `<div class="list">${items.map(renderer).join('')}</div>` : `<div class="empty-state"><div><strong>${escapeHtml(emptyTitle)}</strong></div></div>`}</div>`;
+  }
+
+  function renderWorkerDashboard(data) {
+    const today = data.today || {};
+    const activeJob = today.activeJob;
+    const pageEl = document.querySelector('.page');
+    if (!pageEl) return;
+    pageEl.innerHTML = `<div class="hero-row"><div class="hero-copy"><h2>Field operations</h2><p>Your assigned work for today is ready.</p></div><span class="api-status" data-api-status>Connected</span></div><section class="stats"><article class="card stat-card"><div class="stat-label">Jobs Today</div><div class="stat-value">0</div><div class="trend"></div></article><article class="card stat-card"><div class="stat-label">Completed</div><div class="stat-value">0</div><div class="trend"></div></article><article class="card stat-card"><div class="stat-label">Remaining</div><div class="stat-value">0</div><div class="trend"></div></article><article class="card stat-card"><div class="stat-label">Active Job</div><div class="stat-value">-</div><div class="trend"></div></article></section><section class="split"><div class="panel"><div class="panel-head"><h2>Current Job</h2></div>${activeJob ? `<div class="list">${workerJobItem(activeJob, true)}</div>` : '<div class="empty-state"><div><strong>No active job right now.</strong></div></div>'}</div>${renderWorkerPanel('Required Actions', data.requiredActions || [], 'No urgent actions.', (item) => `<div class="list-item"><span class="initials">!</span><div><strong>${escapeHtml(item.label || 'Action required')}</strong><small>${escapeHtml(item.jobId || '')}</small></div>${item.jobId ? workerJobActions({ id: item.jobId }, false) : ''}</div>`)}</section><section class="split">${renderWorkerPanel("Today's Jobs", data.jobsToday || [], 'No assigned jobs today.', (job) => workerJobItem(job, false))}${renderWorkerPanel('Upcoming Jobs', data.upcomingJobs || [], 'No upcoming assigned jobs.', (job) => workerJobItem(job, false))}</section><section class="split"><div class="table-card"><div class="panel-head card"><h3>Recent Activity</h3></div>${(data.recentActivity || []).length ? `<div class="list">${(data.recentActivity || []).map((item) => `<div class="list-item"><span class="initials">${escapeHtml(String(item.type || 'A').slice(0, 2).toUpperCase())}</span><div><strong>${escapeHtml(activityTitle(item))}</strong><small>${escapeHtml([item.job && item.job.title, item.job && item.job.customer && item.job.customer.name, formatDateTime(item.createdAt)].filter(Boolean).join(' - '))}</small></div></div>`).join('')}</div>` : '<div class="empty-state"><div><strong>No recent activity.</strong></div></div>'}</div></section>`;
+    setStats([
+      { label: 'Jobs Today', value: today.totalJobs || 0, trend: today.totalJobs ? 'Assigned today' : 'No jobs scheduled' },
+      { label: 'Completed', value: today.completedJobs || 0, trend: 'Finished today' },
+      { label: 'Remaining', value: today.remainingJobs || 0, trend: 'Still open today' },
+      { label: 'Active Job', value: activeJob ? '1' : '0', trend: activeJob ? String(activeJob.status || '').replace(/_/g, ' ') : 'No active job' }
+    ]);
+  }
+  function jobRequirementSummary(job) {
+    const requirements = job && job.completionRequirements || {};
+    const parts = [];
+    if (requirements.requiresProofPhotos) parts.push('Proof photo required');
+    if (requirements.requiresSignature) parts.push('Signature');
+    return parts.length ? parts.join(' / ') : 'No completion evidence required';
+  }
+
+  function renderWorkerJobsPage(data) {
+    const pageEl = document.querySelector('.page');
+    if (!pageEl) return;
+    const jobs = Array.isArray(data) ? data : [];
+    const today = new Date();
+    const todayJobs = jobs.filter((job) => {
+      if (!job.scheduledStart) return false;
+      const date = new Date(job.scheduledStart);
+      return !Number.isNaN(date.getTime()) && date.toDateString() === today.toDateString();
+    });
+    const upcomingJobs = jobs.filter((job) => {
+      if (!job.scheduledStart) return true;
+      const date = new Date(job.scheduledStart);
+      return Number.isNaN(date.getTime()) || (date > today && date.toDateString() !== today.toDateString());
+    });
+    const renderJob = (job) => '<div class="list-item worker-job-card"><span class="initials">' + escapeHtml(String(job.title || 'Job').slice(0, 2).toUpperCase()) + '</span><div><strong>' + escapeHtml(job.title || 'Assigned job') + '</strong><small>' + escapeHtml([formatDateTime(job.scheduledStart), jobCustomer(job), jobAddress(job)].filter(Boolean).join(' - ')) + '</small><small>' + escapeHtml(jobRequirementSummary(job)) + '</small></div><div>' + badge(job.status) + workerJobActions(job, true) + '</div></div>';
+    pageEl.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>My Jobs</h2><p>Your assigned work for today and upcoming jobs.</p></div><span class="api-status" data-api-status>Connected</span></div><section class="split">' + renderWorkerPanel('Today', todayJobs, 'No assigned jobs today.', renderJob) + renderWorkerPanel('Upcoming', upcomingJobs, 'No upcoming assigned jobs.', renderJob) + '</section><section class="panel"><div class="panel-head"><h3>All Assigned Jobs</h3></div>' + (jobs.length ? '<div class="list">' + jobs.map(renderJob).join('') + '</div>' : '<div class="empty-state"><div><strong>No assigned jobs.</strong></div></div>') + '</section>';
+  }
+
 
   function fillPanel(title, items, mapper) {
     const panel = Array.from(document.querySelectorAll('.panel, .table-card')).find((node) => {
@@ -355,7 +489,7 @@
       const balance = data.reduce((sum, c) => sum + (c.invoices || []).filter((i) => i.status !== 'PAID').reduce((inner, i) => inner + Number(i.amount || 0), 0), 0);
       setStats([{ value: data.length, trend: 'Total records' }, { value: data.length, trend: 'Active accounts' }, { value: money.format(balance), trend: 'Outstanding' }, { value: average(data.map((c) => (c.jobs || []).length)), trend: 'Per customer' }]);
     }
-    if (resource === 'jobs') setStats(countStatuses(data, ['NEW', 'IN_PROGRESS', 'COMPLETED', 'ON_HOLD'], ['Open jobs', 'Active work', 'Finished', 'Paused']));
+    if (resource === 'jobs') setStats(countStatuses(data, ['NEW', 'IN_PROGRESS', 'COMPLETED', 'PAUSED'], ['Open jobs', 'Active work', 'Finished', 'Paused']));
     if (resource === 'quotes') setStats(countStatuses(data, ['SENT', 'ACCEPTED', 'SENT', 'DRAFT'], ['Open quotes', 'Accepted', 'Sent', 'Drafts']));
     if (resource === 'invoices') setStats(countStatuses(data, ['ALL', 'PAID', 'SENT', 'OVERDUE', 'DRAFT'], ['Total invoices', 'Paid', 'Unpaid', 'Overdue', 'Drafts']));
   }
@@ -391,6 +525,16 @@
     return `<div class="field"><label for="fc-${name}">${label}</label><input id="fc-${name}" name="${name}" type="${type || 'text'}" ${attrs || ''}></div>`;
   }
 
+  function checkboxField(name, label) {
+    const q = String.fromCharCode(34);
+    return "<div class=" + q + "field checkbox-field" + q + "><label for=" + q + "fc-" + name + q + "><input id=" + q + "fc-" + name + q + " name=" + q + name + q + " type=" + q + "checkbox" + q + "> " + escapeHtml(label) + "</label></div>";
+  }
+
+  function formSection(title) {
+    const q = String.fromCharCode(34);
+    return "<div class=" + q + "field span-2 form-section-title" + q + "><strong>" + escapeHtml(title) + "</strong></div>";
+  }
+
   function select(name, label, options, required) {
     return `<div class="field"><label for="fc-${name}">${label}</label><select id="fc-${name}" name="${name}" ${required ? 'required' : ''}>${options}</select></div>`;
   }
@@ -408,7 +552,10 @@
     field('scheduledStart', 'Scheduled Start', 'datetime-local') +
     field('durationMinutes', 'Duration Minutes', 'number', 'min="1" value="60"') +
     field('travelBufferMinutes', 'Travel Buffer Minutes', 'number', 'min="0" value="0"') +
-    field('total', 'Total', 'number', 'min="0" step="0.01"')
+    field('total', 'Total', 'number', 'min="0" step="0.01"') +
+    formSection('Completion Requirements') +
+    checkboxField('requiresProofPhotos', 'Require proof of work photo') +
+    checkboxField('requiresSignature', 'Require customer signature')
 };
     if (resource === 'quotes') return { title: 'New Quote', action: '/quotes', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('validUntil', 'Valid Until', 'date') };
     if (resource === 'invoices') return { title: 'New Invoice', action: '/invoices', fields: field('number', 'Number') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('jobId', 'Job', optionList(state.jobs, 'No job'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('dueDate', 'Due Date', 'date') };
@@ -433,6 +580,12 @@
       error.hidden = true;
       const body = Object.fromEntries(new FormData(event.currentTarget).entries());
       Object.keys(body).forEach((key) => { if (body[key] === '') delete body[key]; });
+      if (config.action === '/jobs') {
+        const form = event.currentTarget;
+        body.requiresProofPhotos = Boolean(form.elements.requiresProofPhotos && form.elements.requiresProofPhotos.checked);
+        body.requiresSignature = Boolean(form.elements.requiresSignature && form.elements.requiresSignature.checked);
+        body.minimumProofPhotos = body.requiresProofPhotos ? 1 : 0;
+      }
       if ((config.action === '/quotes' || config.action === '/invoices') && body.amount) {
         body.lineItems = [{ serviceId: body.serviceId, description: body.title || body.number || 'Service line item', quantity: 1, unitPrice: Number(body.amount), discountAmount: 0, taxAmount: 0 }];
         delete body.amount;
@@ -673,11 +826,14 @@
   function closeModal() {
     const modal = document.querySelector('.fc-modal');
     if (modal) modal.remove();
+    syncModalScrollLock();
   }
 
   function setupCreateButtons() {
     document.querySelectorAll('.primary-button').forEach((button) => {
-      const text = button.textContent.toLowerCase();
+      if (button.closest('form')) return;
+      const text = button.textContent.trim().toLowerCase();
+      if (!text.startsWith('+ new ')) return;
       const resource = text.includes('customer') ? 'customers' : text.includes('job') ? 'jobs' : text.includes('quote') ? 'quotes' : text.includes('invoice') ? 'invoices' : null;
       if (!resource) return;
       button.addEventListener('click', async () => {
@@ -689,6 +845,357 @@
 
 
 
+  function detailItem(label, value) {
+    return `<div class="job-detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '-')}</strong></div>`;
+  }
+
+  function lifecycleActions(job) {
+    const status = String(job.status || '').toUpperCase();
+    const buttons = [];
+    const add = (label, action, primary) => buttons.push(`<button class="${primary ? 'primary-button' : 'secondary-button'} compact" type="button" data-job-lifecycle="${action}">${label}</button>`);
+    if (status === 'SCHEDULED' || status === 'DISPATCHED') add('Arrived', 'arrive');
+    if (status === 'ARRIVED' || status === 'SCHEDULED' || status === 'DISPATCHED') add('Start', 'start', status === 'ARRIVED');
+    if (status === 'IN_PROGRESS') add('Pause', 'pause');
+    if (status === 'PAUSED') add('Resume', 'resume', true);
+    if (status === 'IN_PROGRESS' || status === 'PAUSED') add('Complete', 'complete', true);
+    return buttons.join('');
+  }
+
+  function activityTitle(item) {
+    return String(item.type || 'STATUS_CHANGED').replace(/_/g, ' ');
+  }
+
+  function renderActivityTimeline(items) {
+    if (!items.length) return '<div class="empty-state job-activity-empty"><div><strong>No activity yet</strong><span>Lifecycle updates and notes will appear here.</span></div></div>';
+    return `<div class="job-timeline">${items.map((item) => {
+      const actor = item.user && (item.user.name || item.user.email) || item.worker && item.worker.user && item.worker.user.name || 'FieldCore';
+      return `<div class="job-timeline-item"><span class="job-timeline-dot"></span><div><div class="job-timeline-head"><strong>${escapeHtml(activityTitle(item))}</strong><small>${escapeHtml(formatDateTime(item.createdAt))}</small></div><small>${escapeHtml(actor)}</small>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ''}</div></div>`;
+    }).join('')}</div>`;
+  }
+
+  function jobEvidenceSummary(job) {
+    const evidence = job.completionEvidence || {};
+    const proofPhotoCount = Number(evidence.proofPhotoCount != null ? evidence.proofPhotoCount : (job.proofPhotos || []).length);
+    const proofRequired = Boolean(job.requiresProofPhotos || evidence.proofPhotosRequired);
+    const proofMissing = proofRequired && proofPhotoCount < 1;
+    const signatureCaptured = Boolean(job.signature || evidence.signatureCaptured);
+    const signatureMissing = Boolean(job.requiresSignature || evidence.signatureRequired) && !signatureCaptured;
+    return { proofPhotoCount, proofMissing, signatureMissing, missing: proofMissing || signatureMissing };
+  }
+
+  function renderCompletionRequirements(job) {
+    const summary = jobEvidenceSummary(job);
+    const proofLabel = job.requiresProofPhotos ? (summary.proofMissing ? 'Missing' : 'Captured') : "Not required";
+    const signatureLabel = job.requiresSignature ? (summary.signatureMissing ? "Missing" : "Captured") : "Not required";
+    return `<section class="job-evidence-section"><h4>Completion Requirements</h4><div class="job-detail-grid">${detailItem("Proof Photos", proofLabel)}${detailItem("Customer Signature", signatureLabel)}${detailItem("Completion Notes", "Required")}</div></section>`;
+  }
+
+  function renderProofPhotos(job) {
+    const photos = job.proofPhotos || [];
+    const items = photos.length ? photos.map((photo) => `<div class="job-proof-photo"><button class="proof-thumb-button" type="button" data-proof-preview="${escapeHtml(photo.id)}"><img src="${escapeHtml(photo.url)}" alt="Proof photo"></button><div><strong>${escapeHtml(photo.caption || "Proof photo")}</strong><small>${escapeHtml(formatDateTime(photo.createdAt))}</small></div><button class="secondary-button compact" type="button" data-proof-delete="${escapeHtml(photo.id)}">Remove</button></div>`).join("") : `<div class="empty-state compact-empty"><div><strong>No proof photos</strong><span>Upload job evidence here.</span></div></div>`;
+    return `<section class="job-evidence-section"><h4>Proof Photos</h4><div class="job-proof-list">${items}</div><form class="job-proof-form"><div class="form-grid"><div class='field span-2'><label for='fc-proof-photo'>Photo</label><div class='evidence-upload proof-upload-panel'><div class='proof-selected-preview' data-evidence-preview='proof'><strong>No photos selected</strong></div><div class='logo-upload-controls'><div class='file-upload-row'><label class='file-upload-button' for='fc-proof-photo'>Choose photos</label><span class='file-name' data-evidence-file-name='proof'>No files selected</span></div><input id='fc-proof-photo' name='photo' type='file' accept='image/png,image/jpeg,image/webp' data-evidence-input='proof' required multiple hidden><small>Upload one or more PNG, JPG, or WEBP proof photos. Max 5MB each.</small></div></div></div><div class="field"><label for="fc-proof-caption">Caption</label><input id="fc-proof-caption" name="caption" maxlength="500"></div></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Upload Photo</button></div><p class="fc-form-error" hidden></p></form></section>`;
+  }
+
+
+  function openProofPhotoPreview(photo) {
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal';
+    modal.innerHTML = '<div class="fc-dialog proof-preview-dialog"><div class="panel-head"><div><h3>' + escapeHtml(photo && photo.caption || 'Proof photo') + '</h3><p class="modal-copy">' + escapeHtml(photo && formatDateTime(photo.createdAt) || '') + '</p></div><button class="icon-button" type="button" data-close>&times;</button></div>' + (photo && photo.url ? '<img src="' + escapeHtml(photo.url) + '" alt="Proof photo">' : '<div class="empty-state"><div><strong>Photo not available</strong></div></div>') + '</div>';
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal || event.target.closest('[data-close]')) modal.remove();
+    });
+    document.body.appendChild(modal);
+  }
+
+  function renderSignature(job) {
+    const signature = job.signature;
+    const preview = signature ? '<button class="signature-preview-box has-signature" type="button" data-signature-preview><img src="' + escapeHtml(signature.signatureUrl) + '" alt="Customer signature"><span>' + escapeHtml(signature.signerName || 'Customer signature') + '</span><small>' + escapeHtml(formatDateTime(signature.createdAt)) + '</small></button>' : '<button class="signature-preview-box" type="button" data-signature-preview><strong>Signature not available</strong></button>';
+    return '<section class="job-evidence-section"><div class="signature-section-head"><h4>Customer Signature</h4><div class="row-actions"><button class="primary-button compact" type="button" data-signature-capture>Sign</button><button class="secondary-button compact" type="button" data-signature-delete ' + (signature ? '' : 'disabled') + '>Delete</button></div></div>' + preview + '<div class="field signature-signer-field"><label for="fc-signer-name">Signer Name</label><input id="fc-signer-name" name="signerName" maxlength="160" data-signature-signer-name value="' + escapeHtml(signature && signature.signerName || '') + '"></div><p class="fc-form-error" data-signature-message hidden></p></section>';
+  }
+
+  function dataUrlToFile(dataUrl, filename) {
+    const parts = dataUrl.split(',');
+    const mime = (parts[0].match(/:(.*?);/) || [])[1] || 'image/png';
+    const binary = atob(parts[1] || '');
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new File([bytes], filename, { type: mime });
+  }
+
+  function openSignaturePreview(signature) {
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal';
+    modal.innerHTML = '<div class="fc-dialog signature-preview-dialog"><div class="panel-head"><h3>Customer Signature</h3><button class="icon-button" type="button" data-close>&times;</button></div>' + (signature ? '<img src="' + escapeHtml(signature.signatureUrl) + '" alt="Customer signature">' : '<div class="empty-state"><div><strong>Signature not available</strong></div></div>') + '</div>';
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal || event.target.closest('[data-close]')) modal.remove();
+    });
+    document.body.appendChild(modal);
+  }
+
+  function openSignatureCapture(job) {
+    return new Promise((resolve) => {
+      const modal = document.createElement('div');
+      modal.className = 'fc-modal signature-capture-modal';
+      modal.innerHTML = '<div class="signature-capture-screen"><canvas></canvas><p class="fc-form-error" data-signature-capture-message hidden></p><div class="signature-capture-actions"><button class="secondary-button" type="button" data-signature-clear>Clear</button><button class="primary-button" type="button" data-signature-done>Done</button></div></div>';
+      const canvas = modal.querySelector('canvas');
+      const context = canvas.getContext('2d');
+      const message = modal.querySelector('[data-signature-capture-message]');
+      let drawing = false;
+      let hasInk = false;
+      const resize = () => {
+        const rect = canvas.getBoundingClientRect();
+        const scale = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(rect.width * scale));
+        canvas.height = Math.max(1, Math.floor(rect.height * scale));
+        context.setTransform(scale, 0, 0, scale, 0, 0);
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, rect.width, rect.height);
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.lineWidth = 4;
+        context.strokeStyle = '#08152f';
+      };
+      const point = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      };
+      const startDraw = (event) => {
+        event.preventDefault();
+        canvas.setPointerCapture(event.pointerId);
+        drawing = true;
+        const next = point(event);
+        context.beginPath();
+        context.moveTo(next.x, next.y);
+      };
+      const moveDraw = (event) => {
+        if (!drawing) return;
+        event.preventDefault();
+        const next = point(event);
+        context.lineTo(next.x, next.y);
+        context.stroke();
+        hasInk = true;
+      };
+      const endDraw = (event) => {
+        drawing = false;
+        if (event && canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      };
+      modal.querySelector('[data-signature-clear]').addEventListener('click', () => {
+        resize();
+        hasInk = false;
+        if (message) message.hidden = true;
+      });
+      modal.querySelector('[data-signature-done]').addEventListener('click', () => {
+        if (!hasInk) {
+          if (message) { message.textContent = 'Please sign before saving.'; message.hidden = false; }
+          return;
+        }
+        const file = dataUrlToFile(canvas.toDataURL('image/png'), 'signature.png');
+        modal.remove();
+        resolve(file);
+      });
+      canvas.addEventListener('pointerdown', startDraw);
+      canvas.addEventListener('pointermove', moveDraw);
+      canvas.addEventListener('pointerup', endDraw);
+      canvas.addEventListener('pointercancel', endDraw);
+      document.body.appendChild(modal);
+      resize();
+      window.setTimeout(resize, 0);
+    });
+  }
+
+  async function uploadSignatureFile(jobId, file, signerName) {
+    const formData = new FormData();
+    formData.append('signature', file, 'signature.png');
+    formData.append('signerName', signerName || '');
+    const response = await fetch(API_BASE + '/jobs/' + jobId + '/signature', { method: 'POST', credentials: 'include', body: formData });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error && payload.error.message || 'HTTP ' + response.status);
+    return payload.data;
+  }
+
+  function setupEvidenceUploadPreviews(root) {
+    root.querySelectorAll('[data-evidence-input]').forEach((input) => {
+      const key = input.dataset.evidenceInput;
+      const preview = root.querySelector('[data-evidence-preview=' + key + ']');
+      const fileName = root.querySelector('[data-evidence-file-name=' + key + ']');
+      const updateSelectedFiles = (nextFiles) => {
+        const transfer = new DataTransfer();
+        nextFiles.forEach((selected) => transfer.items.add(selected));
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      input.addEventListener('change', () => {
+        const files = Array.from(input.files || []);
+        const file = files[0];
+        if (!file) {
+          if (fileName) fileName.textContent = key === 'proof' ? 'No files selected' : 'No file selected';
+          if (preview) preview.innerHTML = key === 'signature' ? 'Sign' : '<strong>No photos selected</strong>';
+          return;
+        }
+        if (fileName) fileName.textContent = files.length > 1 ? files.length + ' files selected' : file.name;
+        if (!preview) return;
+        if (key === 'proof') {
+          preview.classList.add('has-proof-previews');
+          preview.replaceChildren();
+          files.forEach((selected, index) => {
+            const item = document.createElement('div');
+            item.className = 'proof-preview-item';
+            const image = document.createElement('img');
+            image.alt = 'Proof photo preview ' + (index + 1);
+            const label = document.createElement('span');
+            label.textContent = selected.name;
+            const remove = document.createElement('button');
+            remove.className = 'proof-preview-remove';
+            remove.type = 'button';
+            remove.textContent = 'Remove';
+            remove.addEventListener('click', () => {
+              updateSelectedFiles(files.filter((_, fileIndex) => fileIndex !== index));
+            });
+            item.append(image, label, remove);
+            preview.appendChild(item);
+            const reader = new FileReader();
+            reader.addEventListener('load', () => { image.src = reader.result; });
+            reader.readAsDataURL(selected);
+          });
+          return;
+        }
+        const reader = new FileReader();
+        reader.addEventListener('load', () => {
+          const image = document.createElement('img');
+          image.src = reader.result;
+          image.alt = 'Signature preview';
+          preview.replaceChildren(image);
+        });
+        reader.readAsDataURL(file);
+      });
+    });
+  }
+  async function uploadJobEvidence(jobId, path, form) {
+    const body = form instanceof FormData ? form : new FormData(form);
+    const response = await fetch(API_BASE + "/jobs/" + jobId + path, { method: "POST", credentials: "include", body });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error && payload.error.message || "HTTP " + response.status);
+    return payload.data;
+  }
+
+  async function completeJobWithNotes(job) {
+    const summary = jobEvidenceSummary(job);
+    const notes = await openInputModal({ title: "Complete Job", label: "Completion Notes", name: "completionNotes", type: "text", attrs: "required maxlength='2000'" });
+    if (!notes) return false;
+    const body = { completionNotes: notes };
+    if (summary.missing) {
+      if (!state.user || state.user.role === "WORKER") throw new Error("Upload required completion evidence before completing this job.");
+      const override = await openConfirmModal({ title: "Missing Evidence", message: "This job is missing required completion evidence. Complete anyway with admin override?", okLabel: "Complete Anyway", cancelLabel: "Cancel", closeExisting: false });
+      if (!override) return false;
+      body.adminOverride = true;
+    } else if (state.user && state.user.role !== "WORKER" && !["IN_PROGRESS", "PAUSED"].includes(String(job.status || "").toUpperCase())) body.adminOverride = true;
+    await api("/jobs/" + job.id + "/complete", { method: "POST", body: JSON.stringify(body) });
+    return true;
+  }
+
+  async function openJobDetail(jobId) {
+    closeModal();
+    const [job, activity] = await Promise.all([api('/jobs/' + jobId), api('/jobs/' + jobId + '/activity')]);
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal';
+    modal.innerHTML = `<div class="fc-dialog job-detail-dialog"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}<div class="job-lifecycle-actions">${lifecycleActions(job)}</div>${renderCompletionRequirements(job)}${renderProofPhotos(job)}${renderSignature(job)}<form class="job-note-form"><div class="field"><label for="fc-job-note">Activity Note</label><textarea id="fc-job-note" name="note" maxlength="2000"></textarea></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Add Note</button></div><p class="fc-form-error" hidden></p></form><section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
+    modal.addEventListener('click', async (event) => {
+      if (event.target === modal || event.target.closest('[data-close]')) return closeModal();
+      const proofDelete = event.target.closest('[data-proof-delete]');
+      const proofPreview = event.target.closest('[data-proof-preview]');
+      const signatureDelete = event.target.closest('[data-signature-delete]');
+      const signatureCapture = event.target.closest('[data-signature-capture]');
+      const signaturePreview = event.target.closest('[data-signature-preview]');
+      const actionButton = event.target.closest('[data-job-lifecycle]');
+      if (!proofDelete && !proofPreview && !signatureDelete && !signatureCapture && !signaturePreview && !actionButton) return;
+      const action = actionButton && actionButton.dataset.jobLifecycle;
+      try {
+        if (proofDelete) {
+          await api('/jobs/' + job.id + '/proof-photos/' + proofDelete.dataset.proofDelete, { method: 'DELETE' });
+        } else if (proofPreview) {
+          openProofPhotoPreview((job.proofPhotos || []).find((photo) => photo.id === proofPreview.dataset.proofPreview));
+          return;
+        } else if (signaturePreview) {
+          openSignaturePreview(job.signature);
+          return;
+        } else if (signatureCapture) {
+          const file = await openSignatureCapture(job);
+          const signerName = modal.querySelector('[data-signature-signer-name]') && modal.querySelector('[data-signature-signer-name]').value;
+          await uploadSignatureFile(job.id, file, signerName);
+        } else if (signatureDelete) {
+          const confirmed = await openConfirmModal({ title: 'Delete Signature', message: 'Are you sure you want to delete this customer signature?', okLabel: 'Delete', cancelLabel: 'Cancel', closeExisting: false });
+          if (!confirmed) return;
+          await api('/jobs/' + job.id + '/signature', { method: 'DELETE' });
+        } else if (action === 'complete') {
+          const completed = await completeJobWithNotes(job);
+          if (!completed) return;
+        } else {
+          await api('/jobs/' + job.id + '/' + action, { method: 'POST', body: '{}' });
+        }
+        await load();
+        await openJobDetail(job.id);
+      } catch (error) {
+        const message = modal.querySelector('[data-signature-message]') || modal.querySelector('.fc-form-error');
+        if (message) { message.textContent = error.message; message.hidden = false; }
+      }
+    });
+    setupEvidenceUploadPreviews(modal);
+    modal.querySelector('.job-proof-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = event.currentTarget.querySelector('.fc-form-error');
+      if (message) message.hidden = true;
+      try {
+        const files = Array.from(event.currentTarget.photo && event.currentTarget.photo.files || []);
+        if (files.length > 1) {
+          const caption = event.currentTarget.caption && event.currentTarget.caption.value || '';
+          for (const file of files) {
+            const formData = new FormData();
+            formData.append('photo', file);
+            formData.append('caption', caption);
+            await uploadJobEvidence(job.id, '/proof-photos', formData);
+          }
+        } else {
+          await uploadJobEvidence(job.id, '/proof-photos', event.currentTarget);
+        }
+        await openJobDetail(job.id);
+      } catch (error) {
+        if (message) { message.textContent = error.message; message.hidden = false; }
+      }
+    });
+   modal.querySelector('.job-note-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const note = event.currentTarget.note.value.trim();
+      if (!note) return;
+      const message = modal.querySelector('.fc-form-error');
+      if (message) message.hidden = true;
+      try {
+        await api('/jobs/' + job.id + '/activity', { method: 'POST', body: JSON.stringify({ note }) });
+        await openJobDetail(job.id);
+      } catch (error) {
+        if (message) { message.textContent = error.message; message.hidden = false; }
+      }
+    });
+    document.body.appendChild(modal);
+  }
+  async function handleWorkerDashboardAction(event) {
+    const button = event.target.closest('[data-worker-dashboard-action]');
+    if (!button) return;
+    const id = button.dataset.id;
+    const action = button.dataset.workerDashboardAction;
+    try {
+      const job = await api('/jobs/' + id);
+      if (action === 'complete') {
+        const completed = await completeJobWithNotes(job);
+        if (!completed) return;
+      } else {
+        await api('/jobs/' + id + '/' + action, { method: 'POST', body: '{}' });
+      }
+      await load();
+    } catch (error) {
+      setStatus(error.message, false);
+    }
+  }
+
   async function handleRowAction(event) {
     const button = event.target.closest('[data-row-action]');
     if (!button) return;
@@ -698,7 +1205,10 @@
       if (action === 'quote-send') await api('/quotes/' + id + '/send', { method: 'POST', body: '{}' });
       if (action === 'quote-accept') await api('/quotes/' + id + '/accept', { method: 'POST', body: '{}' });
       if (action === 'quote-reject') await api('/quotes/' + id + '/reject', { method: 'POST', body: '{}' });
-      if (action === 'job-complete') await api('/jobs/' + id + '/complete', { method: 'POST', body: JSON.stringify({ completionNotes: 'Completed from FieldCore web app', adminOverride: true }) });
+      if (action === 'job-detail') {
+        await openJobDetail(id);
+        return;
+      }
       if (action === 'job-schedule') {
         await openScheduleModal(id, 'schedule');
         return;
@@ -724,6 +1234,71 @@
     } catch (error) {
       setStatus(error.message, false);
     }
+  }
+
+  function workerPreferenceKey() {
+    return 'fieldcore-worker-preferences-' + (state.user && state.user.id || 'user');
+  }
+
+  function workerPreferences() {
+    try { return JSON.parse(localStorage.getItem(workerPreferenceKey()) || '{}'); } catch (error) { return {}; }
+  }
+
+  function renderWorkerSettings() {
+    const pageEl = document.querySelector('.page');
+    if (!pageEl) return;
+    const prefs = workerPreferences();
+    pageEl.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Settings</h2><p>Manage your account, job alerts, and sign-in security.</p></div><span class="api-status" data-api-status>Connected</span></div><section class="settings-layout worker-settings"><aside class="panel settings-tabs" aria-label="Settings sections"><button class="settings-tab active" type="button" data-settings-target="account">Account</button><button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button><button class="settings-tab" type="button" data-settings-target="security">Security</button></aside><div class="settings-panels"><div class="panel settings-panel active" data-settings-panel="account"><div class="panel-head"><h2>Account</h2><span class="badge gray">Worker</span></div><form class="form-grid" data-worker-account-form><div class="field"><label for="workerName">Name</label><input id="workerName" name="name" required maxlength="120" value="' + escapeHtml(state.user && state.user.name || '') + '"></div><div class="field"><label for="workerEmail">Email</label><input id="workerEmail" name="email" type="email" required value="' + escapeHtml(state.user && state.user.email || '') + '"></div><div class="field"><label>Role</label><input value="' + escapeHtml(state.user && state.user.role || 'WORKER') + '" disabled></div><div class="field"><label>Workspace</label><input value="' + escapeHtml(state.user && state.user.company && state.user.company.name || 'FieldCore') + '" disabled></div><div class="form-actions span-2"><button class="primary-button" type="submit">Save Account</button></div><p class="fc-form-error span-2" data-worker-account-message hidden></p></form></div><div class="panel settings-panel" data-settings-panel="notifications" hidden><div class="panel-head"><h2>Notifications</h2><span class="badge gray">Jobs</span></div><form class="form-grid" data-worker-preferences-form><div class="settings-checks span-2"><label><input type="checkbox" name="jobAssigned" ' + (prefs.jobAssigned !== false ? 'checked' : '') + '> New assigned jobs</label><label><input type="checkbox" name="scheduleChanged" ' + (prefs.scheduleChanged !== false ? 'checked' : '') + '> Schedule changes</label><label><input type="checkbox" name="completionReminders" ' + (prefs.completionReminders !== false ? 'checked' : '') + '> Completion evidence reminders</label></div><div class="field span-2"><label for="workerReminderLead">Reminder Lead Time</label><select id="workerReminderLead" name="reminderLead"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Save Preferences</button></div><p class="fc-form-error span-2" data-worker-preferences-message hidden></p></form></div><div class="panel settings-panel" data-settings-panel="security" hidden><div class="panel-head"><h2>Security</h2><span class="badge blue">Protected</span></div><form class="form-grid" data-worker-password-form><div class="field"><label for="currentPassword">Current Password</label><input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label for="newPassword">New Password</label><input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="8" required></div><div class="field span-2"><label for="confirmPassword">Confirm New Password</label><input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required></div><div class="settings-checks span-2"><label><input type="checkbox" checked disabled> Secure HTTP-only session cookie</label><label><input type="checkbox" checked disabled> Company-scoped account access</label></div><div class="form-actions span-2"><button class="primary-button" type="submit">Update Password</button></div><p class="fc-form-error span-2" data-worker-password-message hidden></p></form></div></div></section>';
+    const reminder = pageEl.querySelector('[name="reminderLead"]');
+    if (reminder) reminder.value = prefs.reminderLead || '30';
+    setupSettings();
+    setupWorkerSettings();
+  }
+
+  function setFormMessage(selector, textValue, ok) {
+    const message = document.querySelector(selector);
+    if (!message) return;
+    message.textContent = textValue;
+    message.classList.toggle('green', ok === true);
+    message.hidden = false;
+  }
+
+  function setupWorkerSettings() {
+    const accountForm = document.querySelector('[data-worker-account-form]');
+    if (accountForm) accountForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const body = Object.fromEntries(new FormData(accountForm).entries());
+      try {
+        state.user = await api('/auth/me', { method: 'PATCH', body: JSON.stringify(body) });
+        document.querySelectorAll('[data-current-user-name]').forEach((node) => { node.textContent = state.user.name || state.user.email || 'Signed in'; });
+        setFormMessage('[data-worker-account-message]', 'Account saved.', true);
+      } catch (error) {
+        setFormMessage('[data-worker-account-message]', error.message, false);
+      }
+    });
+
+    const preferencesForm = document.querySelector('[data-worker-preferences-form]');
+    if (preferencesForm) preferencesForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const body = Object.fromEntries(new FormData(preferencesForm).entries());
+      const prefs = { jobAssigned: body.jobAssigned === 'on', scheduleChanged: body.scheduleChanged === 'on', completionReminders: body.completionReminders === 'on', reminderLead: body.reminderLead || '30' };
+      localStorage.setItem(workerPreferenceKey(), JSON.stringify(prefs));
+      setFormMessage('[data-worker-preferences-message]', 'Preferences saved.', true);
+    });
+
+    const passwordForm = document.querySelector('[data-worker-password-form]');
+    if (passwordForm) passwordForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const body = Object.fromEntries(new FormData(passwordForm).entries());
+      if (body.newPassword !== body.confirmPassword) return setFormMessage('[data-worker-password-message]', 'New passwords do not match.', false);
+      try {
+        await api('/auth/me/password', { method: 'PATCH', body: JSON.stringify({ currentPassword: body.currentPassword, newPassword: body.newPassword }) });
+        passwordForm.reset();
+        setFormMessage('[data-worker-password-message]', 'Password updated.', true);
+      } catch (error) {
+        setFormMessage('[data-worker-password-message]', error.message, false);
+      }
+    });
   }
 
   function settingsPayload(form) {
@@ -964,7 +1539,14 @@
       document.querySelectorAll('[data-current-user-name]').forEach((node) => { node.textContent = state.user.name || state.user.email || 'Signed in'; });
       document.querySelectorAll('[data-current-user-role]').forEach((node) => { node.textContent = state.user.role || 'Account'; });
       await loadCompanyBranding();
-      if (page === 'settings') await loadSchedulingSettings();
+      applyRoleUi();
+      if (isWorker() && !['dashboard', 'jobs', 'schedule', 'map', 'settings'].includes(page)) {
+        renderWorkerAccessDenied();
+        setStatus('Restricted worker area', false);
+        return;
+      }
+      if (page === 'settings' && isWorker()) renderWorkerSettings();
+      if (page === 'settings' && !isWorker()) await loadSchedulingSettings();
     } catch (error) {
       setStatus('Log in to load company data.', false);
       showLogin();
@@ -972,6 +1554,22 @@
     }
 
     try {
+      if (isWorker()) {
+        if (page === 'dashboard') renderDashboard(await api('/dashboard'));
+        if (page === 'jobs') {
+          const data = await api('/jobs');
+          state.jobs = data;
+          renderWorkerJobsPage(data);
+        }
+        if (page === 'schedule') {
+          const data = await api('/schedule');
+          state.schedule = data;
+          renderSchedule(data, { workingDayStart: '08:00', workingDayEnd: '17:00' });
+        }
+        if (page === 'settings') renderWorkerSettings();
+        setStatus(`Connected as ${state.user.name}`, true);
+        return;
+      }
       await preloadLookups();
       if (page === 'dashboard') renderDashboard(await api('/dashboard'));
       if (page === 'schedule') {
@@ -1000,11 +1598,14 @@
     await api('/auth/logout', { method: 'POST', body: '{}' });
     state.user = null;
     showLogin();
-  });  document.addEventListener('click', handleRowAction);
+  });
+  document.addEventListener('click', handleWorkerDashboardAction);
+  document.addEventListener('click', handleRowAction);
   setupCreateButtons();
   setupSettings();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', load);
   else load();
 })();
+
 
 

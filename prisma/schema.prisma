@@ -16,10 +16,28 @@ enum Role {
 enum JobStatus {
   NEW
   SCHEDULED
+  DISPATCHED
+  ARRIVED
   IN_PROGRESS
+  PAUSED
   ON_HOLD
   COMPLETED
   CANCELLED
+}
+
+enum JobActivityType {
+  ASSIGNED
+  ARRIVED
+  STARTED
+  PAUSED
+  RESUMED
+  COMPLETED
+  ADMIN_NOTE
+  STATUS_CHANGED
+  PROOF_PHOTO_ADDED
+  PROOF_PHOTO_REMOVED
+  SIGNATURE_ADDED
+  SIGNATURE_REMOVED
 }
 
 enum QuoteStatus {
@@ -121,8 +139,10 @@ model Company {
   receipts             Receipt[]
   invoiceCounter       CompanyInvoiceCounter?
   workerLocations      WorkerLocation[]
-  jobPhotos            JobPhoto[]
+  jobProofPhotos       JobProofPhoto[]
+  jobSignatures        JobSignature[]
   auditLogs            AuditLog[]
+  jobActivities        JobActivity[]
   quoteStatusHistory   QuoteStatusHistory[]
   invoiceStatusHistory InvoiceStatusHistory[]
   branding             CompanyBranding?
@@ -169,6 +189,9 @@ model User {
   quoteStatusChanges   QuoteStatusHistory[]
   invoiceStatusChanges InvoiceStatusHistory[]
   paymentsCreated      Payment[]
+  jobActivities        JobActivity[]
+  proofPhotosUploaded  JobProofPhoto[]       @relation("JobProofPhotoUploadedBy")
+  signaturesCaptured   JobSignature[]        @relation("JobSignatureCapturedBy")
 
   @@index([companyId])
 }
@@ -222,6 +245,8 @@ model WorkerProfile {
   user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   role            WorkerRole?      @relation(fields: [roleId], references: [id], onDelete: SetNull)
   jobs            Job[]
+  jobActivities   JobActivity[]
+  proofPhotos     JobProofPhoto[]
   scheduleItems   ScheduleItem[]
   workerLocations WorkerLocation[]
   availability    WorkerAvailability[]
@@ -268,9 +293,18 @@ model Job {
   travelBufferMinutes  Int?
   rescheduledFromId    String?
   recurrenceRuleId     String?
+  arrivedAt            DateTime?
+  startedAt            DateTime?
+  pausedAt             DateTime?
+  resumedAt            DateTime?
   completedAt          DateTime?
   completionNotes      String?
   customerSignatureUrl String?
+  requiresProofPhotos  Boolean        @default(false)
+  minimumProofPhotos   Int            @default(0)
+  requiresSignature    Boolean        @default(false)
+  proofCompletedAt     DateTime?
+  signatureCompletedAt DateTime?
   total                Decimal        @default(0) @db.Decimal(12, 2)
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
@@ -281,11 +315,33 @@ model Job {
   scheduleItems        ScheduleItem[]
   quotes               Quote[]
   invoices             Invoice[]
-  photos               JobPhoto[]
+  proofPhotos          JobProofPhoto[]
+  signature            JobSignature?
   scheduleConflicts    ScheduleConflict[]
+  activities           JobActivity[]
 
   @@index([companyId])
   @@index([companyId, customerId])
+}
+
+
+model JobActivity {
+  id        String          @id @default(cuid())
+  companyId String
+  jobId     String
+  workerId  String?
+  userId    String?
+  type      JobActivityType
+  note      String?
+  metadata  Json?
+  createdAt DateTime        @default(now())
+  company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job       Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker    WorkerProfile?  @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  user      User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, jobId, createdAt])
+  @@index([companyId, workerId, createdAt])
 }
 
 model ScheduleItem {
@@ -631,17 +687,44 @@ model RecurringJobRule {
 
   @@index([companyId, nextRunAt])
 }
-model JobPhoto {
-  id        String   @id @default(cuid())
-  companyId String
-  jobId     String
-  url       String
-  caption   String?
-  createdAt DateTime @default(now())
-  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+model JobProofPhoto {
+  id           String         @id @default(cuid())
+  companyId    String
+  jobId        String
+  workerId     String?
+  uploadedById String?
+  url          String
+  filename     String
+  mimeType     String
+  sizeBytes    Int
+  caption      String?
+  createdAt    DateTime       @default(now())
+  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job          Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker       WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  uploadedBy   User?          @relation("JobProofPhotoUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, jobId])
+  @@index([companyId, workerId])
+  @@index([companyId, uploadedById])
+}
+
+model JobSignature {
+  id           String   @id @default(cuid())
+  companyId    String
+  jobId        String   @unique
+  capturedById String?
+  signerName   String?
+  signatureUrl String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  capturedBy   User?    @relation("JobSignatureCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, jobId])
+  @@index([companyId, capturedById])
 }
 
 model AuditLog {
@@ -658,3 +741,4 @@ model AuditLog {
 
   @@index([companyId, createdAt])
 }
+

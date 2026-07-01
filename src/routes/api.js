@@ -52,6 +52,8 @@ const optionalUrl = z
   .transform((value) => value || undefined);
 const optionalColor = hexColor.optional().or(z.literal('')).transform((value) => value || undefined);
 const adminRoles = ['OWNER', 'ADMIN'];
+const jobStatusValues = ['NEW', 'SCHEDULED', 'DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
+const activityTypeValues = ['ASSIGNED','ARRIVED','STARTED','PAUSED','RESUMED','COMPLETED','ADMIN_NOTE','STATUS_CHANGED','PROOF_PHOTO_ADDED','PROOF_PHOTO_REMOVED','SIGNATURE_ADDED','SIGNATURE_REMOVED'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -169,13 +171,98 @@ async function validateInvoiceRelations(req, body) {
   if (body.jobId) await requireJob(req, body.jobId, { assignedOnly: false });
 }
 
+const jobInclude = { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE } };
+const jobDetailInclude = { ...jobInclude, proofPhotos: { orderBy: { createdAt: 'desc' } }, signature: true };
+const jobActivityInclude = { worker: { include: SAFE_WORKER_INCLUDE }, user: { select: { id: true, companyId: true, email: true, name: true, role: true, createdAt: true, updatedAt: true } } };
+
+function lifecycleWorkerId(req, job) {
+  return req.user.role === 'WORKER' && req.user.worker ? req.user.worker.id : job.workerId;
+}
+
+function evidenceStatus(job) {
+  const proofPhotoCount = Array.isArray(job.proofPhotos) ? job.proofPhotos.length : 0;
+  const proofPhotosRequired = Boolean(job.requiresProofPhotos);
+  const signatureCaptured = Boolean(job.signature);
+  return {
+    proofPhotosRequired,
+    minimumProofPhotos: proofPhotosRequired ? 1 : 0,
+    proofPhotoCount,
+    proofPhotosSatisfied: !proofPhotosRequired || proofPhotoCount >= 1,
+    signatureRequired: Boolean(job.requiresSignature),
+    signatureCaptured,
+    signatureSatisfied: !job.requiresSignature || signatureCaptured,
+    completionNotesRequired: true
+  };
+}
+
+function jobWithEvidenceStatus(job) {
+  if (!job) return job;
+  return { ...job, completionEvidence: evidenceStatus(job) };
+}
+
+function createActivityData(req, job, type, note, metadata) {
+  return { companyId: req.companyId, jobId: job.id, workerId: lifecycleWorkerId(req, job), userId: req.user.id, type, note, metadata };
+}
+
+async function addJobActivity(tx, req, job, type, note, metadata) {
+  return tx.jobActivity.create({ data: createActivityData(req, job, type, note, metadata), include: jobActivityInclude });
+}
+
+async function addAuditLog(tx, req, action, entity, entityId, metadata) {
+  return tx.auditLog.create({ data: { companyId: req.companyId, userId: req.user && req.user.id, action, entity, entityId, metadata } });
+}
+
+function assertNotCancelled(job, action) {
+  if (job.status === 'CANCELLED') throw new AppError(409, 'Cancelled jobs cannot be ' + action);
+}
+
+function assertTransition(job, allowed, target) {
+  if (!allowed.includes(job.status)) throw new AppError(409, 'Job must be ' + allowed.map((item) => item.replace(/_/g, ' ')).join(' or ') + ' before it can move to ' + target.replace(/_/g, ' '));
+}
+
+async function lifecycleTransition(req, jobId, config) {
+  const job = await requireJob(req, jobId, { assignedOnly: req.user.role === 'WORKER' });
+  assertNotCancelled(job, config.cancelledLabel || config.type.toLowerCase());
+  assertTransition(job, config.allowed, config.status);
+  const now = new Date();
+  const data = await prisma.$transaction(async (tx) => {
+    const updated = await tx.job.update({ where: { id: job.id }, data: { status: config.status, [config.stamp]: now }, include: jobDetailInclude });
+    await addJobActivity(tx, req, job, config.type, config.note, { fromStatus: job.status, toStatus: config.status });
+    await addAuditLog(tx, req, config.type, 'Job', job.id, { fromStatus: job.status, toStatus: config.status });
+    return updated;
+  });
+  return data;
+}
+
 async function validateScheduleRelations(req, body) {
   await requireJob(req, body.jobId, { assignedOnly: false });
   if (body.workerId) await requireWorker(req, body.workerId);
 }
 
 const uploadDir = path.resolve(__dirname, '../../uploads/logos');
+const proofUploadDir = path.resolve(__dirname, '../../uploads/jobs/proof');
+const signatureUploadDir = path.resolve(__dirname, '../../uploads/jobs/signatures');
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(proofUploadDir, { recursive: true });
+fs.mkdirSync(signatureUploadDir, { recursive: true });
+
+const evidenceImageTypes = ['image/png', 'image/jpeg', 'image/webp'];
+
+function uploadFilename(prefix, file) {
+  const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+  return prefix + '-' + crypto.randomUUID() + ext;
+}
+
+function singleUpload(upload, fieldName) {
+  return (req, res, next) => {
+    upload.single(fieldName)(req, res, (error) => {
+      if (!error) return next();
+      if (error instanceof AppError) return next(error);
+      if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') return next(new AppError(400, 'Uploaded image is too large'));
+      return next(error);
+    });
+  };
+}
 
 const logoUpload = multer({
   storage: multer.diskStorage({
@@ -189,6 +276,30 @@ const logoUpload = multer({
   fileFilter: (req, file, cb) => {
     const allowed = ['image/png', 'image/jpeg', 'image/webp'];
     if (!allowed.includes(file.mimetype)) return cb(new AppError(400, 'Only PNG, JPG, and WEBP logos are allowed')); 
+    cb(null, true);
+  }
+});
+
+const proofUpload = multer({
+  storage: multer.diskStorage({
+    destination: proofUploadDir,
+    filename: (req, file, cb) => cb(null, uploadFilename(req.companyId + '-proof', file))
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!evidenceImageTypes.includes(file.mimetype)) return cb(new AppError(400, 'Only PNG, JPG, and WEBP proof photos are allowed'));
+    cb(null, true);
+  }
+});
+
+const signatureUpload = multer({
+  storage: multer.diskStorage({
+    destination: signatureUploadDir,
+    filename: (req, file, cb) => cb(null, uploadFilename(req.companyId + '-signature', file))
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!evidenceImageTypes.includes(file.mimetype)) return cb(new AppError(400, 'Only PNG, JPG, and WEBP signatures are allowed'));
     cb(null, true);
   }
 });
@@ -375,7 +486,7 @@ const schedulingSettingsSchema = z.object({
   defaultJobDurationMinutes: z.coerce.number().int().positive().optional(),
   defaultTravelBufferMinutes: z.coerce.number().int().min(0).optional(),
   allowOverbooking: z.boolean().optional(),
-  defaultJobStatus: z.enum(['NEW', 'SCHEDULED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  defaultJobStatus: z.enum(jobStatusValues).optional(),
   requireCompletionNotes: z.boolean().optional(),
   requireProofPhotos: z.boolean().optional(),
   autoCreateScheduleOnAssign: z.boolean().optional(),
@@ -531,6 +642,16 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
+const accountPatchSchema = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  email: z.string().email().transform((v) => v.toLowerCase()).optional()
+});
+
+const passwordPatchSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8)
+});
+
 router.post('/auth/register', validate(registerSchema), asyncHandler(async (req, res) => {
   const user = await prisma.$transaction(async (tx) => {
     const company = await tx.company.create({ data: { name: req.body.companyName } });
@@ -575,6 +696,24 @@ router.get('/auth/session', asyncHandler(async (req, res) => {
   });
 }));
 router.get('/auth/me', requireAuth, (req, res) => sendData(res, publicUser(req.user)));
+
+router.patch('/auth/me', requireAuth, validate(accountPatchSchema), asyncHandler(async (req, res) => {
+  const existing = await prisma.user.findFirst({ where: { id: req.user.id, companyId: req.companyId } });
+  if (!existing) throw new AppError(404, 'User not found');
+  const data = await prisma.user.update({ where: { id: existing.id }, data: req.body, select: SAFE_LOGIN_USER_SELECT });
+  setAuthCookie(res, data);
+  await audit({ companyId: req.companyId, user: data }, 'UPDATE', 'User', data.id, { section: 'account' });
+  sendData(res, publicUser(data));
+}));
+
+router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), asyncHandler(async (req, res) => {
+  const existing = await prisma.user.findFirst({ where: { id: req.user.id, companyId: req.companyId } });
+  if (!existing || !(await verifyPassword(req.body.currentPassword, existing.passwordHash))) throw new AppError(401, 'Current password is incorrect');
+  const data = await prisma.user.update({ where: { id: existing.id }, data: { passwordHash: await hashPassword(req.body.newPassword) }, select: SAFE_LOGIN_USER_SELECT });
+  setAuthCookie(res, data);
+  await audit({ companyId: req.companyId, user: data }, 'UPDATE', 'User', data.id, { section: 'password' });
+  sendData(res, { updated: true });
+}));
 
 router.use(requireAuth);
 
@@ -635,6 +774,64 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
+
+  if (req.user.role === 'WORKER') {
+    const workerId = req.user.worker ? req.user.worker.id : '__none__';
+    const workerWhere = { companyId, workerId };
+    const [company, activeJob, jobsToday, upcomingJobs, completedJobs, assignedJobs] = await Promise.all([
+      getCompanyWithBranding(companyId),
+      prisma.job.findFirst({ where: { ...workerWhere, status: { in: ['IN_PROGRESS', 'PAUSED'] } }, include: jobInclude, orderBy: { updatedAt: 'desc' } }),
+      prisma.job.findMany({ where: { ...workerWhere, scheduledStart: { gte: start, lt: end } }, include: jobInclude, orderBy: { scheduledStart: 'asc' }, take: 10 }),
+      prisma.job.findMany({ where: { ...workerWhere, scheduledStart: { gte: end } }, include: jobInclude, orderBy: { scheduledStart: 'asc' }, take: 5 }),
+      prisma.job.count({ where: { ...workerWhere, status: 'COMPLETED', completedAt: { gte: start, lt: end } } }),
+      prisma.job.findMany({ where: workerWhere, select: { id: true }, orderBy: { createdAt: 'desc' }, take: 100 })
+    ]);
+
+    const assignedJobIds = assignedJobs.map((job) => job.id);
+    const recentActivity = assignedJobIds.length
+      ? await prisma.jobActivity.findMany({ where: { companyId, jobId: { in: assignedJobIds }, type: { in: ['ARRIVED', 'STARTED', 'PAUSED', 'RESUMED', 'COMPLETED'] } }, include: { ...jobActivityInclude, job: { include: { customer: true } } }, orderBy: { createdAt: 'desc' }, take: 8 })
+      : [];
+    const workerJobSummary = (job) => job && ({
+      id: job.id,
+      title: job.title,
+      status: job.status,
+      scheduledStart: job.scheduledStart,
+      scheduledEnd: job.scheduledEnd,
+      customer: job.customer ? { id: job.customer.id, name: job.customer.name, address: job.customer.address } : null
+    });
+    const workerActivitySummary = (item) => ({
+      id: item.id,
+      jobId: item.jobId,
+      type: item.type,
+      note: item.note,
+      createdAt: item.createdAt,
+      job: workerJobSummary(item.job)
+    });
+    const requiredActions = [];
+    if (activeJob && activeJob.status === 'IN_PROGRESS') requiredActions.push({ type: 'COMPLETE_ACTIVE_JOB', label: 'Complete active job', jobId: activeJob.id });
+    if (activeJob && activeJob.status === 'PAUSED') requiredActions.push({ type: 'RESUME_PAUSED_JOB', label: 'Resume paused job', jobId: activeJob.id });
+    for (const job of jobsToday) {
+      if (job.status === 'SCHEDULED' && job.scheduledStart && new Date(job.scheduledStart) <= now) requiredActions.push({ type: 'START_SCHEDULED_JOB', label: 'Start scheduled job', jobId: job.id });
+      if (!['COMPLETED', 'CANCELLED'].includes(job.status) && job.scheduledEnd && new Date(job.scheduledEnd) < now) requiredActions.push({ type: 'JOB_OVERDUE', label: 'Job overdue', jobId: job.id });
+      if (job.status === 'COMPLETED' && !job.completionNotes) requiredActions.push({ type: 'ADD_COMPLETION_NOTES', label: 'Add completion notes', jobId: job.id });
+    }
+
+    return sendData(res, normalize({
+      role: 'WORKER',
+      branding: publicBranding(company),
+      company: profileResponse(company),
+      today: {
+        totalJobs: jobsToday.length,
+        completedJobs,
+        remainingJobs: Math.max(jobsToday.length - completedJobs, 0),
+        activeJob: workerJobSummary(activeJob)
+      },
+      jobsToday: jobsToday.map(workerJobSummary),
+      upcomingJobs: upcomingJobs.map(workerJobSummary),
+      recentActivity: recentActivity.map(workerActivitySummary),
+      requiredActions
+    }));
+  }
 
   const [company, jobsToday, activeWorkers, recentJobs, schedule, workers, pipeline, unpaid] = await Promise.all([
     getCompanyWithBranding(companyId),
@@ -789,17 +986,25 @@ const jobSchema = z.object({
   workerId: z.string().optional(),
   title: z.string().min(2),
   description: z.string().optional(),
-  status: z.enum(['NEW', 'SCHEDULED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED']).optional(),
+  status: z.enum(jobStatusValues).optional(),
   scheduledStart: optionalDate,
   scheduledEnd: optionalDate,
   durationMinutes: z.coerce.number().int().positive().optional(),
   travelBufferMinutes: z.coerce.number().int().min(0).optional(),
+  requiresProofPhotos: z.boolean().optional(),
+  minimumProofPhotos: z.coerce.number().int().min(0).max(20).optional(),
+  requiresSignature: z.boolean().optional(),
   total: amount.optional(),
   adminOverride: z.boolean().optional()
 });
 
 router.get('/jobs', asyncHandler(async (req, res) => {
-  const result = await paged(prisma.job, req, { where: { companyId: req.companyId, ...workerJobScope(req) }, include: { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { createdAt: 'desc' } });
+  const result = await paged(prisma.job, req, { where: { companyId: req.companyId, ...workerJobScope(req) }, include: jobInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/worker/jobs', requireRole('WORKER'), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.job, req, { where: { companyId: req.companyId, ...workerJobScope(req) }, include: jobInclude, orderBy: { scheduledStart: 'asc' } });
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
@@ -886,44 +1091,206 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
 
 router.get('/jobs/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireJob(req, req.params.id);
-  const data = await prisma.job.findUnique({ where: { id: req.params.id }, include: { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE }, photos: true } });
-  sendData(res, normalize(data));
+  const data = await prisma.job.findUnique({ where: { id: req.params.id }, include: jobDetailInclude });
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
+}));
+
+router.get('/worker/jobs/:id', requireRole('WORKER'), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireJob(req, req.params.id, { assignedOnly: true });
+  const data = await prisma.job.findUnique({ where: { id: req.params.id }, include: jobDetailInclude });
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 
 router.patch('/jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(jobSchema.partial()), asyncHandler(async (req, res) => {
   await requireJob(req, req.params.id, { assignedOnly: false });
   await validateJobRelations(req, req.body);
-  const data = await prisma.job.update({ where: { id: req.params.id }, data: req.body, include: { customer: true, worker: { include: SAFE_WORKER_INCLUDE } } });
+  const data = await prisma.job.update({ where: { id: req.params.id }, data: req.body, include: jobDetailInclude });
   await audit(req, 'UPDATE', 'Job', data.id);
-  sendData(res, normalize(data));
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 
 router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1) })), asyncHandler(async (req, res) => {
   await requireJob(req, req.params.id, { assignedOnly: false });
   await requireWorker(req, req.body.workerId);
-  const data = await prisma.job.update({ where: { id: req.params.id }, data: { workerId: req.body.workerId, status: 'SCHEDULED' } });
-  await audit(req, 'ASSIGN_WORKER', 'Job', data.id, { workerId: req.body.workerId });
+  const data = await prisma.$transaction(async (tx) => {
+    const updated = await tx.job.update({ where: { id: req.params.id }, data: { workerId: req.body.workerId, status: 'SCHEDULED' } });
+    await addJobActivity(tx, req, updated, 'ASSIGNED', null, { workerId: req.body.workerId });
+    await addAuditLog(tx, req, 'ASSIGN_WORKER', 'Job', updated.id, { workerId: req.body.workerId });
+    return updated;
+  });
   sendData(res, normalize(data));
 }));
 
-const completeJobSchema = z.object({ completionNotes: z.string().trim().max(2000).optional(), customerSignatureUrl: z.string().url().optional(), proofPhotoIds: z.array(z.string().min(1)).optional(), adminOverride: z.boolean().optional() });
+const noteActivitySchema = z.object({ note: z.string().trim().min(1).max(2000), metadata: z.record(z.any()).optional() });
+const completeJobSchema = z.object({ completionNotes: z.string().trim().min(1).max(2000).optional(), adminOverride: z.boolean().optional(), customerSignatureUrl: z.string().url().optional(), proofPhotoIds: z.array(z.string().min(1)).optional() });
 
-router.post('/jobs/:id/complete', validate(idParam, 'params'), validate(completeJobSchema), asyncHandler(async (req, res) => {
-  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === 'WORKER' });
-  if (job.status === 'COMPLETED') return sendData(res, normalize(job));
-  if (job.status === 'CANCELLED') throw new AppError(409, 'Cancelled jobs cannot be completed');
-  const isAdmin = adminRoles.includes(req.user.role);
-  const hasProof = (req.body.proofPhotoIds && req.body.proofPhotoIds.length > 0) || Boolean(req.body.completionNotes);
-  if (!isAdmin && !hasProof) throw new AppError(400, 'Completion notes or proof photo is required');
-  if (req.body.adminOverride && !isAdmin) throw new AppError(403, 'Only admins can use completion override');
-  if (!hasProof && !req.body.adminOverride) throw new AppError(400, 'Completion notes or proof photo is required');
-  if (req.body.proofPhotoIds && req.body.proofPhotoIds.length) {
-    const count = await prisma.jobPhoto.count({ where: { companyId: req.companyId, jobId: job.id, id: { in: req.body.proofPhotoIds } } });
-    if (count !== req.body.proofPhotoIds.length) throw new AppError(404, 'Proof photo not found');
-  }
-  const data = await prisma.job.update({ where: { id: job.id }, data: { status: 'COMPLETED', completedAt: new Date(), completionNotes: req.body.completionNotes, customerSignatureUrl: req.body.customerSignatureUrl }, include: { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE }, photos: true } });
-  await audit(req, req.body.adminOverride ? 'COMPLETE_ADMIN_OVERRIDE' : 'COMPLETE', 'Job', data.id, { proofPhotoIds: req.body.proofPhotoIds || [] });
+router.post('/jobs/:id/arrive', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const data = await lifecycleTransition(req, req.params.id, { allowed: ['SCHEDULED', 'DISPATCHED'], status: 'ARRIVED', stamp: 'arrivedAt', type: 'ARRIVED', cancelledLabel: 'arrived' });
   sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/start', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const data = await lifecycleTransition(req, req.params.id, { allowed: ['ARRIVED', 'SCHEDULED', 'DISPATCHED'], status: 'IN_PROGRESS', stamp: 'startedAt', type: 'STARTED', cancelledLabel: 'started' });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/pause', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const data = await lifecycleTransition(req, req.params.id, { allowed: ['IN_PROGRESS'], status: 'PAUSED', stamp: 'pausedAt', type: 'PAUSED', cancelledLabel: 'paused' });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/resume', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const data = await lifecycleTransition(req, req.params.id, { allowed: ['PAUSED'], status: 'IN_PROGRESS', stamp: 'resumedAt', type: 'RESUMED', cancelledLabel: 'resumed' });
+  sendData(res, normalize(data));
+}));
+
+router.post("/jobs/:id/complete", validate(idParam, "params"), validate(completeJobSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  if (job.status === "COMPLETED") {
+    const existing = await prisma.job.findFirst({ where: { id: job.id, companyId: req.companyId }, include: jobDetailInclude });
+    return sendData(res, normalize(jobWithEvidenceStatus(existing)));
+  }
+  assertNotCancelled(job, "completed");
+  const isAdmin = adminRoles.includes(req.user.role);
+  if (req.body.adminOverride && !isAdmin) throw new AppError(403, "Only admins can use completion override");
+  if (!req.body.completionNotes && !req.body.adminOverride) throw new AppError(400, "Completion notes are required");
+  if (!["IN_PROGRESS", "PAUSED"].includes(job.status) && !(isAdmin && req.body.adminOverride)) assertTransition(job, ["IN_PROGRESS", "PAUSED"], "COMPLETED");
+  const [proofPhotoCount, signature] = await Promise.all([
+    prisma.jobProofPhoto.count({ where: { companyId: req.companyId, jobId: job.id } }),
+    prisma.jobSignature.findFirst({ where: { companyId: req.companyId, jobId: job.id } })
+  ]);
+  const missing = {
+    proofPhotos: Boolean(job.requiresProofPhotos) && proofPhotoCount < 1,
+    signature: Boolean(job.requiresSignature) && !signature
+  };
+  if ((missing.proofPhotos || missing.signature) && !req.body.adminOverride) {
+    throw new AppError(409, "Completion evidence is required", {
+      proofPhotos: { required: Boolean(job.requiresProofPhotos), minimum: Boolean(job.requiresProofPhotos) ? 1 : 0, count: proofPhotoCount, satisfied: !missing.proofPhotos },
+      signature: { required: Boolean(job.requiresSignature), captured: Boolean(signature), satisfied: !missing.signature }
+    });
+  }
+  const now = new Date();
+  const updateData = {
+    status: "COMPLETED",
+    completedAt: now,
+    completionNotes: req.body.completionNotes || job.completionNotes
+  };
+  if (proofPhotoCount > 0 && !job.proofCompletedAt) updateData.proofCompletedAt = now;
+  if (signature && !job.signatureCompletedAt) updateData.signatureCompletedAt = now;
+  const data = await prisma.$transaction(async (tx) => {
+    const updated = await tx.job.update({ where: { id: job.id }, data: updateData, include: jobDetailInclude });
+    await addJobActivity(tx, req, job, "COMPLETED", req.body.completionNotes, { fromStatus: job.status, toStatus: "COMPLETED", adminOverride: Boolean(req.body.adminOverride) });
+    await addAuditLog(tx, req, req.body.adminOverride ? "COMPLETE_ADMIN_OVERRIDE" : "COMPLETE", "Job", job.id, { fromStatus: job.status, toStatus: "COMPLETED", proofPhotoCount, signatureCaptured: Boolean(signature) });
+    return updated;
+  });
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
+}));
+
+const proofPhotoBodySchema = z.object({ caption: optionalText(500) });
+const signatureBodySchema = z.object({ signerName: optionalText(160) });
+const proofPhotoParam = z.object({ id: z.string().min(1), photoId: z.string().min(1) });
+
+async function loadEvidenceJob(req, res, next) {
+  try {
+    req.evidenceJob = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
+function evidenceWorkerId(req, job) {
+  if (req.user.role === "WORKER") return req.user.worker ? req.user.worker.id : null;
+  return job.workerId || null;
+}
+
+function uploadedFileUrl(kind, file) {
+  return "/uploads/jobs/" + kind + "/" + file.filename;
+}
+
+router.get("/jobs/:id/proof-photos", validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const result = await paged(prisma.jobProofPhoto, req, { where: { companyId: req.companyId, jobId: job.id }, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post("/jobs/:id/proof-photos", validate(idParam, "params"), loadEvidenceJob, singleUpload(proofUpload, "photo"), asyncHandler(async (req, res) => {
+  if (!req.file) throw new AppError(400, "Proof photo is required");
+  const parsed = proofPhotoBodySchema.safeParse(req.body);
+  if (!parsed.success) throw parsed.error;
+  const job = req.evidenceJob;
+  const data = await prisma.$transaction(async (tx) => {
+    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: uploadedFileUrl("proof", req.file), filename: req.file.filename, mimeType: req.file.mimetype, sizeBytes: req.file.size, caption: parsed.data.caption } });
+    await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", parsed.data.caption, { proofPhotoId: photo.id });
+    await addAuditLog(tx, req, "CREATE", "JobProofPhoto", photo.id, { jobId: job.id });
+    return photo;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.delete("/jobs/:id/proof-photos/:photoId", validate(proofPhotoParam, "params"), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const photo = await prisma.jobProofPhoto.findFirst({ where: { id: req.params.photoId, companyId: req.companyId, jobId: job.id } });
+  if (!photo) throw notFound("Proof photo not found");
+  if (req.user.role === "WORKER" && photo.uploadedById !== req.user.id) throw new AppError(403, "Workers can only remove proof photos they uploaded");
+  const data = await prisma.$transaction(async (tx) => {
+    const removed = await tx.jobProofPhoto.delete({ where: { id: photo.id } });
+    await addJobActivity(tx, req, job, "PROOF_PHOTO_REMOVED", photo.caption, { proofPhotoId: photo.id });
+    await addAuditLog(tx, req, "DELETE", "JobProofPhoto", photo.id, { jobId: job.id });
+    return removed;
+  });
+  sendData(res, normalize(data));
+}));
+
+router.get("/jobs/:id/signature", validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const data = await prisma.jobSignature.findFirst({ where: { companyId: req.companyId, jobId: job.id } });
+  sendData(res, normalize(data));
+}));
+
+router.post("/jobs/:id/signature", validate(idParam, "params"), loadEvidenceJob, singleUpload(signatureUpload, "signature"), asyncHandler(async (req, res) => {
+  if (!req.file) throw new AppError(400, "Signature image is required");
+  const parsed = signatureBodySchema.safeParse(req.body);
+  if (!parsed.success) throw parsed.error;
+  const job = req.evidenceJob;
+  const data = await prisma.$transaction(async (tx) => {
+    const signature = await tx.jobSignature.upsert({ where: { jobId: job.id }, update: { capturedById: req.user.id, signerName: parsed.data.signerName, signatureUrl: uploadedFileUrl("signatures", req.file), mimeType: req.file.mimetype, sizeBytes: req.file.size }, create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, signerName: parsed.data.signerName, signatureUrl: uploadedFileUrl("signatures", req.file), mimeType: req.file.mimetype, sizeBytes: req.file.size } });
+    await addJobActivity(tx, req, job, "SIGNATURE_ADDED", parsed.data.signerName, { signatureId: signature.id });
+    await addAuditLog(tx, req, "UPSERT", "JobSignature", signature.id, { jobId: job.id });
+    return signature;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.delete("/jobs/:id/signature", validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const signature = await prisma.jobSignature.findFirst({ where: { companyId: req.companyId, jobId: job.id } });
+  if (!signature) throw notFound("Signature not found");
+  if (req.user.role === "WORKER" && signature.capturedById !== req.user.id) throw new AppError(403, "Workers can only remove signatures they captured");
+  const data = await prisma.$transaction(async (tx) => {
+    const removed = await tx.jobSignature.delete({ where: { id: signature.id } });
+    await addJobActivity(tx, req, job, "SIGNATURE_REMOVED", signature.signerName, { signatureId: signature.id });
+    await addAuditLog(tx, req, "DELETE", "JobSignature", signature.id, { jobId: job.id });
+    return removed;
+  });
+  sendData(res, normalize(data));
+}));
+
+router.get('/jobs/:id/activity', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === 'WORKER' });
+  const result = await paged(prisma.jobActivity, req, { where: { companyId: req.companyId, jobId: job.id }, include: jobActivityInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/jobs/:id/activity', validate(idParam, 'params'), validate(noteActivitySchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === 'WORKER' });
+  const type = adminRoles.includes(req.user.role) ? 'ADMIN_NOTE' : 'STATUS_CHANGED';
+  const data = await prisma.$transaction(async (tx) => {
+    const activity = await addJobActivity(tx, req, job, type, req.body.note, req.body.metadata);
+    await addAuditLog(tx, req, type, 'Job', job.id, { activityId: activity.id });
+    return activity;
+  });
+  sendData(res, normalize(data), 201);
 }));
 
 const quoteSchema = z.object({
@@ -1536,17 +1903,23 @@ router.get('/worker-location/latest', asyncHandler(async (req, res) => {
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
-const photoSchema = z.object({ url: z.string().url(), caption: z.string().optional() });
-router.post('/jobs/:id/photos', validate(idParam, 'params'), validate(photoSchema), asyncHandler(async (req, res) => {
-  await requireJob(req, req.params.id);
-  const data = await prisma.jobPhoto.create({ data: { ...req.body, companyId: req.companyId, jobId: req.params.id } });
-  await audit(req, 'CREATE', 'JobPhoto', data.id, { jobId: req.params.id });
+const photoSchema = z.object({ url: z.string().url().or(z.string().regex(/^\/uploads\/jobs\/proof\/[a-zA-Z0-9._-]+$/)), caption: optionalText(500) });
+router.post("/jobs/:id/photos", validate(idParam, "params"), validate(photoSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const data = await prisma.$transaction(async (tx) => {
+    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: req.body.url, filename: path.basename(req.body.url), mimeType: "image/jpeg", sizeBytes: 0, caption: req.body.caption } });
+    await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", req.body.caption, { proofPhotoId: photo.id, legacyRoute: true });
+    await addAuditLog(tx, req, "CREATE", "JobProofPhoto", photo.id, { jobId: job.id, legacyRoute: true });
+    return photo;
+  });
   sendData(res, normalize(data), 201);
 }));
-router.get('/jobs/:id/photos', validate(idParam, 'params'), asyncHandler(async (req, res) => {
-  await requireJob(req, req.params.id);
-  const result = await paged(prisma.jobPhoto, req, { where: { companyId: req.companyId, jobId: req.params.id }, orderBy: { createdAt: 'desc' } });
+router.get("/jobs/:id/photos", validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const result = await paged(prisma.jobProofPhoto, req, { where: { companyId: req.companyId, jobId: job.id }, orderBy: { createdAt: "desc" } });
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
 module.exports = { apiRouter: router };
+
+
