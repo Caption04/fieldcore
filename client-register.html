@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang=en>
+  <head>
+    <meta charset=UTF-8>
+    <meta name=viewport content=width=device-width,initial-scale=1.0>
+    <title>Client Register</title>
+    <link rel=stylesheet href=assets/app.css>
+    <script defer src=assets/client-portal.js></script>
+  </head>
+  <body class=client-auth-page data-client-page=register>
+    <main class=public-booking>
+      <section class=public-booking-card client-auth-card>
+        <div class=brand><span class=brand-mark data-client-logo>FC</span><span class=brand-name data-client-brand>FieldCore</span></div>
+        <div class=hero-copy><h2>Create Account</h2><p>Use your portal account to track booking requests.</p></div>
+        <form class=form-grid data-client-register-form>
+          <div class=field><label for=name>Name</label><input id=name name=name required maxlength=160></div>
+          <div class=field><label for=email>Email</label><input id=email name=email type=email autocomplete=email required></div>
+          <div class=field><label for=phone>Phone</label><input id=phone name=phone maxlength=60></div>
+          <div class=field><label for=password>Password</label><input id=password name=password type=password autocomplete=new-password minlength=8 required></div>
+          <div class=fc-form-actions span-2><a class=secondary-button href=client-login.html>Sign In</a><button class=primary-button type=submit>Create Account</button></div>
+          <p class=fc-form-error span-2 data-client-message hidden></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

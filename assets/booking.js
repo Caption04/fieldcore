@@ -3,11 +3,25 @@
   const form = document.querySelector('[data-booking-form]');
   const message = document.querySelector('[data-booking-message]');
   const serviceSelect = document.querySelector('[data-service-select]');
+  let clientSession = null;
   async function publicApi(path, options){
     const response = await fetch(API_BASE + path, { headers: { 'Content-Type': 'application/json' }, ...(options || {}) });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error && payload.error.message || 'HTTP ' + response.status);
     return payload.data;
+  }
+  async function loadClientSession(){
+    try {
+      clientSession = await publicApi('/client/auth/session', { credentials: 'include' });
+    } catch (error) {
+      clientSession = null;
+    }
+  }
+  function prefillClient(){
+    if (!clientSession || !form) return;
+    if (form.customerName && !form.customerName.value) form.customerName.value = clientSession.name || '';
+    if (form.customerEmail && !form.customerEmail.value) form.customerEmail.value = clientSession.email || '';
+    if (form.customerPhone && !form.customerPhone.value) form.customerPhone.value = clientSession.phone || '';
   }
   function setMessage(text, ok){
     if (!message) return;
@@ -23,6 +37,8 @@
     serviceSelect.appendChild(option);
   }
   async function loadPublicBooking(){
+    await loadClientSession();
+    prefillClient();
     try {
       const company = await publicApi('/public/company');
       document.querySelectorAll('[data-public-brand]').forEach((node) => { node.textContent = company.brandName || 'FieldCore'; });
@@ -52,8 +68,13 @@
     const body = Object.fromEntries(new FormData(form).entries());
     Object.keys(body).forEach((key) => { if (body[key] === '') delete body[key]; });
     try {
-      await publicApi('/public/booking-requests', { method: 'POST', body: JSON.stringify(body) });
+      const path = clientSession ? '/client/booking-requests' : '/public/booking-requests';
+      await publicApi(path, { method: 'POST', credentials: 'include', body: JSON.stringify(body) });
       form.reset();
+      if (clientSession) {
+        window.location.href = 'client-portal.html';
+        return;
+      }
       setMessage('Request received. The team will contact you shortly.', true);
     } catch (error) {
       setMessage(error.message, false);
@@ -62,3 +83,7 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadPublicBooking);
   else loadPublicBooking();
 })();
+
+
+
+

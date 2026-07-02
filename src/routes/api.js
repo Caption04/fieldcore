@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const express = require('express');
 const { Prisma } = require('@prisma/client');
@@ -450,11 +451,11 @@ async function recalcInvoice(tx, companyId, invoiceId) {
 }
 
 async function addQuoteStatusHistory(tx, req, quote, toStatus, note) {
-  await tx.quoteStatusHistory.create({ data: { companyId: req.companyId, quoteId: quote.id, fromStatus: quote.status, toStatus, changedById: req.user.id, note } });
+  await tx.quoteStatusHistory.create({ data: { companyId: req.companyId, quoteId: quote.id, fromStatus: quote.status, toStatus, changedById: req.user && req.user.id, note } });
 }
 
 async function addInvoiceStatusHistory(tx, req, invoice, toStatus, note) {
-  await tx.invoiceStatusHistory.create({ data: { companyId: req.companyId, invoiceId: invoice.id, fromStatus: invoice.status, toStatus, changedById: req.user.id, note } });
+  await tx.invoiceStatusHistory.create({ data: { companyId: req.companyId, invoiceId: invoice.id, fromStatus: invoice.status, toStatus, changedById: req.user && req.user.id, note } });
 }
 
 async function nextInvoiceNumber(tx, companyId) {
@@ -717,7 +718,7 @@ router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), as
 }));
 
 
-const bookingRequestInclude = { customer: true, service: true, convertedJob: true };
+const bookingRequestInclude = { customer: true, service: true, convertedJob: true, clientAccount: { select: { id: true, name: true, email: true, phone: true, status: true } } };
 const publicTimeWindow = z.enum(['MORNING', 'AFTERNOON', 'EVENING', 'ANY_TIME']).optional().or(z.literal('')).transform((value) => value || undefined);
 const publicBookingRequestSchema = z.object({
   customerName: z.string().trim().min(2).max(160),
@@ -763,6 +764,373 @@ router.post('/public/booking-requests', validate(publicBookingRequestSchema), as
   const data = await prisma.bookingRequest.create({ data: { companyId: company.id, status: 'NEW', customerName: req.body.customerName, customerEmail: req.body.customerEmail, customerPhone: req.body.customerPhone, address: req.body.address, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: req.body.source || 'public_booking' } });
   sendData(res, normalize(data), 201);
 }));
+
+const CLIENT_COOKIE_NAME = process.env.CLIENT_COOKIE_NAME || "fieldcore_client_token";
+const CLIENT_COOKIE_OPTIONS = { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 1000 * 60 * 60 * 8 };
+const CLIENT_JWT_SECRET = process.env.JWT_SECRET || "dev-only-change-me";
+const clientEmailSchema = z.string().trim().email().transform(function(value) { return value.toLowerCase(); });
+const clientPasswordSchema = z.string().min(8).max(200);
+const clientRegisterSchema = z.object({ name: z.string().trim().min(2).max(160), email: clientEmailSchema, phone: optionalText(60), password: clientPasswordSchema });
+const clientLoginSchema = z.object({ email: clientEmailSchema, password: z.string().min(1).max(200) });
+const clientProfilePatchSchema = z.object({ name: z.string().trim().min(2).max(160).optional(), phone: optionalText(60) });
+const clientChangePasswordSchema = z.object({ currentPassword: z.string().min(1).max(200), newPassword: clientPasswordSchema });
+const clientForgotPasswordSchema = z.object({ email: clientEmailSchema });
+
+function signClientToken(account) {
+  return jwt.sign({ sub: account.id, companyId: account.companyId, kind: "client" }, CLIENT_JWT_SECRET, { expiresIn: "8h" });
+}
+
+function setClientAuthCookie(res, account) {
+  res.cookie(CLIENT_COOKIE_NAME, signClientToken(account), CLIENT_COOKIE_OPTIONS);
+}
+
+function clearClientAuthCookie(res) {
+  res.clearCookie(CLIENT_COOKIE_NAME, { sameSite: CLIENT_COOKIE_OPTIONS.sameSite, secure: CLIENT_COOKIE_OPTIONS.secure });
+}
+
+function publicClientAccount(account) {
+  if (!account) return null;
+  return { id: account.id, companyId: account.companyId, customerId: account.customerId || null, name: account.name, email: account.email, phone: account.phone || null, status: account.status, lastLoginAt: account.lastLoginAt || null, createdAt: account.createdAt, updatedAt: account.updatedAt };
+}
+
+async function requireClientAuth(req, res, next) {
+  try {
+    const token = req.cookies[CLIENT_COOKIE_NAME];
+    if (!token) throw new AppError(401, "Client authentication required");
+    const payload = jwt.verify(token, CLIENT_JWT_SECRET);
+    if (payload.kind !== "client") throw new AppError(401, "Client authentication required");
+    const account = await prisma.clientAccount.findFirst({ where: { id: payload.sub, companyId: payload.companyId } });
+    if (!account || account.status === "DISABLED") throw new AppError(401, "Client authentication required");
+    req.clientAccount = account;
+    req.companyId = account.companyId;
+    next();
+  } catch (error) {
+    next(error.status ? error : new AppError(401, "Client authentication required"));
+  }
+}
+
+async function findOrCreateClientCustomer(companyId, input) {
+  let customer = null;
+  if (input.email) customer = await prisma.customer.findFirst({ where: { companyId: companyId, email: input.email } });
+  if (!customer && input.phone) customer = await prisma.customer.findFirst({ where: { companyId: companyId, phone: input.phone } });
+  if (customer) return customer;
+  return prisma.customer.create({ data: { companyId: companyId, name: input.name, email: input.email, phone: input.phone } });
+}
+
+function uniqueRequests(records) {
+  const seen = new Set();
+  return records.filter(function(record) { if (!record || seen.has(record.id)) return false; seen.add(record.id); return true; }).sort(function(a, b) { return String(b.createdAt || "").localeCompare(String(a.createdAt || "")); });
+}
+
+async function clientBookingRequests(account, extra) {
+  const filters = [
+    { clientAccountId: account.id },
+    account.customerId ? { customerId: account.customerId } : null,
+    account.email ? { customerEmail: account.email } : null,
+    account.phone ? { customerPhone: account.phone } : null
+  ].filter(Boolean);
+  const lists = await Promise.all(filters.map(function(filter) {
+    return prisma.bookingRequest.findMany({ where: { companyId: account.companyId, ...filter, ...(extra || {}) }, include: bookingRequestInclude, orderBy: { createdAt: "desc" } });
+  }));
+  return uniqueRequests([].concat.apply([], lists));
+}
+
+router.post("/client/auth/register", validate(clientRegisterSchema), asyncHandler(async (req, res) => {
+  const company = await publicBookingCompany();
+  const existing = await prisma.clientAccount.findFirst({ where: { companyId: company.id, email: req.body.email } });
+  if (existing) throw new AppError(409, "A client account already exists for this email");
+  const customer = await findOrCreateClientCustomer(company.id, req.body);
+  const account = await prisma.clientAccount.create({ data: { companyId: company.id, customerId: customer.id, name: req.body.name, email: req.body.email, phone: req.body.phone, passwordHash: await hashPassword(req.body.password), status: "ACTIVE" } });
+  setClientAuthCookie(res, account);
+  sendData(res, normalize(publicClientAccount(account)), 201);
+}));
+
+router.post("/client/auth/login", validate(clientLoginSchema), asyncHandler(async (req, res) => {
+  const company = await publicBookingCompany();
+  const account = await prisma.clientAccount.findFirst({ where: { companyId: company.id, email: req.body.email } });
+  if (!account || !(await verifyPassword(req.body.password, account.passwordHash))) throw new AppError(401, "Invalid email or password");
+  if (account.status === "DISABLED") throw new AppError(403, "Client account is disabled");
+  const updated = await prisma.clientAccount.update({ where: { id: account.id }, data: { lastLoginAt: new Date() } });
+  setClientAuthCookie(res, updated);
+  sendData(res, normalize(publicClientAccount(updated)));
+}));
+
+router.post("/client/auth/logout", (req, res) => {
+  clearClientAuthCookie(res);
+  sendData(res, { loggedOut: true });
+});
+
+router.get("/client/auth/session", asyncHandler(async (req, res) => {
+  const token = req.cookies[CLIENT_COOKIE_NAME];
+  if (!token) return sendData(res, null);
+  try {
+    const payload = jwt.verify(token, CLIENT_JWT_SECRET);
+    if (payload.kind !== "client") return sendData(res, null);
+    const account = await prisma.clientAccount.findFirst({ where: { id: payload.sub, companyId: payload.companyId } });
+    if (!account || account.status === "DISABLED") return sendData(res, null);
+    return sendData(res, normalize(publicClientAccount(account)));
+  } catch (error) {
+    return sendData(res, null);
+  }
+}));
+
+router.get("/client/dashboard", requireClientAuth, asyncHandler(async (req, res) => {
+  const requests = await clientBookingRequests(req.clientAccount);
+  const statusCounts = requests.reduce(function(counts, item) { counts[item.status] = (counts[item.status] || 0) + 1; return counts; }, {});
+  const customerWhere = clientCustomerWhere(req.clientAccount);
+  const now = new Date();
+  const [quotes, jobs, invoices, profileCustomer] = customerWhere ? await Promise.all([
+    prisma.quote.findMany({ where: customerWhere, include: quoteInclude, orderBy: { createdAt: "desc" } }),
+    prisma.job.findMany({ where: customerWhere, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: true, signature: true }, orderBy: { createdAt: "desc" } }),
+    prisma.invoice.findMany({ where: customerWhere, include: invoiceInclude, orderBy: { createdAt: "desc" } }),
+    prisma.customer.findFirst({ where: { id: req.clientAccount.customerId, companyId: req.clientAccount.companyId } })
+  ]) : [[], [], [], null];
+  const invoiceIds = invoices.map(function(invoice) { return invoice.id; });
+  const receipts = invoiceIds.length ? await prisma.receipt.findMany({ where: { companyId: req.clientAccount.companyId, invoiceId: { in: invoiceIds } }, include: { invoice: true, payment: true }, orderBy: { issuedAt: "desc" } }) : [];
+  const stats = {
+    totalRequests: requests.length,
+    activeRequests: requests.filter(function(item) { return !["DECLINED", "CANCELLED", "CONVERTED"].includes(item.status); }).length,
+    openBookingRequests: requests.filter(function(item) { return ["NEW", "REVIEWED"].includes(item.status); }).length,
+    pendingQuotes: quotes.filter(function(item) { return item.status === "SENT"; }).length,
+    acceptedQuotes: quotes.filter(function(item) { return item.status === "ACCEPTED"; }).length,
+    upcomingJobs: jobs.filter(function(item) { return item.scheduledStart && new Date(item.scheduledStart) >= now && !["COMPLETED", "CANCELLED"].includes(item.status); }).length,
+    activeJobs: jobs.filter(function(item) { return ["SCHEDULED", "DISPATCHED", "ARRIVED", "IN_PROGRESS", "PAUSED", "ON_HOLD"].includes(item.status); }).length,
+    unpaidInvoices: invoices.filter(function(item) { return Number(item.balanceDue || item.total || 0) > 0 && item.status !== "VOID"; }).length,
+    paidInvoices: invoices.filter(function(item) { return item.status === "PAID"; }).length,
+    receipts: receipts.length,
+    statusCounts: statusCounts,
+    profileComplete: Boolean(req.clientAccount.name && req.clientAccount.email && req.clientAccount.phone && profileCustomer && profileCustomer.address)
+  };
+  sendData(res, normalize({
+    client: publicClientAccount(req.clientAccount),
+    stats,
+    recentRequests: requests.slice(0, 5),
+    recentQuotes: quotes.slice(0, 5).map(clientQuote),
+    recentJobs: jobs.slice(0, 5).map(clientJob),
+    recentInvoices: invoices.slice(0, 5).map(clientInvoice),
+    recentReceipts: receipts.slice(0, 5).map(clientReceipt),
+    recentActivity: requests.slice(0, 3).map(function(item) { return { type: "REQUEST", label: "Request " + String(item.status || "").toLowerCase().replace(/_/g, " "), createdAt: item.updatedAt || item.createdAt, request: item }; })
+  }));
+}));
+
+router.get("/client/booking-requests", requireClientAuth, asyncHandler(async (req, res) => {
+  sendData(res, normalize(await clientBookingRequests(req.clientAccount)));
+}));
+
+router.get("/client/booking-requests/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const matches = await clientBookingRequests(req.clientAccount, { id: req.params.id });
+  if (!matches.length) throw notFound("Booking request not found");
+  sendData(res, normalize(matches[0]));
+}));
+
+router.post("/client/booking-requests", requireClientAuth, validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
+  let service = null;
+  if (req.body.serviceId) {
+    service = await prisma.service.findFirst({ where: { id: req.body.serviceId, companyId: req.clientAccount.companyId, active: true } });
+    if (!service) throw notFound("Service not found");
+  }
+  const data = await prisma.bookingRequest.create({ data: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId, clientAccountId: req.clientAccount.id, status: "NEW", customerName: req.body.customerName, customerEmail: req.body.customerEmail || req.clientAccount.email, customerPhone: req.body.customerPhone || req.clientAccount.phone, address: req.body.address, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: "client_portal" } });
+  sendData(res, normalize(data), 201);
+}));
+
+router.get("/client/profile", requireClientAuth, asyncHandler(async (req, res) => {
+  const customer = req.clientAccount.customerId ? await prisma.customer.findFirst({ where: { id: req.clientAccount.customerId, companyId: req.clientAccount.companyId } }) : null;
+  sendData(res, normalize({ client: publicClientAccount(req.clientAccount), customer: customer && { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone, address: customer.address } }));
+}));
+
+router.patch("/client/profile", requireClientAuth, validate(clientProfilePatchSchema), asyncHandler(async (req, res) => {
+  const data = { name: req.body.name, phone: req.body.phone };
+  const account = await prisma.clientAccount.update({ where: { id: req.clientAccount.id }, data: data });
+  if (account.customerId && (data.name !== undefined || data.phone !== undefined)) {
+    await prisma.customer.update({ where: { id: account.customerId }, data: { name: data.name, phone: data.phone } });
+  }
+  sendData(res, normalize(publicClientAccount(account)));
+}));
+
+router.post("/client/profile/password", requireClientAuth, validate(clientChangePasswordSchema), asyncHandler(async (req, res) => {
+  const account = await prisma.clientAccount.findFirst({ where: { id: req.clientAccount.id, companyId: req.clientAccount.companyId } });
+  if (!account || !(await verifyPassword(req.body.currentPassword, account.passwordHash))) throw new AppError(401, "Current password is incorrect");
+  await prisma.clientAccount.update({ where: { id: account.id }, data: { passwordHash: await hashPassword(req.body.newPassword) } });
+  sendData(res, { updated: true });
+}));
+
+router.post("/client/auth/forgot-password", validate(clientForgotPasswordSchema), asyncHandler(async (req, res) => {
+  const company = await publicBookingCompany();
+  await prisma.clientAccount.findFirst({ where: { companyId: company.id, email: req.body.email } });
+  sendData(res, { requested: true });
+}));
+
+const clientRejectSchema = z.object({ reason: optionalText(500) });
+const clientPropertySchema = z.object({ label: optionalText(120), address: z.string().trim().min(1).max(300), city: optionalText(120), notes: optionalText(1000), isDefault: z.boolean().optional() });
+function clientCustomerWhere(account) { return account.customerId ? { companyId: account.companyId, customerId: account.customerId } : null; }
+function clientLine(item) { return item && { id: item.id, description: item.description, quantity: item.quantity, unitPrice: item.unitPrice, discountAmount: item.discountAmount, taxAmount: item.taxAmount, lineTotal: item.lineTotal, sortOrder: item.sortOrder }; }
+function clientCustomer(customer) { return customer && { id: customer.id, name: customer.name, email: customer.email, phone: customer.phone, address: customer.address }; }
+function clientJobSummary(job) { return job && { id: job.id, title: job.title, status: job.status, scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, completedAt: job.completedAt }; }
+function clientQuote(quote) { return quote && { id: quote.id, quoteNumber: quote.id, customerId: quote.customerId, title: quote.title, description: quote.description, status: quote.status, service: quote.service && { id: quote.service.id, name: quote.service.name }, customer: clientCustomer(quote.customer), job: clientJobSummary(quote.job), createdAt: quote.createdAt, updatedAt: quote.updatedAt, validUntil: quote.validUntil, sentAt: quote.sentAt, acceptedAt: quote.acceptedAt, rejectedAt: quote.rejectedAt, subtotal: quote.subtotal, tax: quote.taxTotal, discount: quote.discountTotal, total: quote.total, amount: quote.amount, lineItems: (quote.lineItems || []).map(clientLine) }; }
+function clientPayment(payment) { return payment && { id: payment.id, invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, status: payment.status, reference: payment.reference, receivedAt: payment.receivedAt, confirmedAt: payment.confirmedAt, createdAt: payment.createdAt }; }
+function clientReceipt(receipt) { return receipt && { id: receipt.id, receiptNumber: receipt.receiptNumber, invoiceId: receipt.invoiceId, paymentId: receipt.paymentId, amount: receipt.amount, issuedAt: receipt.issuedAt, createdAt: receipt.createdAt, invoice: receipt.invoice && { id: receipt.invoice.id, number: receipt.invoice.number, status: receipt.invoice.status }, payment: clientPayment(receipt.payment) }; }
+function clientInvoice(invoice) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
+function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresSignature: job.requiresSignature, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature) }; }
+function clientProofPhoto(photo) { return photo && { id: photo.id, jobId: photo.jobId, url: photo.url, caption: photo.caption, createdAt: photo.createdAt }; }
+function clientSignature(signature) { return signature && { id: signature.id, jobId: signature.jobId, signatureUrl: signature.signatureUrl, signedByName: signature.signerName, createdAt: signature.createdAt }; }
+function clientActivity(item) { const labels = { ASSIGNED: "Job scheduled", ARRIVED: "Worker arrived", STARTED: "Work started", PAUSED: "Work paused", RESUMED: "Work resumed", COMPLETED: "Work completed", PROOF_PHOTO_ADDED: "Proof uploaded", SIGNATURE_ADDED: "Signature collected" }; return labels[item.type] && { id: item.id, jobId: item.jobId, type: item.type, label: labels[item.type], note: item.type === "COMPLETED" ? item.note : undefined, createdAt: item.createdAt }; }
+async function clientOwnedQuote(account, id) { if (!account.customerId) return null; return prisma.quote.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: quoteInclude }); }
+async function clientOwnedInvoice(account, id) { if (!account.customerId) return null; return prisma.invoice.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: invoiceInclude }); }
+async function clientOwnedJob(account, id) { if (!account.customerId) return null; return prisma.job.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true } }); }
+async function clientInvoiceIds(account) { if (!account.customerId) return []; const rows = await prisma.invoice.findMany({ where: { companyId: account.companyId, customerId: account.customerId }, select: { id: true } }); return rows.map(function(row) { return row.id; }); }
+async function clientOwnedReceipt(account, id) { const invoiceIds = await clientInvoiceIds(account); if (!invoiceIds.length) return null; return prisma.receipt.findFirst({ where: { id: id, companyId: account.companyId, invoiceId: { in: invoiceIds } }, include: { invoice: true, payment: true } }); }
+
+router.get("/client/quotes", requireClientAuth, asyncHandler(async (req, res) => {
+  const where = clientCustomerWhere(req.clientAccount);
+  if (!where) return sendData(res, []);
+  const data = await prisma.quote.findMany({ where, include: quoteInclude, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientQuote)));
+}));
+
+router.get("/client/quotes/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const quote = await clientOwnedQuote(req.clientAccount, req.params.id);
+  if (!quote) throw notFound("Quote not found");
+  sendData(res, normalize(clientQuote(quote)));
+}));
+
+router.post("/client/quotes/:id/accept", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const quote = await clientOwnedQuote(req.clientAccount, req.params.id);
+  if (!quote) throw notFound("Quote not found");
+  if (["REJECTED", "EXPIRED", "DRAFT"].includes(quote.status)) throw new AppError(409, "Quote cannot be accepted");
+  const data = await prisma.$transaction(async (tx) => {
+    const current = await tx.quote.findFirst({ where: { id: quote.id, companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId }, include: quoteInclude });
+    if (!current) throw notFound("Quote not found");
+    if (current.status === "ACCEPTED" && current.jobId) return current;
+    if (!["SENT", "ACCEPTED"].includes(current.status)) throw new AppError(409, "Only sent quotes can be accepted");
+    let jobId = current.jobId;
+    if (!jobId) {
+      const job = await tx.job.create({ data: { companyId: req.clientAccount.companyId, customerId: current.customerId, serviceId: current.serviceId, title: current.title, description: current.description, total: current.total || current.amount } });
+      jobId = job.id;
+    }
+    if (current.status !== "ACCEPTED") {
+      await tx.quoteStatusHistory.create({ data: { companyId: req.clientAccount.companyId, quoteId: current.id, fromStatus: current.status, toStatus: "ACCEPTED", note: "Quote accepted by client" } });
+    }
+    await tx.auditLog.create({ data: { companyId: req.clientAccount.companyId, action: "CLIENT_ACCEPT", entity: "Quote", entityId: current.id, metadata: { clientAccountId: req.clientAccount.id, jobId } } });
+    return tx.quote.update({ where: { id: current.id }, data: { status: "ACCEPTED", acceptedAt: current.acceptedAt || new Date(), jobId }, include: quoteInclude });
+  });
+  sendData(res, normalize(clientQuote(data)));
+}));
+
+router.post("/client/quotes/:id/reject", requireClientAuth, validate(idParam, "params"), validate(clientRejectSchema), asyncHandler(async (req, res) => {
+  const quote = await clientOwnedQuote(req.clientAccount, req.params.id);
+  if (!quote) throw notFound("Quote not found");
+  if (quote.status === "REJECTED") return sendData(res, normalize(clientQuote(quote)));
+  if (quote.status !== "SENT") throw new AppError(409, "Only sent quotes can be rejected");
+  const note = req.body.reason ? "Quote rejected by client: " + req.body.reason : "Quote rejected by client";
+  const data = await prisma.$transaction(async (tx) => {
+    await tx.quoteStatusHistory.create({ data: { companyId: req.clientAccount.companyId, quoteId: quote.id, fromStatus: quote.status, toStatus: "REJECTED", note } });
+    await tx.auditLog.create({ data: { companyId: req.clientAccount.companyId, action: "CLIENT_REJECT", entity: "Quote", entityId: quote.id, metadata: { clientAccountId: req.clientAccount.id, reason: req.body.reason } } });
+    return tx.quote.update({ where: { id: quote.id }, data: { status: "REJECTED", rejectedAt: new Date() }, include: quoteInclude });
+  });
+  sendData(res, normalize(clientQuote(data)));
+}));
+
+router.get("/client/invoices", requireClientAuth, asyncHandler(async (req, res) => {
+  const where = clientCustomerWhere(req.clientAccount);
+  if (!where) return sendData(res, []);
+  const data = await prisma.invoice.findMany({ where, include: invoiceInclude, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientInvoice)));
+}));
+
+router.get("/client/invoices/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const invoice = await clientOwnedInvoice(req.clientAccount, req.params.id);
+  if (!invoice) throw notFound("Invoice not found");
+  sendData(res, normalize(clientInvoice(invoice)));
+}));
+
+router.get("/client/payments", requireClientAuth, asyncHandler(async (req, res) => {
+  const invoiceIds = await clientInvoiceIds(req.clientAccount);
+  if (!invoiceIds.length) return sendData(res, []);
+  const data = await prisma.payment.findMany({ where: { companyId: req.clientAccount.companyId, invoiceId: { in: invoiceIds } }, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientPayment)));
+}));
+
+router.get("/client/receipts", requireClientAuth, asyncHandler(async (req, res) => {
+  const invoiceIds = await clientInvoiceIds(req.clientAccount);
+  if (!invoiceIds.length) return sendData(res, []);
+  const data = await prisma.receipt.findMany({ where: { companyId: req.clientAccount.companyId, invoiceId: { in: invoiceIds } }, include: { invoice: true, payment: true }, orderBy: { issuedAt: "desc" } });
+  sendData(res, normalize(data.map(clientReceipt)));
+}));
+
+router.get("/client/receipts/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const receipt = await clientOwnedReceipt(req.clientAccount, req.params.id);
+  if (!receipt) throw notFound("Receipt not found");
+  sendData(res, normalize(clientReceipt(receipt)));
+}));
+
+router.get("/client/jobs", requireClientAuth, asyncHandler(async (req, res) => {
+  const where = clientCustomerWhere(req.clientAccount);
+  if (!where) return sendData(res, []);
+  const data = await prisma.job.findMany({ where, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true }, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientJob)));
+}));
+
+router.get("/client/jobs/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await clientOwnedJob(req.clientAccount, req.params.id);
+  if (!job) throw notFound("Job not found");
+  sendData(res, normalize(clientJob(job)));
+}));
+
+router.get("/client/jobs/:id/proof-photos", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await clientOwnedJob(req.clientAccount, req.params.id);
+  if (!job) throw notFound("Job not found");
+  const data = await prisma.jobProofPhoto.findMany({ where: { companyId: req.clientAccount.companyId, jobId: job.id }, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientProofPhoto)));
+}));
+
+router.get("/client/jobs/:id/signature", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await clientOwnedJob(req.clientAccount, req.params.id);
+  if (!job) throw notFound("Job not found");
+  const data = await prisma.jobSignature.findFirst({ where: { companyId: req.clientAccount.companyId, jobId: job.id } });
+  sendData(res, normalize(clientSignature(data)));
+}));
+
+router.get("/client/jobs/:id/activity", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await clientOwnedJob(req.clientAccount, req.params.id);
+  if (!job) throw notFound("Job not found");
+  const rows = await prisma.jobActivity.findMany({ where: { companyId: req.clientAccount.companyId, jobId: job.id, type: { in: ["ASSIGNED", "ARRIVED", "STARTED", "PAUSED", "RESUMED", "COMPLETED", "PROOF_PHOTO_ADDED", "SIGNATURE_ADDED"] } }, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(rows.map(clientActivity).filter(Boolean)));
+}));
+
+router.get("/client/properties", requireClientAuth, asyncHandler(async (req, res) => {
+  if (!req.clientAccount.customerId) return sendData(res, []);
+  const data = await prisma.customerProperty.findMany({ where: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId }, orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }] });
+  sendData(res, normalize(data));
+}));
+
+router.post("/client/properties", requireClientAuth, validate(clientPropertySchema), asyncHandler(async (req, res) => {
+  if (!req.clientAccount.customerId) throw new AppError(409, "A linked customer is required before adding properties");
+  const data = await prisma.$transaction(async (tx) => {
+    if (req.body.isDefault) await tx.customerProperty.updateMany({ where: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId }, data: { isDefault: false } });
+    return tx.customerProperty.create({ data: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId, clientAccountId: req.clientAccount.id, label: req.body.label || "Property", address: req.body.address, city: req.body.city, notes: req.body.notes, isDefault: Boolean(req.body.isDefault) } });
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch("/client/properties/:id", requireClientAuth, validate(idParam, "params"), validate(clientPropertySchema.partial()), asyncHandler(async (req, res) => {
+  if (!req.clientAccount.customerId) throw notFound("Property not found");
+  const existing = await prisma.customerProperty.findFirst({ where: { id: req.params.id, companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId } });
+  if (!existing) throw notFound("Property not found");
+  const data = await prisma.$transaction(async (tx) => {
+    if (req.body.isDefault) await tx.customerProperty.updateMany({ where: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId }, data: { isDefault: false } });
+    return tx.customerProperty.update({ where: { id: existing.id }, data: { label: req.body.label, address: req.body.address, city: req.body.city, notes: req.body.notes, isDefault: req.body.isDefault } });
+  });
+  sendData(res, normalize(data));
+}));
+
+router.delete("/client/properties/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  if (!req.clientAccount.customerId) throw notFound("Property not found");
+  const existing = await prisma.customerProperty.findFirst({ where: { id: req.params.id, companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId } });
+  if (!existing) throw notFound("Property not found");
+  await prisma.customerProperty.delete({ where: { id: existing.id } });
+  sendData(res, { deleted: true });
+}));
+
 router.use(requireAuth);
 
 router.get('/company/profile', asyncHandler(async (req, res) => {

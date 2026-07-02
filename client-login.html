@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang=en>
+  <head>
+    <meta charset=UTF-8>
+    <meta name=viewport content=width=device-width,initial-scale=1.0>
+    <title>Client Login</title>
+    <link rel=stylesheet href=assets/app.css>
+    <script defer src=assets/client-portal.js></script>
+  </head>
+  <body class=client-auth-page data-client-page=login>
+    <main class=public-booking>
+      <section class=public-booking-card client-auth-card>
+        <div class=brand><span class=brand-mark data-client-logo>FC</span><span class=brand-name data-client-brand>FieldCore</span></div>
+        <div class=hero-copy><h2>Client Portal</h2><p>Sign in to view and manage your service requests.</p></div>
+        <form class=form-grid data-client-login-form>
+          <div class=field><label for=email>Email</label><input id=email name=email type=email autocomplete=email required></div>
+          <div class=field><label for=password>Password</label><input id=password name=password type=password autocomplete=current-password required></div>
+          <div class=fc-form-actions span-2><a class=secondary-button href=client-register.html>Create Account</a><button class=primary-button type=submit>Sign In</button></div>
+          <p class=fc-form-error span-2 data-client-message hidden></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

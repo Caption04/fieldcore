@@ -58,6 +58,7 @@ function createMockPrisma(seed) {
   function brandingByCompanyId(companyId) { return db.companyBrandings.find((item) => item.companyId === companyId); }
   function userById(userId) { return db.users.find((item) => item.id === userId); }
   function customerById(customerId) { return db.customers.find((item) => item.id === customerId); }
+  function clientAccountById(accountId) { return db.clientAccounts.find((item) => item.id === accountId); }
   function serviceById(serviceId) { return db.services.find((item) => item.id === serviceId); }
   function workerById(workerId) { return db.workerProfiles.find((item) => item.id === workerId); }
   function roleById(roleId) { return db.workerRoles.find((item) => item.id === roleId); }
@@ -66,6 +67,7 @@ function createMockPrisma(seed) {
   function quoteLineItems(quoteId) { return db.quoteLineItems.filter((item) => item.quoteId === quoteId); }
   function invoiceLineItems(invoiceId) { return db.invoiceLineItems.filter((item) => item.invoiceId === invoiceId); }
   function receiptByPaymentId(paymentId) { return db.receipts.find((item) => item.paymentId === paymentId); }
+  function paymentById(paymentId) { return db.payments.find((item) => item.id === paymentId); }
 
   function enrichCompany(company, include) {
     if (!company) return null;
@@ -125,6 +127,10 @@ function createMockPrisma(seed) {
     if (include && include.customer) result.customer = clone(customerById(request.customerId)) || null;
     if (include && include.service) result.service = clone(serviceById(request.serviceId)) || null;
     if (include && include.convertedJob) result.convertedJob = clone(jobById(request.convertedJobId)) || null;
+    if (include && include.clientAccount) {
+      const account = clone(clientAccountById(request.clientAccountId)) || null;
+      result.clientAccount = include.clientAccount.select ? applySelect(account, include.clientAccount.select) : account;
+    }
     return result;
   }
 
@@ -132,6 +138,14 @@ function createMockPrisma(seed) {
     if (!payment) return null;
     const result = { ...payment };
     if (include && include.receipt) result.receipt = clone(receiptByPaymentId(payment.id)) || null;
+    return result;
+  }
+
+  function enrichReceipt(receipt, include) {
+    if (!receipt) return null;
+    const result = { ...receipt };
+    if (include && include.invoice) result.invoice = clone(invoiceById(receipt.invoiceId)) || null;
+    if (include && include.payment) result.payment = clone(paymentById(receipt.paymentId)) || null;
     return result;
   }
 
@@ -178,6 +192,15 @@ function createMockPrisma(seed) {
         const before = db[name].length;
         db[name] = db[name].filter((item) => !matchesWhere(item, args.where));
         return Promise.resolve({ count: before - db[name].length });
+      },
+      updateMany: (args) => {
+        let count = 0;
+        db[name] = db[name].map((item) => {
+          if (!matchesWhere(item, args.where)) return item;
+          count += 1;
+          return { ...item, ...stripUndefined(args.data), updatedAt: new Date().toISOString() };
+        });
+        return Promise.resolve({ count });
       },
       upsert: (args) => {
         const index = db[name].findIndex((item) => matchesWhere(item, args.where));
@@ -247,13 +270,15 @@ function createMockPrisma(seed) {
     recurringJobRule: makeModel('recurringJobRules'),
     invoiceLineItem: makeModel('invoiceLineItems'),
     invoiceStatusHistory: makeModel('invoiceStatusHistories'),
-    receipt: makeModel('receipts'),
+    receipt: makeModel('receipts', enrichReceipt),
     scheduleItem: makeModel('scheduleItems'),
     payment: makeModel('payments', enrichPayment),
     workerLocation: makeModel('workerLocations'),
     jobProofPhoto: makeModel('jobProofPhotos'),
     jobSignature: makeModel('jobSignatures'),
     bookingRequest: makeModel('bookingRequests', enrichBookingRequest),
+    clientAccount: makeModel('clientAccounts'),
+    customerProperty: makeModel('customerProperties'),
     jobActivity: makeModel('jobActivities', (activity, include) => {
       const result = { ...activity };
       if (include && include.worker) result.worker = enrichWorker(workerById(activity.workerId), include.worker.include);
@@ -336,6 +361,8 @@ async function buildApp() {
     jobProofPhotos: [],
     jobSignatures: [],
     bookingRequests: [],
+    clientAccounts: [],
+    customerProperties: [],
     jobActivities: [],
     auditLogs: []
   };
@@ -354,6 +381,30 @@ async function buildApp() {
 async function login(app, email) {
   const agent = request.agent(app);
   const response = await agent.post('/api/auth/login').send({ email, password: 'Password123!' });
+  assert.equal(response.status, 200);
+  assertNoPasswordHash(response.body);
+  return agent;
+}
+
+async function loginClient(app, overrides = {}) {
+  const email = overrides.email || 'linked-client@test.local';
+  const password = overrides.password || 'ClientPass123!';
+  if (!app.locals.testDb.clientAccounts.some((item) => item.email === email)) {
+    app.locals.testDb.clientAccounts.push({
+      id: overrides.id || 'client-' + email.replace(/[^a-z0-9]/gi, '-'),
+      companyId: overrides.companyId || 'company-a',
+      customerId: overrides.customerId === undefined ? 'customer-a' : overrides.customerId,
+      name: overrides.name || 'Linked Client',
+      email,
+      phone: overrides.phone || '0770000000',
+      passwordHash: await bcrypt.hash(password, 4),
+      status: overrides.status || 'ACTIVE',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    });
+  }
+  const agent = request.agent(app);
+  const response = await agent.post('/api/client/auth/login').send({ email, password });
   assert.equal(response.status, 200);
   assertNoPasswordHash(response.body);
   return agent;
@@ -988,4 +1039,256 @@ test('company A cannot see company B booking requests', async () => {
   const detail = await admin.get('/api/booking-requests/booking-b');
   assert.equal(detail.status, 404);
   assertNoPasswordHash(list.body);
+});
+
+
+test("client can register login session and logout without passwordHash leak", async () => {
+  const app = await buildApp();
+  const agent = request.agent(app);
+  const registered = await agent.post("/api/client/auth/register").send({ name: "Portal Customer", email: "portal@test.local", phone: "0773333333", password: "ClientPass123!", role: "OWNER", status: "DISABLED" });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.data.email, "portal@test.local");
+  assert.equal(registered.body.data.status, "ACTIVE");
+  assert.equal(registered.body.data.role, undefined);
+  assertNoPasswordHash(registered.body);
+  const session = await agent.get("/api/client/auth/session");
+  assert.equal(session.status, 200);
+  assert.equal(session.body.data.email, "portal@test.local");
+  const duplicate = await request(app).post("/api/client/auth/register").send({ name: "Again", email: "portal@test.local", password: "ClientPass123!" });
+  assert.equal(duplicate.status, 409);
+  const logout = await agent.post("/api/client/auth/logout").send({});
+  assert.equal(logout.status, 200);
+  const loggedOut = await agent.get("/api/client/auth/session");
+  assert.equal(loggedOut.body.data, null);
+});
+
+test("disabled client cannot login", async () => {
+  const app = await buildApp();
+  app.locals.testDb.clientAccounts.push({ id: "client-disabled", companyId: "company-a", name: "Disabled Client", email: "disabled-client@test.local", passwordHash: await bcrypt.hash("ClientPass123!", 4), status: "DISABLED", createdAt: "2026-01-01T00:00:00.000Z" });
+  const response = await request(app).post("/api/client/auth/login").send({ email: "disabled-client@test.local", password: "ClientPass123!" });
+  assert.equal(response.status, 403);
+  assertNoPasswordHash(response.body);
+});
+
+test("client booking requests are owned and server scoped", async () => {
+  const app = await buildApp();
+  const client = request.agent(app);
+  const otherClient = request.agent(app);
+  await client.post("/api/client/auth/register").send({ name: "Booking Client", email: "booking-client@test.local", phone: "0774444444", password: "ClientPass123!" });
+  await otherClient.post("/api/client/auth/register").send({ name: "Other Client", email: "other-client@test.local", phone: "0775555555", password: "ClientPass123!" });
+  const created = await client.post("/api/client/booking-requests").send({ customerName: "Booking Client", customerEmail: "booking-client@test.local", customerPhone: "0774444444", address: "123 Client Way", serviceId: "service-a", preferredDate: "2026-07-10", preferredTimeWindow: "MORNING", notes: "Portal request", companyId: "company-b", status: "CONVERTED", convertedJobId: "job-b", clientAccountId: "fake-client" });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.data.companyId, "company-a");
+  assert.equal(created.body.data.status, "NEW");
+  assert.equal(created.body.data.clientAccountId, app.locals.testDb.clientAccounts.find((item) => item.email === "booking-client@test.local").id);
+  assert.equal(created.body.data.convertedJobId, undefined);
+  const list = await client.get("/api/client/booking-requests");
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body.data.map((item) => item.id), [created.body.data.id]);
+  const detail = await client.get("/api/client/booking-requests/" + created.body.data.id);
+  assert.equal(detail.status, 200);
+  const blocked = await otherClient.get("/api/client/booking-requests/" + created.body.data.id);
+  assert.equal(blocked.status, 404);
+  assertNoPasswordHash(list.body);
+});
+
+test("client profile can be read and updated without email or passwordHash changes", async () => {
+  const app = await buildApp();
+  const client = request.agent(app);
+  const registered = await client.post("/api/client/auth/register").send({ name: "Profile Client", email: "profile-client@test.local", phone: "0776666666", password: "ClientPass123!" });
+  assert.equal(registered.status, 201);
+  const profile = await client.get("/api/client/profile");
+  assert.equal(profile.status, 200);
+  assert.equal(profile.body.data.client.email, "profile-client@test.local");
+  const updated = await client.patch("/api/client/profile").send({ name: "Updated Client", phone: "0777777777", email: "changed@test.local", passwordHash: "nope" });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.data.name, "Updated Client");
+  assert.equal(updated.body.data.email, "profile-client@test.local");
+  assertNoPasswordHash(profile.body);
+  assertNoPasswordHash(updated.body);
+});
+
+test("client and internal auth boundaries remain separate", async () => {
+  const app = await buildApp();
+  const client = request.agent(app);
+  await client.post("/api/client/auth/register").send({ name: "Boundary Client", email: "boundary-client@test.local", password: "ClientPass123!" });
+  const adminOnly = await client.get("/api/booking-requests");
+  assert.equal(adminOnly.status, 401);
+  const worker = await login(app, "worker-a@test.local");
+  const clientOnly = await worker.get("/api/client/dashboard");
+  assert.equal(clientOnly.status, 401);
+  const publicBooking = await request(app).post("/api/public/booking-requests").send({ customerName: "Still Public", customerPhone: "0778888888" });
+  assert.equal(publicBooking.status, 201);
+  assert.equal(publicBooking.body.data.clientAccountId, undefined);
+  assertNoPasswordHash(adminOnly.body);
+  assertNoPasswordHash(clientOnly.body);
+});
+
+test('client dashboard includes matching public booking requests', async () => {
+  const app = await buildApp();
+  const publicRequest = await request(app).post('/api/public/booking-requests').send({ customerName: 'Matched Client', customerEmail: 'matched-client@test.local', customerPhone: '0779999999' });
+  assert.equal(publicRequest.status, 201);
+  const client = request.agent(app);
+  const registered = await client.post('/api/client/auth/register').send({ name: 'Matched Client', email: 'matched-client@test.local', phone: '0779999999', password: 'ClientPass123!' });
+  assert.equal(registered.status, 201);
+  const dashboard = await client.get('/api/client/dashboard');
+  assert.equal(dashboard.status, 200);
+  assert.equal(dashboard.body.data.recentRequests.some((item) => item.id === publicRequest.body.data.id), true);
+  assert.equal(dashboard.body.data.stats.totalRequests >= 1, true);
+  assertNoPasswordHash(dashboard.body);
+});
+
+test('client can change password and request reset', async () => {
+  const app = await buildApp();
+  const client = request.agent(app);
+  const registered = await client.post('/api/client/auth/register').send({ name: 'Password Client', email: 'password-client@test.local', password: 'ClientPass123!' });
+  assert.equal(registered.status, 201);
+  const wrong = await client.post('/api/client/profile/password').send({ currentPassword: 'bad-password', newPassword: 'NewClientPass123!' });
+  assert.equal(wrong.status, 401);
+  const changed = await client.post('/api/client/profile/password').send({ currentPassword: 'ClientPass123!', newPassword: 'NewClientPass123!' });
+  assert.equal(changed.status, 200);
+  await client.post('/api/client/auth/logout').send({});
+  const oldLogin = await request(app).post('/api/client/auth/login').send({ email: 'password-client@test.local', password: 'ClientPass123!' });
+  assert.equal(oldLogin.status, 401);
+  const newLogin = await request(app).post('/api/client/auth/login').send({ email: 'password-client@test.local', password: 'NewClientPass123!' });
+  assert.equal(newLogin.status, 200);
+  const forgot = await request(app).post('/api/client/auth/forgot-password').send({ email: 'password-client@test.local' });
+  assert.equal(forgot.status, 200);
+  assertNoPasswordHash(newLogin.body);
+  assertNoPasswordHash(forgot.body);
+});
+
+test('client portal quotes are owned and accept reject safely', async () => {
+  const app = await buildApp();
+  app.locals.testDb.customers.push({ id: 'customer-other', companyId: 'company-a', name: 'Other Customer', createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.quotes.push(
+    { id: 'quote-reject', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', title: 'Rejectable Quote', status: 'SENT', amount: 75, subtotal: 75, total: 75, createdAt: '2026-01-05T00:00:00.000Z' },
+    { id: 'quote-other-customer', companyId: 'company-a', customerId: 'customer-other', serviceId: 'service-a', title: 'Other Quote', status: 'SENT', amount: 50, subtotal: 50, total: 50, createdAt: '2026-01-06T00:00:00.000Z' },
+    { id: 'quote-company-b', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', title: 'Company B Quote', status: 'SENT', amount: 60, subtotal: 60, total: 60, createdAt: '2026-01-07T00:00:00.000Z' }
+  );
+  app.locals.testDb.quoteLineItems.push({ id: 'qli-reject', companyId: 'company-a', quoteId: 'quote-reject', serviceId: 'service-a', description: 'Reject service', quantity: 1, unitPrice: 75, discountAmount: 0, taxAmount: 0, lineTotal: 75, sortOrder: 0 });
+
+  const client = await loginClient(app);
+  const list = await client.get('/api/client/quotes');
+  assert.equal(list.status, 200);
+  assert.equal(list.body.data.some((item) => item.id === 'quote-a'), true);
+  assert.equal(list.body.data.some((item) => item.id === 'quote-other-customer'), false);
+  assert.equal(list.body.data.some((item) => item.id === 'quote-company-b'), false);
+
+  const detail = await client.get('/api/client/quotes/quote-reject');
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.data.lineItems[0].description, 'Reject service');
+
+  const accepted = await client.post('/api/client/quotes/quote-a/accept').send({});
+  const acceptedAgain = await client.post('/api/client/quotes/quote-a/accept').send({});
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.data.status, 'ACCEPTED');
+  assert.equal(accepted.body.data.job.id, acceptedAgain.body.data.job.id);
+
+  const rejected = await client.post('/api/client/quotes/quote-reject/reject').send({ reason: 'Too expensive', status: 'ACCEPTED' });
+  assert.equal(rejected.status, 200);
+  assert.equal(rejected.body.data.status, 'REJECTED');
+
+  const blocked = await client.get('/api/client/quotes/quote-other-customer');
+  const blockedCompany = await client.post('/api/client/quotes/quote-company-b/accept').send({});
+  assert.equal(blocked.status, 404);
+  assert.equal(blockedCompany.status, 404);
+  assertNoPasswordHash(list.body);
+  assertNoPasswordHash(accepted.body);
+});
+
+test('client portal invoices payments receipts jobs and evidence are owned read-only views', async () => {
+  const app = await buildApp();
+  app.locals.testDb.payments.push({ id: 'payment-a', companyId: 'company-a', invoiceId: 'invoice-a', amount: 40, method: 'CASH', status: 'CONFIRMED', reference: 'SAFE-REF', notes: 'Internal note', receivedAt: '2026-01-08T00:00:00.000Z', confirmedAt: '2026-01-08T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' });
+  app.locals.testDb.receipts.push({ id: 'receipt-a', companyId: 'company-a', invoiceId: 'invoice-a', paymentId: 'payment-a', receiptNumber: 'RCT-A', amount: 40, issuedAt: '2026-01-08T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' });
+  app.locals.testDb.jobProofPhotos.push({ id: 'photo-a', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', uploadedById: 'worker-a', url: '/uploads/jobs/proof/photo-a.jpg', filename: 'photo-a.jpg', mimeType: 'image/jpeg', sizeBytes: 10, caption: 'Finished panel', createdAt: '2026-01-09T00:00:00.000Z' });
+  app.locals.testDb.jobSignatures.push({ id: 'signature-a', companyId: 'company-a', jobId: 'job-a', capturedById: 'worker-a', signerName: 'Customer A', signatureUrl: '/uploads/jobs/signatures/signature-a.png', mimeType: 'image/png', sizeBytes: 10, createdAt: '2026-01-09T00:00:00.000Z' });
+  app.locals.testDb.jobActivities.push(
+    { id: 'activity-safe', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', userId: 'worker-a', type: 'ARRIVED', note: 'Worker arrived', createdAt: '2026-01-09T00:00:00.000Z' },
+    { id: 'activity-internal', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', userId: 'admin-a', type: 'ADMIN_NOTE', note: 'Internal note', createdAt: '2026-01-10T00:00:00.000Z' }
+  );
+
+  const client = await loginClient(app);
+  const invoices = await client.get('/api/client/invoices');
+  assert.equal(invoices.status, 200);
+  assert.deepEqual(invoices.body.data.map((item) => item.id), ['invoice-a']);
+  assert.equal(invoices.body.data[0].payments[0].notes, undefined);
+
+  const payments = await client.get('/api/client/payments');
+  assert.equal(payments.status, 200);
+  assert.equal(payments.body.data[0].id, 'payment-a');
+  assert.equal(payments.body.data[0].notes, undefined);
+
+  const receipts = await client.get('/api/client/receipts');
+  const receipt = await client.get('/api/client/receipts/receipt-a');
+  assert.equal(receipts.status, 200);
+  assert.equal(receipts.body.data[0].receiptNumber, 'RCT-A');
+  assert.equal(receipt.body.data.payment.reference, 'SAFE-REF');
+
+  const jobs = await client.get('/api/client/jobs');
+  const job = await client.get('/api/client/jobs/job-a');
+  const photos = await client.get('/api/client/jobs/job-a/proof-photos');
+  const signature = await client.get('/api/client/jobs/job-a/signature');
+  const activity = await client.get('/api/client/jobs/job-a/activity');
+  assert.equal(jobs.status, 200);
+  assert.equal(job.body.data.proofPhotos[0].caption, 'Finished panel');
+  assert.equal(photos.body.data[0].url, '/uploads/jobs/proof/photo-a.jpg');
+  assert.equal(signature.body.data.signedByName, 'Customer A');
+  assert.deepEqual(activity.body.data.map((item) => item.type), ['ARRIVED']);
+
+  const mutateJob = await client.post('/api/jobs/job-a/complete').send({ completionNotes: 'Client should not complete' });
+  const uploadProof = await client.post('/api/jobs/job-a/proof-photos').send({});
+  assert.equal(mutateJob.status, 401);
+  assert.equal(uploadProof.status, 401);
+  assertNoPasswordHash(job.body);
+  assertNoPasswordHash(activity.body);
+});
+
+test('client properties are scoped and clients without linked customer get safe empty resources', async () => {
+  const app = await buildApp();
+  const client = await loginClient(app);
+  const created = await client.post('/api/client/properties').send({ label: 'Home', address: '123 Client Street', city: 'Harare', notes: 'Gate code', isDefault: true, companyId: 'company-b', customerId: 'customer-b' });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.data.companyId, 'company-a');
+  assert.equal(created.body.data.customerId, 'customer-a');
+  assert.equal(created.body.data.isDefault, true);
+
+  const updated = await client.patch('/api/client/properties/' + created.body.data.id).send({ label: 'Main Home', address: '123 Client Street', isDefault: false, status: 'DISABLED' });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.data.label, 'Main Home');
+  assert.equal(updated.body.data.status, undefined);
+
+  const list = await client.get('/api/client/properties');
+  assert.equal(list.status, 200);
+  assert.equal(list.body.data.length, 1);
+
+  const noCustomer = await loginClient(app, { id: 'client-no-customer', email: 'no-customer@test.local', customerId: null });
+  const emptyQuotes = await noCustomer.get('/api/client/quotes');
+  const emptyInvoices = await noCustomer.get('/api/client/invoices');
+  const emptyProperties = await noCustomer.get('/api/client/properties');
+  const blockedCreate = await noCustomer.post('/api/client/properties').send({ label: 'Nope', address: 'Nowhere' });
+  assert.deepEqual(emptyQuotes.body.data, []);
+  assert.deepEqual(emptyInvoices.body.data, []);
+  assert.deepEqual(emptyProperties.body.data, []);
+  assert.equal(blockedCreate.status, 409);
+
+  const blockedOther = await noCustomer.patch('/api/client/properties/' + created.body.data.id).send({ label: 'Blocked' });
+  assert.equal(blockedOther.status, 404);
+  const removed = await client.delete('/api/client/properties/' + created.body.data.id);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.data.deleted, true);
+  assertNoPasswordHash(list.body);
+});
+
+test('client dashboard summarizes only client owned records', async () => {
+  const app = await buildApp();
+  app.locals.testDb.invoices.push({ id: 'invoice-other-company', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', number: 'INV-B', status: 'SENT', amount: 999, subtotal: 999, total: 999, balanceDue: 999, createdAt: '2026-01-02T00:00:00.000Z' });
+  const client = await loginClient(app);
+  const dashboard = await client.get('/api/client/dashboard');
+  assert.equal(dashboard.status, 200);
+  assert.equal(dashboard.body.data.stats.pendingQuotes, 1);
+  assert.equal(dashboard.body.data.stats.unpaidInvoices, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(dashboard.body.data.stats, 'revenueMonthToDate'), false);
+  assert.equal(JSON.stringify(dashboard.body).includes('invoice-other-company'), false);
+  assertNoPasswordHash(dashboard.body);
 });

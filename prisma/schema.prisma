@@ -120,6 +120,12 @@ enum BookingRequestStatus {
   CANCELLED
 }
 
+enum ClientAccountStatus {
+  ACTIVE
+  DISABLED
+  INVITED
+}
+
 model Company {
   id                   String                 @id @default(cuid())
   name                 String
@@ -161,6 +167,8 @@ model Company {
   scheduleConflicts    ScheduleConflict[]
   recurringJobRules    RecurringJobRule[]
   bookingRequests      BookingRequest[]
+  clientAccounts       ClientAccount[]
+  customerProperties   CustomerProperty[]
 }
 
 model CompanyBranding {
@@ -221,8 +229,53 @@ model Customer {
   invoices  Invoice[]
   recurringJobRules RecurringJobRule[]
   bookingRequests BookingRequest[]
+  clientAccounts ClientAccount[]
+  properties CustomerProperty[]
 
   @@index([companyId])
+}
+
+model ClientAccount {
+  id              String              @id @default(cuid())
+  companyId       String
+  customerId      String?
+  name            String
+  email           String
+  phone           String?
+  passwordHash    String
+  status          ClientAccountStatus @default(ACTIVE)
+  lastLoginAt     DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  company         Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer        Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  bookingRequests BookingRequest[]
+  properties      CustomerProperty[]
+
+  @@unique([companyId, email])
+  @@index([companyId])
+  @@index([companyId, customerId])
+}
+
+model CustomerProperty {
+  id              String         @id @default(cuid())
+  companyId       String
+  customerId      String
+  clientAccountId String?
+  label           String
+  address         String
+  city            String?
+  notes           String?
+  isDefault       Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  company         Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer        Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  clientAccount   ClientAccount? @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, customerId])
+  @@index([companyId, clientAccountId])
+  @@index([companyId, customerId, isDefault])
 }
 
 model WorkerRole {
@@ -704,6 +757,7 @@ model BookingRequest {
   id                  String               @id @default(cuid())
   companyId           String
   customerId          String?
+  clientAccountId     String?
   serviceId           String?
   status              BookingRequestStatus @default(NEW)
   customerName        String
@@ -720,11 +774,13 @@ model BookingRequest {
   updatedAt           DateTime             @updatedAt
   company             Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
   customer            Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  clientAccount       ClientAccount?       @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
   service             Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   convertedJob        Job?                 @relation(fields: [convertedJobId], references: [id], onDelete: SetNull)
 
   @@index([companyId, status, createdAt])
   @@index([companyId, customerId])
+  @@index([companyId, clientAccountId])
   @@index([companyId, serviceId])
 }
 model JobProofPhoto {

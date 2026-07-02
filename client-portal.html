@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang=en>
+  <head>
+    <meta charset=UTF-8>
+    <meta name=viewport content=width=device-width,initial-scale=1.0>
+    <title>Client Portal</title>
+    <link rel=stylesheet href=assets/app.css>
+    <script defer src=assets/client-portal.js></script>
+  </head>
+  <body class=client-portal-page data-client-page=portal>
+    <div class=client-shell>
+      <aside class=client-sidebar>
+        <div class=brand><span class=brand-mark data-client-logo>FC</span><span class=brand-name data-client-brand>FieldCore</span></div>
+        <nav class=client-nav>
+          <button class=client-nav-item data-client-tab-button=dashboard type=button><span>Dashboard</span><small>Overview</small></button>
+          <button class=client-nav-item data-client-tab-button=requests type=button><span>My Requests</span><small>Book and track</small></button>
+          <button class=client-nav-item data-client-tab-button=quotes type=button><span>My Quotes</span><small>Review work</small></button>
+          <button class=client-nav-item data-client-tab-button=jobs type=button><span>My Jobs</span><small>Progress</small></button>
+          <button class=client-nav-item data-client-tab-button=invoices type=button><span>My Invoices</span><small>Balances</small></button>
+          <button class=client-nav-item data-client-tab-button=receipts type=button><span>Receipts</span><small>Payments</small></button>
+          <button class=client-nav-item data-client-tab-button=profile type=button><span>Profile</span><small>Account details</small></button>
+          <button class=client-nav-item data-client-tab-button=properties type=button><span>Properties</span><small>Addresses</small></button>
+        </nav>
+        <button class=secondary-button data-client-logout type=button>Logout</button>
+      </aside>
+      <main class=client-main>
+        <header class=client-header><div><p class=eyebrow data-client-section-label>Overview</p><h1 data-client-welcome>Dashboard</h1></div><button class=primary-button data-client-tab-button=requests type=button>Submit New Request</button></header>
+
+        <section class=client-dashboard-view data-client-tab=dashboard>
+          <div class="client-stat-grid client-stat-grid-wide">
+            <article><span>Open Requests</span><strong data-client-stat=openBookingRequests>0</strong></article>
+            <article><span>Pending Quotes</span><strong data-client-stat=pendingQuotes>0</strong></article>
+            <article><span>Upcoming Jobs</span><strong data-client-stat=upcomingJobs>0</strong></article>
+            <article><span>Unpaid Invoices</span><strong data-client-stat=unpaidInvoices>0</strong></article>
+          </div>
+          <div class=client-action-row>
+            <button class=secondary-button data-client-tab-button=requests type=button>Submit New Request</button>
+            <button class=secondary-button data-client-tab-button=quotes type=button>View Quotes</button>
+            <button class=secondary-button data-client-tab-button=jobs type=button>View Jobs</button>
+            <button class=secondary-button data-client-tab-button=invoices type=button>View Invoices</button>
+            <button class=secondary-button data-client-tab-button=profile type=button>Update Profile</button>
+          </div>
+          <div class=client-grid-two>
+            <div class=panel><div class=panel-header><h2>Recent Requests</h2></div><div class=client-list data-client-recent></div></div>
+            <div class=panel><div class=panel-header><h2>Recent Activity</h2></div><div class=client-list data-client-activity></div></div>
+          </div>
+        </section>
+
+        <section class=client-requests-view data-client-tab=requests hidden>
+          <div class=client-subtabs><button class=client-subtab active data-request-subtab-button=active type=button>New Request</button><button class=client-subtab data-request-subtab-button=history type=button>History</button></div>
+          <div class=client-request-form-panel data-request-subtab=active><div class=panel-header><h2>New Service Request</h2></div><form class=form-grid data-client-request-form><div class=field><label for=requestName>Name</label><input id=requestName name=customerName required maxlength=160></div><div class=field><label for=requestEmail>Email</label><input id=requestEmail name=customerEmail type=email></div><div class=field><label for=requestPhone>Phone</label><input id=requestPhone name=customerPhone maxlength=60></div><div class=field><label for=requestAddress>Address</label><input id=requestAddress name=address maxlength=300></div><div class=field><label for=requestService>Service</label><select id=requestService name=serviceId data-client-service-select><option value=>Loading services...</option></select></div><div class=field><label for=requestOther>Other Service</label><input id=requestOther name=serviceName maxlength=160></div><div class=field><label for=requestDate>Preferred Date</label><input id=requestDate name=preferredDate type=date></div><div class=field><label for=requestWindow>Preferred Time</label><select id=requestWindow name=preferredTimeWindow><option value=ANY_TIME>Any time</option><option value=MORNING>Morning</option><option value=AFTERNOON>Afternoon</option><option value=EVENING>Evening</option></select></div><div class=field span-2><label for=requestNotes>Job Details</label><textarea id=requestNotes name=notes maxlength=2000></textarea></div><div class=fc-form-actions span-2><button class=primary-button type=submit>Submit Request</button></div><p class=fc-form-error span-2 data-client-request-message hidden></p></form></div>
+          <div class=client-history-panel data-request-subtab=history hidden><div class=panel-header><h2>Request History</h2></div><div class=client-history-list data-client-requests></div></div>
+        </section>
+
+        <section data-client-tab=quotes hidden><div class=client-section-head><h2>My Quotes</h2></div><div class=client-list data-client-quotes></div></section>
+        <section data-client-tab=jobs hidden><div class=client-section-head><h2>My Jobs</h2></div><div class=client-list data-client-jobs></div></section>
+        <section data-client-tab=invoices hidden><div class=client-section-head><h2>My Invoices</h2></div><div class=client-list data-client-invoices></div></section>
+        <section data-client-tab=receipts hidden><div class=client-section-head><h2>Receipts</h2></div><div class=client-list data-client-receipts></div></section>
+
+        <section class=client-profile-view data-client-tab=profile hidden>
+          <div class=client-profile-stack>
+            <aside class=client-profile-summary><div class=client-avatar data-client-avatar>FC</div><h2 data-client-profile-name>Client</h2><p data-client-profile-email></p><span class=status-pill data-client-profile-status>ACTIVE</span><div class=client-safe-summary data-client-customer-summary></div></aside>
+            <div class=client-profile-form-panel><div class=panel-header><h2>Account Details</h2></div><form class=form-grid data-client-profile-form><div class=field><label for=profileName>Name</label><input id=profileName name=name required maxlength=160></div><div class=field><label for=profileEmail>Email</label><input id=profileEmail name=email type=email disabled></div><div class=field><label for=profilePhone>Phone</label><input id=profilePhone name=phone maxlength=60></div><div class=client-password-actions span-2><button class=secondary-button data-open-password-modal=change type=button>Change Password</button><button class=secondary-button data-open-password-modal=forgot type=button>Forgot Password</button></div><div class=fc-form-actions span-2><button class=primary-button type=submit>Save Profile</button></div><p class=fc-form-error span-2 data-client-profile-message hidden></p></form></div>
+          </div>
+        </section>
+
+        <section data-client-tab=properties hidden>
+          <div class=client-grid-two>
+            <div class=panel><div class=panel-header><h2>Properties</h2></div><div class=client-list data-client-properties></div></div>
+            <div class=client-profile-form-panel><div class=panel-header><h2 data-property-form-title>Add Property</h2></div><form class=form-grid data-client-property-form><input type=hidden name=id><div class=field><label for=propertyLabel>Label</label><input id=propertyLabel name=label maxlength=120 placeholder=Home></div><div class=field><label for=propertyCity>City</label><input id=propertyCity name=city maxlength=120></div><div class=field span-2><label for=propertyAddress>Address</label><input id=propertyAddress name=address required maxlength=300></div><div class=field span-2><label for=propertyNotes>Notes</label><textarea id=propertyNotes name=notes maxlength=1000></textarea></div><label class="client-check span-2"><input name=isDefault type=checkbox> Default property</label><div class=fc-form-actions span-2><button class=primary-button type=submit>Save Property</button><button class=secondary-button data-property-reset type=button>Clear</button></div><p class=fc-form-error span-2 data-client-property-message hidden></p></form></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class=client-modal-backdrop data-client-detail-modal hidden><div class=client-modal><div class=panel-header><h2 data-client-detail-title>Details</h2><button class=icon-button data-client-detail-close type=button>x</button></div><div data-client-detail-body></div></div></div>
+    <div class=client-modal-backdrop data-password-modal=change hidden><div class=client-modal><div class=panel-header><h2>Change Password</h2><button class=icon-button data-close-password-modal type=button>x</button></div><form class=form-grid data-client-change-password-form><div class=field span-2><label for=currentPassword>Current Password</label><input id=currentPassword name=currentPassword type=password required></div><div class=field span-2><label for=newPassword>New Password</label><input id=newPassword name=newPassword type=password minlength=8 required></div><div class=fc-form-actions span-2><button class=primary-button type=submit>Update Password</button></div><p class=fc-form-error span-2 data-client-change-password-message hidden></p></form></div></div>
+    <div class=client-modal-backdrop data-password-modal=forgot hidden><div class=client-modal><div class=panel-header><h2>Forgot Password</h2><button class=icon-button data-close-password-modal type=button>x</button></div><form class=form-grid data-client-forgot-password-form><div class=field span-2><label for=forgotEmail>Email</label><input id=forgotEmail name=email type=email required></div><div class=fc-form-actions span-2><button class=primary-button type=submit>Send Reset Link</button></div><p class=fc-form-error span-2 data-client-forgot-password-message hidden></p></form></div></div>
+  </body>
+</html>
