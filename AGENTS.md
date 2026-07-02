@@ -21,17 +21,20 @@ The system is multi-tenant. Multiple companies use the same software, but each c
 
 Work only inside this repository:
 
-```cmd
-C:\Dev\FieldCore_Software
+```bash
+/home/kuhlinji/code/FieldCore_Software
 ```
 
-Do not read, inspect, or request access to files from:
+Do not work from:
 
-```cmd
-C:\Users\USER\.codex\attachments
-C:\Users\USER\OneDrive
-C:\Windows
+```bash
+/mnt/c/Dev/FieldCore_Software
+/mnt/c/Users
+/mnt/c/Windows
+/mnt/c/Users/USER/OneDrive
 ```
+
+The Windows copy is only the source backup. The active development repo must be the Ubuntu copy.
 
 Do not use absolute paths outside the repo.
 
@@ -41,26 +44,62 @@ Preferred task workflow:
 
 1. Read `AGENTS.md`.
 2. Read `TASK.md` if it exists.
-3. Work only inside the repo.
-4. Use CMD-safe commands only.
+3. Work only inside the Ubuntu repo.
+4. Use Bash/Linux-safe commands only.
 5. Run the smallest relevant check.
 
 If `TASK.md` does not exist, ask the user for the task in chat instead of trying to inspect Codex attachment folders.
+
+## WSL / Ubuntu Rule
+
+This project is being developed inside Ubuntu through WSL.
+
+The correct repo location is:
+
+```bash
+/home/kuhlinji/code/FieldCore_Software
+```
+
+Before editing or running commands, confirm the current directory:
+
+```bash
+pwd
+```
+
+Good:
+
+```bash
+/home/kuhlinji/code/FieldCore_Software
+```
+
+Bad:
+
+```bash
+/mnt/c/Dev/FieldCore_Software
+```
+
+Do not run Codex, Prisma, npm install, builds, or tests from `/mnt/c/...`.
+
+Windows-mounted folders can cause permission, ACL, file lock, and performance problems.
 
 ## Sandbox / Permission Rule
 
 If the sandbox blocks basic reads such as:
 
-```cmd
-dir
-rg
-cmd /c type
+```bash
+ls
+find
+grep
+cat
+sed
 ```
 
 inside the repo, stop and report the issue clearly.
 
 Do not repeatedly retry blocked reads.
+
 Do not burn tokens requesting escalating access unless the user explicitly approves it.
+
 Do not inspect protected folders to “figure it out.”
 
 This is a tooling/sandbox issue, not a project code issue.
@@ -206,59 +245,64 @@ Do not rebuild Phase 5A unless explicitly asked.
 
 ## Development Environment
 
-This project is developed on Windows.
+This project is developed inside Ubuntu/WSL.
 
-The project should be run from:
+Use VS Code with the WSL extension.
 
-```cmd
-C:\Dev\FieldCore_Software
+The VS Code bottom-left corner should show:
+
+```text
+WSL: Ubuntu
 ```
 
-Do not assume the project is inside OneDrive.
+The project should be opened from:
 
-OneDrive causes file lock problems with Prisma, Node, and `node_modules`.
+```bash
+/home/kuhlinji/code/FieldCore_Software
+```
 
-## Windows Command Rules
+Do not assume the project is inside Windows, OneDrive, or `/mnt/c`.
 
-Do not use PowerShell commands.
+OneDrive and Windows-mounted folders can cause file lock problems with Prisma, Node, and `node_modules`.
 
-PowerShell blocks scripts like `npx.ps1`, which wastes time and causes avoidable errors.
+## Linux Command Rules
 
-Always use Windows CMD-safe commands.
+Use Bash-safe Linux commands.
 
 Use:
 
-```cmd
-npm.cmd
-npx.cmd
+```bash
+npm
+npx
 node
 ```
 
 Do not use:
 
-```cmd
-npm
-npx
-PowerShell-only syntax
+```bash
+npm.cmd
+npx.cmd
+PowerShell commands
+CMD-only syntax
 .ps1 scripts
 ```
 
 Preferred commands:
 
-```cmd
+```bash
 node --check src/routes/api.js
 node --check assets/api.js
-npx.cmd prisma validate
-npm.cmd run build
-npm.cmd test
-npm.cmd run seed
-npm.cmd run dev
+npx prisma validate
+npm run build
+npm test
+npm run seed
+npm run dev
 ```
 
 For migrations:
 
-```cmd
-npm.cmd run migrate -- --name migration_name_here
+```bash
+npm run migrate -- --name migration_name_here
 ```
 
 ## Token-Saving Rule
@@ -271,7 +315,7 @@ Use the smallest relevant check.
 
 Run:
 
-```cmd
+```bash
 node --check src/routes/api.js
 ```
 
@@ -279,7 +323,7 @@ node --check src/routes/api.js
 
 Run:
 
-```cmd
+```bash
 node --check assets/api.js
 ```
 
@@ -287,60 +331,60 @@ node --check assets/api.js
 
 Run:
 
-```cmd
-npx.cmd prisma validate
+```bash
+npx prisma validate
 ```
 
 Then only after schema is stable:
 
-```cmd
-npm.cmd run build
+```bash
+npm run build
 ```
 
 ### Completed feature
 
 Run:
 
-```cmd
-npm.cmd test
+```bash
+npm test
 ```
 
 ### Final verification only
 
 Run:
 
-```cmd
-npm.cmd run build
-npm.cmd run migrate -- --name relevant_phase_name
-npm.cmd run seed
-npm.cmd test
-npm.cmd run dev
+```bash
+npm run build
+npm run migrate -- --name relevant_phase_name
+npm run seed
+npm test
+npm run dev
 ```
 
 Do not repeatedly run:
 
-```cmd
-npm.cmd run build
-npm.cmd test
+```bash
+npm run build
+npm test
 ```
 
 after every small edit.
 
 ## File Editing Rules
 
-Do not waste time fighting CMD quoting.
+Do not waste time fighting shell quoting.
 
 When editing project files, prefer direct file edits or patch tools over complex terminal-generated edits.
 
 Avoid using long commands like:
 
-```cmd
+```bash
 node -e "large multi-line file rewrite..."
-echo ... > file
-echo ... >> file
+echo "..." > file
+cat <<'EOF' > file
 ```
 
-Do not generate large migration files through chained CMD `echo` commands.
+Do not generate large migration files through chained shell commands.
 
 If a file-edit command fails once because of quoting, escaping, redirection, ACL, or shell parsing:
 
@@ -353,7 +397,7 @@ Maximum retry rule:
 
 * One failed file-edit command is acceptable.
 * Two failed attempts means stop and change approach.
-* Do not spend more than two attempts on CMD quoting, redirection, or generated scripts.
+* Do not spend more than two attempts on Bash quoting, redirection, or generated scripts.
 
 For Prisma migrations:
 
@@ -378,54 +422,82 @@ For implementation logs:
 
 Start the app with:
 
-```cmd
-npm.cmd run dev
+```bash
+npm run dev
 ```
 
-If port 3000 is already in use, do not waste time. Use:
+If port 3000 is already in use, do not waste time.
 
-```cmd
-netstat -ano | findstr :3000
-taskkill /PID YOUR_PID_HERE /F
+Check the port:
+
+```bash
+ss -ltnp | grep ':3000'
 ```
 
-Or kill all Node servers if safe:
+Or:
 
-```cmd
-taskkill /F /IM node.exe /T
+```bash
+lsof -i :3000
+```
+
+Then kill the specific process:
+
+```bash
+kill -9 PID_HERE
+```
+
+If safe, kill Node processes:
+
+```bash
+pkill -f node
 ```
 
 Then restart:
 
-```cmd
-npm.cmd run dev
+```bash
+npm run dev
 ```
 
-## Prisma / Windows File Lock Rule
+## Prisma / Linux File Lock Rule
 
-If Prisma fails with an error like:
-
-```text
-EPERM: operation not permitted, rename query_engine-windows.dll.node
-```
-
-then a Node/Prisma process is locking the engine file.
-
-Do not rewrite code to fix this.
+If Prisma fails because a Node or Prisma process is locking files, do not rewrite code to fix it.
 
 First try:
 
-```cmd
-taskkill /F /IM node.exe /T
+```bash
+pkill -f node
 ```
 
-Then rerun:
+Then rerun the smallest relevant command:
 
-```cmd
-npm.cmd run build
+```bash
+npx prisma validate
 ```
 
-If it still fails, tell the user to restart the machine.
+or:
+
+```bash
+npm run build
+```
+
+If the issue continues, report it clearly and ask the user before doing destructive cleanup.
+
+Do not delete Prisma-generated files blindly.
+
+## Dependencies Rule
+
+If the project was copied from Windows into Ubuntu, reinstall dependencies inside Ubuntu.
+
+If `node_modules` exists from Windows, remove it:
+
+```bash
+rm -rf node_modules
+npm install
+```
+
+If the project has separate frontend/backend folders, reinstall inside the relevant folders only.
+
+Do not run `npm install` repeatedly unless dependency files changed.
 
 ## Secrets and Files
 
