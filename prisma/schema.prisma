@@ -38,6 +38,17 @@ enum JobActivityType {
   PROOF_PHOTO_REMOVED
   SIGNATURE_ADDED
   SIGNATURE_REMOVED
+  COMPLETION_LOCATION_CAPTURED
+}
+
+enum ProofPhotoCategory {
+  BEFORE
+  AFTER
+  GENERAL
+  DAMAGE
+  ISSUE
+  EXTRA_WORK
+  CUSTOMER_APPROVAL
 }
 
 enum QuoteStatus {
@@ -154,6 +165,7 @@ model Company {
   invoiceCounter       CompanyInvoiceCounter?
   workerLocations      WorkerLocation[]
   jobProofPhotos       JobProofPhoto[]
+  jobCompletionLocations JobCompletionLocation[]
   jobSignatures        JobSignature[]
   auditLogs            AuditLog[]
   jobActivities        JobActivity[]
@@ -167,8 +179,72 @@ model Company {
   scheduleConflicts    ScheduleConflict[]
   recurringJobRules    RecurringJobRule[]
   bookingRequests      BookingRequest[]
+  bookingRequestPhotos BookingRequestPhoto[]
   clientAccounts       ClientAccount[]
   customerProperties   CustomerProperty[]
+  notificationLogs     NotificationLog[]
+  subscription         CompanySubscription?
+  saasBillingEvents    SaaSBillingEvent[]
+}
+
+model SaaSPlan {
+  id            String                @id
+  name          String
+  description   String?
+  price         Decimal               @default(0)
+  currency      String                @default("USD")
+  interval      String                @default("month")
+  isActive      Boolean               @default(true)
+  limits        Json?
+  features      Json?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  subscriptions CompanySubscription[]
+
+  @@index([isActive])
+}
+
+model CompanySubscription {
+  id                 String             @id @default(cuid())
+  companyId          String             @unique
+  planId             String?
+  status             String             @default("TRIALING")
+  trialStartedAt     DateTime?
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  provider           String?
+  providerCustomerId String?
+  providerSubId      String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  company            Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  plan               SaaSPlan?          @relation(fields: [planId], references: [id], onDelete: SetNull)
+  events             SaaSBillingEvent[]
+
+  @@index([companyId, status])
+  @@index([planId])
+  @@index([provider, providerSubId])
+}
+
+model SaaSBillingEvent {
+  id             String               @id @default(cuid())
+  companyId      String
+  subscriptionId String?
+  provider       String?
+  eventType      String
+  status         String
+  amount         Decimal?
+  currency       String?
+  providerRef    String?
+  message        String?
+  createdAt      DateTime             @default(now())
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  subscription   CompanySubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, eventType, providerRef])
 }
 
 model CompanyBranding {
@@ -196,6 +272,7 @@ model User {
   companyId            String
   email                String                 @unique
   name                 String
+  phone                String?
   passwordHash         String
   role                 Role                   @default(WORKER)
   createdAt            DateTime               @default(now())
@@ -209,6 +286,8 @@ model User {
   jobActivities        JobActivity[]
   proofPhotosUploaded  JobProofPhoto[]       @relation("JobProofPhotoUploadedBy")
   signaturesCaptured   JobSignature[]        @relation("JobSignatureCapturedBy")
+  jobsCompleted        Job[]                 @relation("JobCompletedBy")
+  completionLocationsCaptured JobCompletionLocation[]
 
   @@index([companyId])
 }
@@ -362,11 +441,15 @@ model Job {
   pausedAt             DateTime?
   resumedAt            DateTime?
   completedAt          DateTime?
+  completedById        String?
   completionNotes      String?
   customerSignatureUrl String?
   requiresProofPhotos  Boolean        @default(false)
   minimumProofPhotos   Int            @default(0)
+  requiresBeforePhotos Boolean        @default(false)
+  requiresAfterPhotos  Boolean        @default(false)
   requiresSignature    Boolean        @default(false)
+  requiresLocation     Boolean        @default(false)
   proofCompletedAt     DateTime?
   signatureCompletedAt DateTime?
   total                Decimal        @default(0) @db.Decimal(12, 2)
@@ -376,10 +459,12 @@ model Job {
   customer             Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
   service              Service?       @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   worker               WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  completedBy          User?          @relation("JobCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
   scheduleItems        ScheduleItem[]
   quotes               Quote[]
   invoices             Invoice[]
   proofPhotos          JobProofPhoto[]
+  completionLocation   JobCompletionLocation?
   signature            JobSignature?
   scheduleConflicts    ScheduleConflict[]
   activities           JobActivity[]
@@ -647,6 +732,9 @@ model CompanySchedulingSettings {
   defaultJobStatus          JobStatus @default(NEW)
   requireCompletionNotes    Boolean @default(true)
   requireProofPhotos        Boolean @default(true)
+  requireBeforePhotos       Boolean @default(false)
+  requireAfterPhotos        Boolean @default(false)
+  requireLocation           Boolean @default(false)
   autoCreateScheduleOnAssign Boolean @default(false)
   timezone                 String   @default("UTC")
   workingDayStart          String   @default("08:00")
@@ -760,15 +848,20 @@ model BookingRequest {
   clientAccountId     String?
   serviceId           String?
   status              BookingRequestStatus @default(NEW)
+  publicReference     String?              @unique
   customerName        String
   customerEmail       String?
   customerPhone       String?
   address             String?
+  city                String?
+  propertyType        String?
+  accessNotes         String?
   serviceName         String?
   preferredDate       DateTime?
   preferredTimeWindow String?
   notes               String?
   source              String?
+  customerFacingMessage String?
   convertedJobId      String?              @unique
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -777,11 +870,30 @@ model BookingRequest {
   clientAccount       ClientAccount?       @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
   service             Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   convertedJob        Job?                 @relation(fields: [convertedJobId], references: [id], onDelete: SetNull)
+  photos              BookingRequestPhoto[]
 
   @@index([companyId, status, createdAt])
+  @@index([companyId, publicReference])
   @@index([companyId, customerId])
   @@index([companyId, clientAccountId])
   @@index([companyId, serviceId])
+}
+
+model BookingRequestPhoto {
+  id               String         @id @default(cuid())
+  companyId        String
+  bookingRequestId String
+  url              String
+  filename         String
+  originalName     String?
+  mimeType         String
+  sizeBytes        Int
+  caption          String?
+  createdAt        DateTime       @default(now())
+  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  bookingRequest   BookingRequest @relation(fields: [bookingRequestId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, bookingRequestId])
 }
 model JobProofPhoto {
   id           String         @id @default(cuid())
@@ -793,6 +905,7 @@ model JobProofPhoto {
   filename     String
   mimeType     String
   sizeBytes    Int
+  category     ProofPhotoCategory @default(GENERAL)
   caption      String?
   createdAt    DateTime       @default(now())
   company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -803,6 +916,25 @@ model JobProofPhoto {
   @@index([companyId, jobId])
   @@index([companyId, workerId])
   @@index([companyId, uploadedById])
+}
+
+model JobCompletionLocation {
+  id         String   @id @default(cuid())
+  companyId  String
+  jobId      String   @unique
+  capturedById String?
+  latitude   Float
+  longitude  Float
+  accuracy   Float?
+  source     String?
+  capturedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job        Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  capturedBy User?    @relation(fields: [capturedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, jobId])
+  @@index([companyId, capturedById])
 }
 
 model JobSignature {
@@ -836,5 +968,25 @@ model AuditLog {
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([companyId, createdAt])
+}
+
+model NotificationLog {
+  id          String    @id @default(cuid())
+  companyId   String
+  eventType   String
+  channel     String
+  recipient   String
+  subject     String?
+  status      String
+  error       String?
+  relatedType String?
+  relatedId   String?
+  createdAt   DateTime  @default(now())
+  sentAt      DateTime?
+  company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, eventType, relatedType, relatedId])
+  @@index([companyId, recipient])
 }
 

@@ -1,10 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 const bcrypt = require('bcryptjs');
 const request = require('supertest');
 
 process.env.JWT_SECRET = 'test-secret-that-is-not-the-dev-fallback';
 process.env.NODE_ENV = 'test';
+process.env.NOTIFICATION_CHANNELS = 'EMAIL,WHATSAPP';
+process.env.WHATSAPP_DEFAULT_COUNTRY_CODE = '1';
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -55,6 +58,7 @@ function createMockPrisma(seed) {
   };
 
   function companyById(companyId) { return db.companies.find((item) => item.id === companyId); }
+  function planById(planId) { return db.saaSPlans.find((item) => item.id === planId); }
   function brandingByCompanyId(companyId) { return db.companyBrandings.find((item) => item.companyId === companyId); }
   function userById(userId) { return db.users.find((item) => item.id === userId); }
   function customerById(customerId) { return db.customers.find((item) => item.id === customerId); }
@@ -68,11 +72,19 @@ function createMockPrisma(seed) {
   function invoiceLineItems(invoiceId) { return db.invoiceLineItems.filter((item) => item.invoiceId === invoiceId); }
   function receiptByPaymentId(paymentId) { return db.receipts.find((item) => item.paymentId === paymentId); }
   function paymentById(paymentId) { return db.payments.find((item) => item.id === paymentId); }
+  function completionLocationByJobId(jobId) { return db.jobCompletionLocations.find((item) => item.jobId === jobId); }
 
   function enrichCompany(company, include) {
     if (!company) return null;
     const result = { ...company };
     if (include && include.branding) result.branding = clone(brandingByCompanyId(company.id)) || null;
+    return result;
+  }
+
+  function enrichSubscription(subscription, include) {
+    if (!subscription) return null;
+    const result = { ...subscription };
+    if (include && include.plan) result.plan = clone(planById(subscription.planId)) || null;
     return result;
   }
 
@@ -96,6 +108,8 @@ function createMockPrisma(seed) {
     if (include && include.worker) result.worker = enrichWorker(workerById(job.workerId), include.worker.include);
     if (include && include.proofPhotos) result.proofPhotos = db.jobProofPhotos.filter((photo) => photo.jobId === job.id);
     if (include && include.signature) result.signature = db.jobSignatures.find((signature) => signature.jobId === job.id) || null;
+    if (include && include.completionLocation) result.completionLocation = clone(completionLocationByJobId(job.id)) || null;
+    if (include && include.completedBy) result.completedBy = include.completedBy.select ? applySelect(userById(job.completedById), include.completedBy.select) : clone(userById(job.completedById));
     return result;
   }
 
@@ -127,6 +141,7 @@ function createMockPrisma(seed) {
     if (include && include.customer) result.customer = clone(customerById(request.customerId)) || null;
     if (include && include.service) result.service = clone(serviceById(request.serviceId)) || null;
     if (include && include.convertedJob) result.convertedJob = clone(jobById(request.convertedJobId)) || null;
+    if (include && include.photos) result.photos = db.bookingRequestPhotos.filter((photo) => photo.bookingRequestId === request.id);
     if (include && include.clientAccount) {
       const account = clone(clientAccountById(request.clientAccountId)) || null;
       result.clientAccount = include.clientAccount.select ? applySelect(account, include.clientAccount.select) : account;
@@ -217,6 +232,8 @@ function createMockPrisma(seed) {
 
   return {
     user: {
+      findMany: (args = {}) => Promise.resolve(list('users', args, (user) => args.select ? applySelect(user, args.select) : user)),
+      count: (args = {}) => Promise.resolve(db.users.filter((record) => matchesWhere(record, args.where)).length),
       findUnique: (args = {}) => {
         const record = db.users.find((item) => matchesWhere(item, args.where));
         const enriched = record ? enrichUser(record) : null;
@@ -232,6 +249,9 @@ function createMockPrisma(seed) {
       }
     },
     company: makeModel('companies', enrichCompany),
+    saaSPlan: makeModel('saaSPlans'),
+    companySubscription: makeModel('companySubscriptions', enrichSubscription),
+    saaSBillingEvent: makeModel('saaSBillingEvents'),
     companyBranding: {
       ...makeModel('companyBrandings'),
       upsert: async (args) => {
@@ -275,10 +295,13 @@ function createMockPrisma(seed) {
     payment: makeModel('payments', enrichPayment),
     workerLocation: makeModel('workerLocations'),
     jobProofPhoto: makeModel('jobProofPhotos'),
+    jobCompletionLocation: makeModel('jobCompletionLocations'),
+    bookingRequestPhoto: makeModel('bookingRequestPhotos'),
     jobSignature: makeModel('jobSignatures'),
     bookingRequest: makeModel('bookingRequests', enrichBookingRequest),
     clientAccount: makeModel('clientAccounts'),
     customerProperty: makeModel('customerProperties'),
+    notificationLog: makeModel('notificationLogs'),
     jobActivity: makeModel('jobActivities', (activity, include) => {
       const result = { ...activity };
       if (include && include.worker) result.worker = enrichWorker(workerById(activity.workerId), include.worker.include);
@@ -287,6 +310,7 @@ function createMockPrisma(seed) {
       return result;
     }),
     auditLog: makeModel('auditLogs'),
+    $queryRaw: () => Promise.resolve([{ ok: 1 }]),
     $transaction: (fn) => fn(createMockPrisma(db)),
     $disconnect: () => Promise.resolve()
   };
@@ -303,27 +327,37 @@ async function buildApp() {
   const upcomingStart = new Date(todayStart);
   upcomingStart.setDate(upcomingStart.getDate() + 1);
   const seed = {
-    companies: [{ id: 'company-a', name: 'Company A', email: 'hello@a.test', phone: '+1 A' }, { id: 'company-b', name: 'Company B', email: 'hello@b.test', phone: '+1 B' }],
+    companies: [{ id: 'company-a', name: 'Company A', email: 'hello@a.test', phone: '+12025550109' }, { id: 'company-b', name: 'Company B', email: 'hello@b.test', phone: '+12025550209' }],
+    saaSPlans: [
+      { id: 'starter', name: 'Starter', description: 'Small team plan', price: 49, currency: 'USD', interval: 'month', isActive: true, limits: { maxUsers: 3, maxWorkers: 2, maxClients: 50, maxJobsPerMonth: 100, maxPublicBookingsPerMonth: 50, maxWhatsAppNotificationsPerMonth: 0, maxEmailNotificationsPerMonth: 500 }, features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: false, proofOfWork: true, customBranding: false } },
+      { id: 'growth', name: 'Growth', description: 'Growth plan', price: 129, currency: 'USD', interval: 'month', isActive: true, limits: { maxUsers: 12, maxWorkers: 10, maxClients: 500, maxJobsPerMonth: 1000, maxPublicBookingsPerMonth: 400, maxWhatsAppNotificationsPerMonth: 1000, maxEmailNotificationsPerMonth: 5000 }, features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, customBranding: true } },
+      { id: 'free-internal', name: 'Free Internal', description: 'Internal/demo', price: 0, currency: 'USD', interval: 'month', isActive: false, limits: { maxUsers: null, maxWorkers: null, maxClients: null, maxJobsPerMonth: null, maxPublicBookingsPerMonth: null, maxWhatsAppNotificationsPerMonth: null, maxEmailNotificationsPerMonth: null }, features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, customBranding: true } }
+    ],
+    companySubscriptions: [
+      { id: 'sub-a', companyId: 'company-a', planId: 'free-internal', status: 'FREE_INTERNAL', trialStartedAt: '2026-01-01T00:00:00.000Z', trialEndsAt: '2027-01-01T00:00:00.000Z', currentPeriodStart: '2026-01-01T00:00:00.000Z', currentPeriodEnd: '2027-01-01T00:00:00.000Z', provider: 'manual', providerCustomerId: 'cus_secret_should_not_return', providerSubId: 'sub_secret_should_not_return', cancelAtPeriodEnd: false, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'sub-b', companyId: 'company-b', planId: 'growth', status: 'ACTIVE', trialStartedAt: null, trialEndsAt: null, currentPeriodStart: '2026-01-01T00:00:00.000Z', currentPeriodEnd: '2026-02-01T00:00:00.000Z', provider: 'manual', providerCustomerId: 'cus_b_secret', providerSubId: 'sub_b_secret', cancelAtPeriodEnd: false, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }
+    ],
+    saaSBillingEvents: [],
     companyBrandings: [
       { id: 'branding-a', companyId: 'company-a', brandName: 'Brand A', primaryColor: '#111111', secondaryColor: '#222222', accentColor: '#333333', supportEmail: 'support@a.test', supportPhone: '+1 A', invoiceFooter: 'Footer A', invoiceTerms: 'Terms A' },
       { id: 'branding-b', companyId: 'company-b', brandName: 'Brand B', primaryColor: '#444444', secondaryColor: '#555555', accentColor: '#666666', supportEmail: 'support@b.test', supportPhone: '+1 B', invoiceFooter: 'Footer B', invoiceTerms: 'Terms B' }
     ],
     users: [
-      { id: 'owner-a', companyId: 'company-a', email: 'owner-a@test.local', name: 'Owner A', role: 'OWNER', passwordHash: hash },
-      { id: 'admin-a', companyId: 'company-a', email: 'admin-a@test.local', name: 'Admin A', role: 'ADMIN', passwordHash: hash },
+      { id: 'owner-a', companyId: 'company-a', email: 'owner-a@test.local', phone: '+12025550100', name: 'Owner A', role: 'OWNER', passwordHash: hash },
+      { id: 'admin-a', companyId: 'company-a', email: 'admin-a@test.local', phone: '+12025550101', name: 'Admin A', role: 'ADMIN', passwordHash: hash },
       { id: 'worker-a', companyId: 'company-a', email: 'worker-a@test.local', name: 'Worker A', role: 'WORKER', passwordHash: hash },
       { id: 'worker-b', companyId: 'company-a', email: 'worker-b@test.local', name: 'Worker B', role: 'WORKER', passwordHash: hash },
-      { id: 'admin-b', companyId: 'company-b', email: 'admin-b@test.local', name: 'Admin B', role: 'ADMIN', passwordHash: hash },
+      { id: 'admin-b', companyId: 'company-b', email: 'admin-b@test.local', phone: '+12025550201', name: 'Admin B', role: 'ADMIN', passwordHash: hash },
       { id: 'worker-c', companyId: 'company-b', email: 'worker-c@test.local', name: 'Worker C', role: 'WORKER', passwordHash: hash }
     ],
     workerProfiles: [
-      { id: 'wp-a', companyId: 'company-a', userId: 'worker-a', roleId: 'role-tech-a', title: 'Tech', active: true },
-      { id: 'wp-b', companyId: 'company-a', userId: 'worker-b', roleId: 'role-tech-a', title: 'Tech', active: true },
-      { id: 'wp-c', companyId: 'company-b', userId: 'worker-c', roleId: 'role-tech-b', title: 'Tech', active: true }
+      { id: 'wp-a', companyId: 'company-a', userId: 'worker-a', roleId: 'role-tech-a', title: 'Tech', phone: '+12025550110', active: true },
+      { id: 'wp-b', companyId: 'company-a', userId: 'worker-b', roleId: 'role-tech-a', title: 'Tech', phone: '+12025550111', active: true },
+      { id: 'wp-c', companyId: 'company-b', userId: 'worker-c', roleId: 'role-tech-b', title: 'Tech', phone: '+12025550210', active: true }
     ],
     customers: [
-      { id: 'customer-a', companyId: 'company-a', name: 'Customer A', createdAt: '2026-01-01T00:00:00.000Z' },
-      { id: 'customer-b', companyId: 'company-b', name: 'Customer B', createdAt: '2026-01-01T00:00:00.000Z' }
+      { id: 'customer-a', companyId: 'company-a', name: 'Customer A', phone: '+12025550120', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'customer-b', companyId: 'company-b', name: 'Customer B', phone: '+12025550220', createdAt: '2026-01-01T00:00:00.000Z' }
     ],
     services: [
       { id: 'service-a', companyId: 'company-a', name: 'Service A', active: true, price: 100, createdAt: '2026-01-01T00:00:00.000Z' },
@@ -359,17 +393,20 @@ async function buildApp() {
     payments: [],
     workerLocations: [],
     jobProofPhotos: [],
+    jobCompletionLocations: [],
+    bookingRequestPhotos: [],
     jobSignatures: [],
     bookingRequests: [],
     clientAccounts: [],
     customerProperties: [],
+    notificationLogs: [],
     jobActivities: [],
     auditLogs: []
   };
 
   const dbPath = require.resolve('../src/db');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { prisma: createMockPrisma(seed) } };
-  for (const mod of ['../src/auth', '../src/routes/api', '../src/app']) {
+  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/app']) {
     const resolved = require.resolve(mod);
     delete require.cache[resolved];
   }
@@ -413,6 +450,324 @@ async function loginClient(app, overrides = {}) {
 function assertNoPasswordHash(value) {
   assert.equal(JSON.stringify(value).includes('passwordHash'), false, 'response leaked passwordHash');
 }
+
+test('phase 10 env validation health readiness and safe errors', async () => {
+  const { validateEnv } = require('../src/config/env');
+  const production = validateEnv({ NODE_ENV: 'production', DATABASE_URL: 'postgresql://db', JWT_SECRET: 'short', APP_BASE_URL: 'https://fieldcore.test', EMAIL_PROVIDER: 'webhook', EMAIL_FROM: '' });
+  assert.equal(production.ok, false);
+  assert.equal(JSON.stringify(production.errors).includes('short'), false);
+
+  const testEnv = validateEnv({ NODE_ENV: 'test' });
+  assert.equal(testEnv.ok, true);
+
+  const app = await buildApp();
+  const health = await request(app).get('/healthz');
+  const ready = await request(app).get('/readyz');
+  assert.equal(health.status, 200);
+  assert.equal(health.body.status, 'alive');
+  assert.equal(ready.status, 200);
+  assert.equal(ready.body.status, 'ready');
+
+  const { AppError, errorHandler } = require('../src/errors');
+  const response = { statusCode: 0, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  errorHandler(new Error('password=secret-token'), { method: 'GET', path: '/boom' }, response, () => {});
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.body.error.message, 'Something went wrong.');
+  assert.equal(JSON.stringify(response.body).includes('secret-token'), false);
+  assert.equal(JSON.stringify(response.body).includes('stack'), false);
+
+  const appErrorResponse = { statusCode: 0, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  errorHandler(new AppError(403, 'Forbidden'), { method: 'GET', path: '/nope' }, appErrorResponse, () => {});
+  assert.equal(appErrorResponse.statusCode, 403);
+  assert.equal(appErrorResponse.body.error.message, 'Forbidden');
+});
+
+test('phase 10 rate limits high-risk public and auth routes safely', async () => {
+  const previous = {
+    RATE_LIMIT_AUTH_MAX: process.env.RATE_LIMIT_AUTH_MAX,
+    RATE_LIMIT_AUTH_WINDOW_MS: process.env.RATE_LIMIT_AUTH_WINDOW_MS,
+    RATE_LIMIT_TRACKING_MAX: process.env.RATE_LIMIT_TRACKING_MAX,
+    RATE_LIMIT_TRACKING_WINDOW_MS: process.env.RATE_LIMIT_TRACKING_WINDOW_MS
+  };
+  process.env.RATE_LIMIT_AUTH_MAX = '1';
+  process.env.RATE_LIMIT_AUTH_WINDOW_MS = '60000';
+  process.env.RATE_LIMIT_TRACKING_MAX = '1';
+  process.env.RATE_LIMIT_TRACKING_WINDOW_MS = '60000';
+  try {
+    const app = await buildApp();
+    const firstLogin = await request(app).post('/api/auth/login').send({ email: 'missing@test.local', password: 'bad' });
+    const limitedLogin = await request(app).post('/api/auth/login').send({ email: 'missing@test.local', password: 'bad' });
+    assert.equal(firstLogin.status, 401);
+    assert.equal(limitedLogin.status, 429);
+    assert.equal(limitedLogin.body.error.message, 'Too many auth attempts. Try again later.');
+
+    const firstTrack = await request(app).post('/api/public/booking-requests/track').send({ reference: 'REQ-UNKNOWN', contact: 'guess@test.local' });
+    const limitedTrack = await request(app).post('/api/public/booking-requests/track').send({ reference: 'REQ-UNKNOWN', contact: 'guess@test.local' });
+    assert.equal(firstTrack.status, 404);
+    assert.equal(limitedTrack.status, 429);
+    assert.equal(JSON.stringify(limitedTrack.body).includes('passwordHash'), false);
+  } finally {
+    Object.entries(previous).forEach(([key, value]) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    });
+  }
+});
+
+test('phase 10 audit logs and system status are admin scoped and secret safe', async () => {
+  const app = await buildApp();
+  app.locals.testDb.auditLogs.push(
+    { id: 'audit-a', companyId: 'company-a', userId: 'admin-a', action: 'SEND', entity: 'Quote', entityId: 'quote-a', metadata: { token: 'private-token' }, createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'audit-b', companyId: 'company-b', userId: 'admin-b', action: 'DELETE', entity: 'Customer', entityId: 'customer-b', metadata: { passwordHash: 'nope' }, createdAt: '2026-01-02T00:00:00.000Z' }
+  );
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const logs = await admin.get('/api/audit-logs');
+  assert.equal(logs.status, 200);
+  assert.equal(logs.body.data.some((item) => item.id === 'audit-a'), true);
+  assert.equal(logs.body.data.some((item) => item.id === 'audit-b'), false);
+  assert.equal(JSON.stringify(logs.body).includes('private-token'), false);
+  assertNoPasswordHash(logs.body);
+
+  const blocked = await worker.get('/api/audit-logs');
+  assert.equal(blocked.status, 403);
+
+  const publicBlocked = await request(app).get('/api/audit-logs');
+  assert.equal(publicBlocked.status, 401);
+
+  const status = await admin.get('/api/system/status');
+  assert.equal(status.status, 200);
+  assert.equal(Object.prototype.hasOwnProperty.call(status.body.data, 'database'), true);
+  assert.equal(JSON.stringify(status.body).includes(process.env.JWT_SECRET), false);
+});
+
+test('phase 10 demo reset refuses unsafe invocation', async () => {
+  const prod = spawnSync(process.execPath, ['scripts/demo-reset.js', '--yes'], { cwd: __dirname + '/..', env: { ...process.env, NODE_ENV: 'production' }, encoding: 'utf8' });
+  assert.notEqual(prod.status, 0);
+  assert.equal((prod.stderr + prod.stdout).includes('production'), true);
+
+  const unconfirmed = spawnSync(process.execPath, ['scripts/demo-reset.js'], { cwd: __dirname + '/..', env: { ...process.env, NODE_ENV: 'development', ALLOW_DEMO_RESET: '' }, encoding: 'utf8' });
+  assert.notEqual(unconfirmed.status, 0);
+  assert.equal((unconfirmed.stderr + unconfirmed.stdout).includes('--yes'), true);
+});
+
+test('phase 11 billing plans and subscription are scoped and secret safe', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+  const client = await loginClient(app);
+
+  const plans = await admin.get('/api/billing/plans');
+  assert.equal(plans.status, 200);
+  assert.deepEqual(plans.body.data.map((item) => item.id).sort(), ['growth', 'starter']);
+  assert.equal(plans.body.data.some((item) => item.id === 'free-internal'), false);
+
+  const subscription = await owner.get('/api/billing/subscription');
+  assert.equal(subscription.status, 200);
+  assert.equal(subscription.body.data.subscription.status, 'FREE_INTERNAL');
+  assert.equal(subscription.body.data.plan.id, 'free-internal');
+  assert.equal(JSON.stringify(subscription.body).includes('cus_secret_should_not_return'), false);
+  assert.equal(JSON.stringify(subscription.body).includes('sub_secret_should_not_return'), false);
+  assertNoPasswordHash(subscription.body);
+
+  const subscriptionB = await adminB.get('/api/billing/subscription');
+  assert.equal(subscriptionB.status, 200);
+  assert.equal(subscriptionB.body.data.subscription.status, 'ACTIVE');
+  assert.equal(JSON.stringify(subscriptionB.body).includes('sub-a'), false);
+
+  assert.equal((await worker.get('/api/billing/subscription')).status, 403);
+  assert.equal((await client.get('/api/billing/subscription')).status, 401);
+  assert.equal((await request(app).get('/api/billing/subscription')).status, 401);
+});
+
+test('phase 11 trial usage limits and feature gates are enforced safely', async () => {
+  const app = await buildApp();
+  app.locals.testDb.companySubscriptions[0] = {
+    ...app.locals.testDb.companySubscriptions[0],
+    planId: 'starter',
+    status: 'TRIALING',
+    trialStartedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    trialEndsAt: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
+  };
+  const owner = await login(app, 'owner-a@test.local');
+  const usage = await owner.get('/api/billing/usage');
+  assert.equal(usage.status, 200);
+  assert.equal(usage.body.data.users, 4);
+  assert.equal(usage.body.data.workers, 2);
+  assert.equal(usage.body.data.clients, 0);
+
+  const subscription = await owner.get('/api/billing/subscription');
+  assert.equal(subscription.body.data.subscription.status, 'TRIALING');
+  assert.equal(subscription.body.data.subscription.trialDaysRemaining > 0, true);
+
+  const workerLimit = await owner.post('/api/workers').send({ name: 'Limit Worker', email: 'limit-worker@test.local', password: 'Password123!', title: 'Tech' });
+  assert.equal(workerLimit.status, 403);
+  assert.equal(workerLimit.body.error.message.includes('maxUsers') || workerLimit.body.error.message.includes('maxWorkers'), true);
+  assertNoPasswordHash(workerLimit.body);
+
+  app.locals.testDb.companySubscriptions[0].trialEndsAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const blockedBooking = await request(app).post('/api/public/booking-requests').send({ customerName: 'Expired Trial', customerPhone: '+12025550133', address: 'Expired Address', serviceId: 'service-a' });
+  assert.equal(blockedBooking.status, 403);
+  assert.equal(JSON.stringify(blockedBooking.body).includes('company-b'), false);
+});
+
+test('phase 11 SaaS billing actions are owner-only and do not fake paid status', async () => {
+  const previousProvider = process.env.SAAS_BILLING_PROVIDER;
+  delete process.env.SAAS_BILLING_PROVIDER;
+  try {
+    let app = await buildApp();
+    const owner = await login(app, 'owner-a@test.local');
+    const missingProvider = await owner.post('/api/billing/checkout').send({ planId: 'growth' });
+    assert.equal(missingProvider.status, 503);
+    assert.equal(JSON.stringify(missingProvider.body).includes('STRIPE_SECRET_KEY'), false);
+
+    process.env.SAAS_BILLING_PROVIDER = 'manual';
+    app = await buildApp();
+    const manualOwner = await login(app, 'owner-a@test.local');
+    const admin = await login(app, 'admin-a@test.local');
+    const worker = await login(app, 'worker-a@test.local');
+
+    const checkout = await manualOwner.post('/api/billing/checkout').send({ planId: 'growth' });
+    assert.equal(checkout.status, 202);
+    assert.equal(checkout.body.data.mode, 'manual');
+    assert.equal(checkout.body.data.checkoutUrl, null);
+    assert.equal(JSON.stringify(checkout.body).includes('STRIPE_SECRET_KEY'), false);
+
+    const changed = await manualOwner.post('/api/billing/change-plan').send({ planId: 'growth' });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.data.planId, 'growth');
+    assert.notEqual(changed.body.data.status, 'ACTIVE');
+    assert.equal(app.locals.testDb.saaSBillingEvents.some((item) => item.eventType === 'PLAN_CHANGED'), true);
+
+    const adminChange = await admin.post('/api/billing/change-plan').send({ planId: 'business' });
+    assert.equal(adminChange.status, 403);
+    const workerCancel = await worker.post('/api/billing/cancel').send({});
+    assert.equal(workerCancel.status, 403);
+
+    const cancelled = await manualOwner.post('/api/billing/cancel').send({});
+    assert.equal(cancelled.status, 200);
+    assert.equal(cancelled.body.data.cancelAtPeriodEnd, true);
+  } finally {
+    if (previousProvider === undefined) delete process.env.SAAS_BILLING_PROVIDER;
+    else process.env.SAAS_BILLING_PROVIDER = previousProvider;
+  }
+});
+
+test('phase 11 WhatsApp and client portal gates log or block by plan', async () => {
+  const app = await buildApp();
+  app.locals.testDb.companySubscriptions[0] = { ...app.locals.testDb.companySubscriptions[0], planId: 'starter', status: 'ACTIVE', trialEndsAt: null };
+  app.locals.testDb.customers[0].phone = '+12025550120';
+  const admin = await login(app, 'admin-a@test.local');
+  const quote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Plan Gate Quote', amount: 40 });
+  await admin.post('/api/quotes/' + quote.body.data.id + '/send').send({});
+  const skipped = app.locals.testDb.notificationLogs.find((item) => item.channel === 'WHATSAPP' && item.relatedId === quote.body.data.id);
+  assert.equal(skipped.status, 'SKIPPED');
+  assert.equal(skipped.error.includes('whatsappNotifications'), true);
+
+  app.locals.testDb.clientAccounts.push({ id: 'client-plan-gate', companyId: 'company-a', customerId: 'customer-a', name: 'Plan Gate Client', email: 'linked-client@test.local', phone: '0770000000', passwordHash: await bcrypt.hash('ClientPass123!', 4), status: 'ACTIVE', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.saaSPlans.find((item) => item.id === 'starter').features.clientPortal = false;
+  const loginResponse = await request(app).post('/api/client/auth/login').send({ email: 'linked-client@test.local', password: 'ClientPass123!' });
+  assert.equal(loginResponse.status, 403);
+  assertNoPasswordHash(loginResponse.body);
+});
+
+function seedReportData(app) {
+  app.locals.testDb.jobs[0] = { ...app.locals.testDb.jobs[0], status: 'COMPLETED', startedAt: '2026-01-05T08:00:00.000Z', completedAt: '2026-01-05T10:00:00.000Z', requiresProofPhotos: true };
+  app.locals.testDb.jobProofPhotos.push({ id: 'report-photo-a', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', uploadedById: 'worker-a', url: '/uploads/jobs/proof/report-photo.jpg', filename: 'report-photo.jpg', mimeType: 'image/jpeg', sizeBytes: 10, category: 'GENERAL', createdAt: '2026-01-05T09:00:00.000Z' });
+  app.locals.testDb.customers.push({ id: 'customer-report', companyId: 'company-a', name: '=Formula Customer', phone: '+12025550144', createdAt: '2026-01-04T00:00:00.000Z' });
+  app.locals.testDb.invoices[0] = { ...app.locals.testDb.invoices[0], status: 'PARTIALLY_PAID', balanceDue: 20, dueDate: '2026-01-03T00:00:00.000Z' };
+  app.locals.testDb.invoices.push(
+    { id: 'invoice-paid-report', companyId: 'company-a', customerId: 'customer-report', serviceId: 'service-a', jobId: 'job-a', number: 'INV-RPT-PAID', status: 'PAID', amount: 50, subtotal: 50, total: 50, balanceDue: 0, paidAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' },
+    { id: 'invoice-unpaid-formula', companyId: 'company-a', customerId: 'customer-report', serviceId: 'service-a', jobId: 'job-a', number: 'INV-FORMULA', status: 'SENT', amount: 10, subtotal: 10, total: 10, balanceDue: 10, dueDate: '2026-01-11T00:00:00.000Z', createdAt: '2026-01-11T00:00:00.000Z' },
+    { id: 'invoice-b-report', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', jobId: 'job-b', number: 'INV-B-RPT', status: 'PAID', amount: 999, subtotal: 999, total: 999, balanceDue: 0, paidAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' }
+  );
+  app.locals.testDb.payments.push(
+    { id: 'payment-report-a', companyId: 'company-a', invoiceId: 'invoice-a', amount: 80, method: 'CASH', status: 'CONFIRMED', receivedAt: '2026-01-05T00:00:00.000Z', createdAt: '2026-01-05T00:00:00.000Z', reference: 'SAFE-RPT' },
+    { id: 'payment-report-paid', companyId: 'company-a', invoiceId: 'invoice-paid-report', amount: 50, method: 'CASH', status: 'CONFIRMED', receivedAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-10T00:00:00.000Z', reference: 'SAFE-RPT-2' },
+    { id: 'payment-report-b', companyId: 'company-b', invoiceId: 'invoice-b-report', amount: 999, method: 'CASH', status: 'CONFIRMED', receivedAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-10T00:00:00.000Z', reference: 'SECRET-B' }
+  );
+  app.locals.testDb.quotes.push(
+    { id: 'quote-report-accepted', companyId: 'company-a', customerId: 'customer-report', serviceId: 'service-a', title: 'Accepted Report Quote', status: 'ACCEPTED', amount: 50, subtotal: 50, total: 50, acceptedAt: '2026-01-06T00:00:00.000Z', createdAt: '2026-01-04T00:00:00.000Z' },
+    { id: 'quote-report-rejected', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', title: 'Rejected Report Quote', status: 'REJECTED', amount: 25, subtotal: 25, total: 25, rejectedAt: '2026-01-07T00:00:00.000Z', createdAt: '2026-01-04T00:00:00.000Z' },
+    { id: 'quote-report-draft', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', title: 'Draft Report Quote', status: 'DRAFT', amount: 75, subtotal: 75, total: 75, createdAt: '2026-01-04T00:00:00.000Z' }
+  );
+  app.locals.testDb.bookingRequests.push(
+    { id: 'booking-report-a', companyId: 'company-a', customerId: 'customer-report', serviceId: 'service-a', customerName: '=Formula Customer', customerPhone: '+12025550144', status: 'NEW', source: 'public_booking', createdAt: '2026-01-04T00:00:00.000Z' },
+    { id: 'booking-report-b', companyId: 'company-b', customerId: 'customer-b', serviceId: 'service-b', customerName: 'Company B', customerPhone: '+12025550244', status: 'NEW', source: 'public_booking', createdAt: '2026-01-04T00:00:00.000Z' }
+  );
+}
+
+test('phase 12 reports are admin scoped and secret safe', async () => {
+  const app = await buildApp();
+  seedReportData(app);
+  const owner = await login(app, 'owner-a@test.local');
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const client = await loginClient(app);
+  const adminB = await login(app, 'admin-b@test.local');
+
+  const query = '?startDate=2026-01-01&endDate=2026-01-31';
+  const ownerReport = await owner.get('/api/reports' + query);
+  const adminReport = await admin.get('/api/reports' + query);
+  assert.equal(ownerReport.status, 200);
+  assert.equal(adminReport.status, 200);
+  assert.equal(ownerReport.body.data.revenue.totalRevenue, 130);
+  assert.equal(ownerReport.body.data.invoices.unpaidTotal, 30);
+  assert.equal(ownerReport.body.data.jobs.completedCount, 1);
+  assert.equal(ownerReport.body.data.quotes.acceptedCount, 1);
+  assert.equal(ownerReport.body.data.quotes.sentCount, 1);
+  assert.equal(ownerReport.body.data.customers.topCustomers.some((item) => item.name === '=Formula Customer'), true);
+  assert.equal(JSON.stringify(ownerReport.body).includes('SECRET-B'), false);
+  assertNoPasswordHash(ownerReport.body);
+
+  const companyBReport = await adminB.get('/api/reports' + query);
+  assert.equal(companyBReport.status, 200);
+  assert.equal(companyBReport.body.data.revenue.totalRevenue, 999);
+  assert.equal(JSON.stringify(companyBReport.body).includes('payment-report-a'), false);
+
+  assert.equal((await worker.get('/api/reports' + query)).status, 403);
+  assert.equal((await client.get('/api/reports' + query)).status, 401);
+  assert.equal((await request(app).get('/api/reports' + query)).status, 401);
+});
+
+test('phase 12 report filters validate ownership and date ranges', async () => {
+  const app = await buildApp();
+  seedReportData(app);
+  const admin = await login(app, 'admin-a@test.local');
+
+  const serviceFiltered = await admin.get('/api/reports?startDate=2026-01-01&endDate=2026-01-31&serviceId=service-a');
+  assert.equal(serviceFiltered.status, 200);
+  assert.equal(serviceFiltered.body.data.revenue.totalRevenue, 130);
+  assert.equal(serviceFiltered.body.data.services[0].name, 'Service A');
+
+  const badService = await admin.get('/api/reports?startDate=2026-01-01&endDate=2026-01-31&serviceId=service-b');
+  assert.equal(badService.status, 404);
+  const badDate = await admin.get('/api/reports?startDate=2026-02-01&endDate=2026-01-01');
+  assert.equal(badDate.status, 400);
+  assertNoPasswordHash(serviceFiltered.body);
+});
+
+test('phase 12 CSV exports are protected scoped and formula safe', async () => {
+  const app = await buildApp();
+  seedReportData(app);
+  const owner = await login(app, 'owner-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const client = await loginClient(app);
+  const query = 'startDate=2026-01-01&endDate=2026-01-31';
+
+  const csv = await owner.get('/api/reports/export?' + query + '&section=invoices');
+  assert.equal(csv.status, 200);
+  assert.equal(csv.text.includes("'=Formula Customer"), true);
+  assert.equal(csv.text.includes('Customer B'), false);
+  assert.equal(csv.text.includes('passwordHash'), false);
+  assert.equal(csv.text.includes('SECRET-B'), false);
+  assert.equal((await worker.get('/api/reports/export?' + query + '&section=invoices')).status, 403);
+  assert.equal((await client.get('/api/reports/export?' + query + '&section=invoices')).status, 401);
+  assert.equal((await request(app).get('/api/reports/export?' + query + '&section=invoices')).status, 401);
+});
 
 test('owner can log in without passwordHash leak', async () => {
   const app = await buildApp();
@@ -943,6 +1298,74 @@ test("job completion evidence uploads are scoped and required", async () => {
   assert.ok(app.locals.testDb.auditLogs.some((item) => item.entity === "JobSignature"));
 });
 
+test('phase 9 proof categories location and summaries are scoped', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const otherWorker = await login(app, 'worker-b@test.local');
+
+  const configured = await admin.patch('/api/jobs/job-a').send({ requiresProofPhotos: true, requiresBeforePhotos: true, requiresAfterPhotos: true, requiresSignature: true, requiresLocation: true });
+  assert.equal(configured.status, 200);
+
+  await worker.post('/api/jobs/job-a/arrive').send({});
+  await worker.post('/api/jobs/job-a/start').send({});
+
+  const invalidCategory = await worker.post('/api/jobs/job-a/proof-photos').field('category', 'NOT_REAL').attach('photo', Buffer.from('fake'), { filename: 'proof.jpg', contentType: 'image/jpeg' });
+  assert.equal(invalidCategory.status, 400);
+
+  const before = await worker.post('/api/jobs/job-a/proof-photos').field('category', 'BEFORE').field('caption', 'Before panel').attach('photo', Buffer.from('before'), { filename: 'before.jpg', contentType: 'image/jpeg' });
+  assert.equal(before.status, 201);
+  assert.equal(before.body.data.category, 'BEFORE');
+  assert.equal(before.body.data.uploadedById, 'worker-a');
+
+  const missingAfter = await worker.post('/api/jobs/job-a/complete').send({ completionNotes: 'Done' });
+  assert.equal(missingAfter.status, 409);
+  assert.equal(missingAfter.body.error.details.afterPhotos.required, true);
+  assert.equal(missingAfter.body.error.details.location.required, true);
+
+  const after = await worker.post('/api/jobs/job-a/proof-photos').field('category', 'AFTER').field('caption', 'After panel').attach('photo', Buffer.from('after'), { filename: 'after.webp', contentType: 'image/webp' });
+  const general = await worker.post('/api/jobs/job-a/proof-photos').field('category', 'GENERAL').attach('photo', Buffer.from('general'), { filename: 'general.png', contentType: 'image/png' });
+  assert.equal(after.status, 201);
+  assert.equal(general.status, 201);
+
+  const badLocation = await worker.post('/api/jobs/job-a/completion-location').send({ latitude: 200, longitude: 20 });
+  assert.equal(badLocation.status, 400);
+
+  const location = await worker.post('/api/jobs/job-a/completion-location').send({ latitude: -17.82, longitude: 31.05, accuracy: 12, source: 'WORKER_BROWSER' });
+  assert.equal(location.status, 201);
+  assert.equal(location.body.data.capturedById, 'worker-a');
+
+  const signature = await worker.post('/api/jobs/job-a/signature').field('signerName', 'Customer A').attach('signature', Buffer.from('signature'), { filename: 'signature.png', contentType: 'image/png' });
+  assert.equal(signature.status, 201);
+  assert.ok(signature.body.data.createdAt);
+
+  const otherWorkerProof = await otherWorker.post('/api/jobs/job-a/proof-photos').field('category', 'AFTER').attach('photo', Buffer.from('bad'), { filename: 'bad.jpg', contentType: 'image/jpeg' });
+  assert.equal(otherWorkerProof.status, 404);
+
+  const completed = await worker.post('/api/jobs/job-a/complete').send({ completionNotes: 'Evidence complete' });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.data.completedById, 'worker-a');
+  assert.equal(completed.body.data.completionEvidence.beforePhotosSatisfied, true);
+  assert.equal(completed.body.data.completionEvidence.afterPhotosSatisfied, true);
+  assert.equal(completed.body.data.completionEvidence.locationSatisfied, true);
+
+  const completedAgain = await worker.post('/api/jobs/job-a/complete').send({ completionNotes: 'Should not duplicate' });
+  assert.equal(completedAgain.status, 200);
+  assert.equal(app.locals.testDb.jobActivities.filter((item) => item.jobId === 'job-a' && item.type === 'COMPLETED').length, 1);
+
+  const summary = await admin.get('/api/jobs/job-a/proof-summary');
+  assert.equal(summary.status, 200);
+  assert.equal(summary.body.data.beforePhotoCount, 1);
+  assert.equal(summary.body.data.afterPhotoCount, 1);
+  assert.equal(summary.body.data.generalProofPhotoCount, 1);
+  assert.equal(summary.body.data.location.latitude, -17.82);
+  assert.equal(summary.body.data.signedByName, 'Customer A');
+
+  const workerOtherSummary = await worker.get('/api/jobs/job-other-worker/proof-summary');
+  assert.equal(workerOtherSummary.status, 404);
+  assertNoPasswordHash(summary.body);
+});
+
 test('admin can operate any company job and add admin notes', async () => {
   const app = await buildApp();
   const admin = await login(app, 'admin-a@test.local');
@@ -994,10 +1417,105 @@ test('public booking request validation and public services are safe', async () 
   assert.equal(missingName.status, 400);
   const missingContact = await request(app).post('/api/public/booking-requests').send({ customerName: 'Public Customer' });
   assert.equal(missingContact.status, 400);
+  const missingAddress = await request(app).post('/api/public/booking-requests').send({ customerName: 'Public Customer', customerEmail: 'public@test.local', serviceId: 'service-a' });
+  assert.equal(missingAddress.status, 400);
+  app.locals.testDb.services.push({ id: 'service-inactive', companyId: 'company-a', name: 'Inactive Service', active: false, price: 50, createdAt: '2026-01-01T00:00:00.000Z' });
+  const inactive = await request(app).post('/api/public/booking-requests').send({ customerName: 'Inactive Request', customerEmail: 'inactive@test.local', address: 'Inactive Address', serviceId: 'service-inactive' });
+  assert.equal(inactive.status, 404);
   const services = await request(app).get('/api/public/services');
   assert.equal(services.status, 200);
   assert.deepEqual(Object.keys(services.body.data[0]).sort(), ['basePrice', 'description', 'id', 'name']);
+  assert.equal(services.body.data.some((service) => service.id === 'service-inactive'), false);
   assertNoPasswordHash(services.body);
+});
+
+test('public booking stores phase 8 details and tracks by verified contact only', async () => {
+  const app = await buildApp();
+  const created = await request(app).post('/api/public/booking-requests').send({
+    customerName: 'Track Me',
+    customerEmail: 'track@test.local',
+    customerPhone: '+1 (202) 555-0135',
+    address: '45 Request Road',
+    city: 'Greendale',
+    propertyType: 'House',
+    accessNotes: 'Gate code 1234',
+    serviceId: 'service-a',
+    preferredDate: '2026-07-20',
+    preferredTimeWindow: 'AFTERNOON',
+    notes: 'Leak near tank',
+    photos: [{ url: '/uploads/booking-requests/request-photo.jpg', filename: 'request-photo.jpg', originalName: 'tank.jpg', mimeType: 'image/jpeg', sizeBytes: 1200 }]
+  });
+  assert.equal(created.status, 201);
+  assert.match(created.body.data.publicReference, /^REQ-/);
+  assert.equal(created.body.data.city, 'Greendale');
+  assert.equal(created.body.data.propertyType, 'House');
+  assert.equal(created.body.data.accessNotes, 'Gate code 1234');
+  assert.equal(created.body.data.photos.length, 1);
+
+  const byEmail = await request(app).post('/api/public/booking-requests/track').send({ reference: created.body.data.publicReference, contact: 'track@test.local' });
+  assert.equal(byEmail.status, 200);
+  assert.equal(byEmail.body.data.reference, created.body.data.publicReference);
+  assert.equal(byEmail.body.data.status, 'Submitted');
+  assert.equal(byEmail.body.data.service.name, 'Service A');
+  assert.equal(Object.prototype.hasOwnProperty.call(byEmail.body.data, 'notes'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(byEmail.body.data, 'photos'), false);
+  assert.equal(JSON.stringify(byEmail.body).includes('Gate code'), false);
+  assertNoPasswordHash(byEmail.body);
+
+  const byPhone = await request(app).post('/api/public/booking-requests/track').send({ reference: created.body.data.publicReference, contact: '2025550135' });
+  assert.equal(byPhone.status, 200);
+
+  const wrongContact = await request(app).post('/api/public/booking-requests/track').send({ reference: created.body.data.publicReference, contact: 'wrong@test.local' });
+  assert.equal(wrongContact.status, 404);
+  assert.equal(wrongContact.body.error.message, 'Request not found or details do not match.');
+
+  const referenceOnly = await request(app).post('/api/public/booking-requests/track').send({ reference: created.body.data.publicReference });
+  assert.equal(referenceOnly.status, 400);
+
+  app.locals.testDb.bookingRequests.push({ id: 'tracking-other-company', companyId: 'company-b', publicReference: created.body.data.publicReference, customerName: 'Other', customerEmail: 'track@test.local', customerPhone: '+12025550135', serviceId: 'service-b', status: 'NEW', createdAt: '2026-01-01T00:00:00.000Z' });
+  const stillCompanyA = await request(app).post('/api/public/booking-requests/track').send({ reference: created.body.data.publicReference, contact: 'track@test.local' });
+  assert.equal(stillCompanyA.status, 200);
+  assert.equal(stillCompanyA.body.data.service.name, 'Service A');
+});
+
+test('admin can view phase 8 request details and create a sent quote from request', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const created = await request(app).post('/api/public/booking-requests').send({
+    customerName: 'Quote Request',
+    customerEmail: 'quote-request@test.local',
+    customerPhone: '+12025550136',
+    address: 'Quote Address',
+    city: 'Quote City',
+    propertyType: 'Office',
+    accessNotes: 'Reception has keys',
+    serviceId: 'service-a',
+    preferredDate: '2026-07-21',
+    preferredTimeWindow: 'MORNING',
+    photos: [{ url: '/uploads/booking-requests/quote-photo.webp', filename: 'quote-photo.webp', mimeType: 'image/webp', sizeBytes: 300 }]
+  });
+  assert.equal(created.status, 201);
+
+  const workerDetail = await worker.get('/api/booking-requests/' + created.body.data.id);
+  assert.equal(workerDetail.status, 403);
+
+  const detail = await admin.get('/api/booking-requests/' + created.body.data.id);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.data.publicReference, created.body.data.publicReference);
+  assert.equal(detail.body.data.city, 'Quote City');
+  assert.equal(detail.body.data.photos.length, 1);
+  assertNoPasswordHash(detail.body);
+
+  const quote = await admin.post('/api/booking-requests/' + created.body.data.id + '/create-quote').send({});
+  assert.equal(quote.status, 201);
+  assert.equal(quote.body.data.status, 'SENT');
+  assert.equal(quote.body.data.customer.email, 'quote-request@test.local');
+  assert.equal(app.locals.testDb.notificationLogs.some((item) => item.eventType === 'QUOTE_SENT' && item.relatedId === quote.body.data.id), true);
+
+  const tracked = await request(app).post('/api/public/booking-requests/track').send({ reference: created.body.data.publicReference, contact: 'quote-request@test.local' });
+  assert.equal(tracked.status, 200);
+  assert.equal(tracked.body.data.status, 'Quote Sent');
 });
 
 test('admin can list review decline and convert booking requests', async () => {
@@ -1022,7 +1540,7 @@ test('admin can list review decline and convert booking requests', async () => {
   const convertedAgain = await admin.post('/api/booking-requests/' + created.body.data.id + '/convert').send({});
   assert.equal(convertedAgain.status, 200);
   assert.equal(convertedAgain.body.data.convertedJobId, converted.body.data.convertedJobId);
-  const declineSource = await request(app).post('/api/public/booking-requests').send({ customerName: 'Decline Me', customerPhone: '0772222222' });
+  const declineSource = await request(app).post('/api/public/booking-requests').send({ customerName: 'Decline Me', customerPhone: '0772222222', address: 'Decline Address', serviceId: 'service-a' });
   const declined = await admin.post('/api/booking-requests/' + declineSource.body.data.id + '/decline').send({});
   assert.equal(declined.status, 200);
   assert.equal(declined.body.data.status, 'DECLINED');
@@ -1041,6 +1559,212 @@ test('company A cannot see company B booking requests', async () => {
   assertNoPasswordHash(list.body);
 });
 
+test('notifications log new public bookings to same-company admins only', async () => {
+  const app = await buildApp();
+  const response = await request(app).post('/api/public/booking-requests').send({ customerName: 'Notify Booking', customerEmail: 'notify-booking@test.local', customerPhone: '0773330000', address: 'Notify Address', serviceId: 'service-a' });
+  assert.equal(response.status, 201);
+  const logs = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'BOOKING_CREATED' && item.channel === 'EMAIL');
+  assert.deepEqual(logs.map((item) => item.recipient).sort(), ['admin-a@test.local', 'owner-a@test.local']);
+  assert.equal(logs.every((item) => item.companyId === 'company-a'), true);
+  assert.equal(logs.some((item) => item.recipient === 'admin-b@test.local'), false);
+  assertNoPasswordHash(response.body);
+});
+
+test('notification service stubs email provider and records skipped missing recipients', async () => {
+  const app = await buildApp();
+  const { setEmailProvider } = require('../src/services/emailProvider.service');
+  app.locals.testDb.customers[0].email = 'customer-a@test.local';
+  setEmailProvider(async () => ({ status: 'SENT' }));
+  try {
+    const admin = await login(app, 'admin-a@test.local');
+    const created = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Notify Quote', amount: 30 });
+    assert.equal(created.status, 201);
+    const sent = await admin.post('/api/quotes/' + created.body.data.id + '/send').send({});
+    assert.equal(sent.status, 200);
+    const log = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'QUOTE_SENT' && item.channel === 'EMAIL' && item.relatedId === created.body.data.id);
+    assert.equal(log.recipient, 'customer-a@test.local');
+    assert.equal(log.status, 'SENT');
+    assert.ok(log.sentAt);
+  } finally {
+    setEmailProvider(null);
+  }
+
+  app.locals.testDb.customers[0].email = undefined;
+  const admin = await login(app, 'admin-a@test.local');
+  const noRecipientQuote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'No Recipient Quote', amount: 35 });
+  const sentNoRecipient = await admin.post('/api/quotes/' + noRecipientQuote.body.data.id + '/send').send({});
+  assert.equal(sentNoRecipient.status, 200);
+  const skipped = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'QUOTE_SENT' && item.channel === 'EMAIL' && item.relatedId === noRecipientQuote.body.data.id);
+  assert.equal(skipped.status, 'SKIPPED');
+  assert.equal(skipped.recipient, 'none');
+});
+
+test('quote accept and reject notifications are admin-scoped and deduped', async () => {
+  const app = await buildApp();
+  app.locals.testDb.customers[0].email = 'customer-a@test.local';
+  const admin = await login(app, 'admin-a@test.local');
+  const created = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Accept Notify Quote', amount: 45 });
+  await admin.post('/api/quotes/' + created.body.data.id + '/send').send({});
+  const accepted = await admin.post('/api/quotes/' + created.body.data.id + '/accept').send({});
+  const acceptedAgain = await admin.post('/api/quotes/' + created.body.data.id + '/accept').send({});
+  assert.equal(accepted.status, 200);
+  assert.equal(acceptedAgain.status, 200);
+  const acceptedLogs = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'QUOTE_ACCEPTED' && item.channel === 'EMAIL' && item.relatedId === created.body.data.id);
+  assert.deepEqual(acceptedLogs.map((item) => item.recipient).sort(), ['admin-a@test.local', 'owner-a@test.local']);
+
+  const rejectable = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Reject Notify Quote', amount: 55 });
+  await admin.post('/api/quotes/' + rejectable.body.data.id + '/send').send({});
+  const rejected = await admin.post('/api/quotes/' + rejectable.body.data.id + '/reject').send({});
+  assert.equal(rejected.status, 200);
+  const rejectedLogs = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'QUOTE_REJECTED' && item.channel === 'EMAIL' && item.relatedId === rejectable.body.data.id);
+  assert.deepEqual(rejectedLogs.map((item) => item.recipient).sort(), ['admin-a@test.local', 'owner-a@test.local']);
+});
+
+test('invoice payment and job notifications use safe scoped recipients', async () => {
+  const app = await buildApp();
+  app.locals.testDb.customers[0].email = 'customer-a@test.local';
+  const admin = await login(app, 'admin-a@test.local');
+
+  const invoice = await admin.post('/api/invoices').send({ customerId: 'customer-a', serviceId: 'service-a', amount: 80 });
+  const sentInvoice = await admin.post('/api/invoices/' + invoice.body.data.id + '/send').send({});
+  assert.equal(sentInvoice.status, 200);
+  const invoiceLogs = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'INVOICE_SENT' && item.channel === 'EMAIL' && item.relatedId === invoice.body.data.id);
+  assert.deepEqual(invoiceLogs.map((item) => item.recipient), ['customer-a@test.local']);
+
+  const paid = await admin.post('/api/invoices/' + invoice.body.data.id + '/payments').send({ amount: 40, method: 'CARD', status: 'CONFIRMED', reference: 'secret_token=should-not-leak', notes: 'gateway password=hidden' });
+  assert.equal(paid.status, 201);
+  const paymentLogs = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'PAYMENT_RECEIVED');
+  assert.equal(paymentLogs.some((item) => item.recipient === 'admin-b@test.local'), false);
+  assert.equal(JSON.stringify(paymentLogs).includes('should-not-leak'), false);
+  assert.equal(JSON.stringify(paymentLogs).includes('hidden'), false);
+
+  const scheduled = await admin.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-b', startsAt: '2026-03-02T10:00:00.000Z', durationMinutes: 60 });
+  assert.equal(scheduled.status, 201);
+  const scheduleRecipients = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'JOB_SCHEDULED' && item.channel === 'EMAIL' && item.relatedId === 'job-other-worker').map((item) => item.recipient).sort();
+  assert.deepEqual(scheduleRecipients, ['customer-a@test.local', 'worker-b@test.local']);
+
+  const assigned = await admin.post('/api/jobs/job-a/assign-worker').send({ workerId: 'wp-b' });
+  assert.equal(assigned.status, 200);
+  const assignRecipients = app.locals.testDb.notificationLogs.filter((item) => item.eventType === 'WORKER_ASSIGNED' && item.channel === 'EMAIL' && item.relatedId === 'job-a').map((item) => item.recipient);
+  assert.deepEqual(assignRecipients, ['worker-b@test.local']);
+  assert.equal(assignRecipients.includes('worker-a@test.local'), false);
+});
+
+test('whatsapp provider supports skipped sent failed template and invalid phone outcomes', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const { setWhatsAppProvider } = require('../src/services/whatsappProvider.service');
+
+  app.locals.testDb.customers[0].email = 'customer-a@test.local';
+  app.locals.testDb.customers[0].phone = '+12025550120';
+
+  const missingConfigQuote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Missing Provider Quote', amount: 25 });
+  await admin.post('/api/quotes/' + missingConfigQuote.body.data.id + '/send').send({});
+  const missingConfigLog = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'QUOTE_SENT' && item.channel === 'WHATSAPP' && item.relatedId === missingConfigQuote.body.data.id);
+  assert.equal(missingConfigLog.status, 'SKIPPED');
+  assert.equal(missingConfigLog.error, 'WhatsApp provider is not configured');
+
+  setWhatsAppProvider(async () => ({ status: 'SENT' }));
+  try {
+    const sentQuote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'WhatsApp Sent Quote', amount: 30 });
+    await admin.post('/api/quotes/' + sentQuote.body.data.id + '/send').send({});
+    const sentLog = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'QUOTE_SENT' && item.channel === 'WHATSAPP' && item.relatedId === sentQuote.body.data.id);
+    assert.equal(sentLog.recipient, '+12025550120');
+    assert.equal(sentLog.status, 'SENT');
+    assert.ok(sentLog.sentAt);
+  } finally {
+    setWhatsAppProvider(null);
+  }
+
+  setWhatsAppProvider(async () => { throw new Error('token=super-secret-provider-token failed'); });
+  try {
+    const failedInvoice = await admin.post('/api/invoices').send({ customerId: 'customer-a', serviceId: 'service-a', amount: 55 });
+    await admin.post('/api/invoices/' + failedInvoice.body.data.id + '/send').send({});
+    const failedLog = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'INVOICE_SENT' && item.channel === 'WHATSAPP' && item.relatedId === failedInvoice.body.data.id);
+    assert.equal(failedLog.status, 'FAILED');
+    assert.equal(failedLog.error.includes('super-secret-provider-token'), false);
+    assert.equal(failedLog.error.includes('[redacted]'), true);
+  } finally {
+    setWhatsAppProvider(null);
+  }
+
+  const previousTemplate = process.env.WHATSAPP_TEMPLATE_QUOTE_SENT;
+  process.env.WHATSAPP_TEMPLATE_QUOTE_SENT = '';
+  const missingTemplateQuote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Missing Template Quote', amount: 35 });
+  await admin.post('/api/quotes/' + missingTemplateQuote.body.data.id + '/send').send({});
+  const missingTemplateLog = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'QUOTE_SENT' && item.channel === 'WHATSAPP' && item.relatedId === missingTemplateQuote.body.data.id);
+  assert.equal(missingTemplateLog.status, 'SKIPPED');
+  assert.equal(missingTemplateLog.error, 'WhatsApp template is not configured');
+  if (previousTemplate === undefined) delete process.env.WHATSAPP_TEMPLATE_QUOTE_SENT;
+  else process.env.WHATSAPP_TEMPLATE_QUOTE_SENT = previousTemplate;
+
+  app.locals.testDb.customers[0].phone = 'not-a-phone';
+  const invalidPhoneQuote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Invalid Phone Quote', amount: 40 });
+  await admin.post('/api/quotes/' + invalidPhoneQuote.body.data.id + '/send').send({});
+  const invalidPhoneLog = app.locals.testDb.notificationLogs.find((item) => item.eventType === 'QUOTE_SENT' && item.channel === 'WHATSAPP' && item.relatedId === invalidPhoneQuote.body.data.id);
+  assert.equal(invalidPhoneLog.status, 'SKIPPED');
+  assert.equal(invalidPhoneLog.recipient, 'none');
+  assert.equal(invalidPhoneLog.error, 'No valid WhatsApp phone number available');
+});
+
+test('whatsapp logs every required event with scoped recipients and channel dedupe', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const { setWhatsAppProvider } = require('../src/services/whatsappProvider.service');
+  setWhatsAppProvider(async () => ({ status: 'SENT' }));
+  app.locals.testDb.customers[0].email = 'customer-a@test.local';
+
+  try {
+    await request(app).post('/api/public/booking-requests').send({ customerName: 'WhatsApp Booking', customerEmail: 'wa-booking@test.local', customerPhone: '+12025550130', address: 'WhatsApp Address', serviceId: 'service-a' });
+
+    const quote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'WhatsApp Flow Quote', amount: 75 });
+    await admin.post('/api/quotes/' + quote.body.data.id + '/send').send({});
+    await admin.post('/api/quotes/' + quote.body.data.id + '/accept').send({});
+    await admin.post('/api/quotes/' + quote.body.data.id + '/accept').send({});
+
+    const rejectQuote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'WhatsApp Reject Quote', amount: 85 });
+    await admin.post('/api/quotes/' + rejectQuote.body.data.id + '/send').send({});
+    await admin.post('/api/quotes/' + rejectQuote.body.data.id + '/reject').send({});
+
+    const invoice = await admin.post('/api/invoices').send({ customerId: 'customer-a', serviceId: 'service-a', amount: 90 });
+    await admin.post('/api/invoices/' + invoice.body.data.id + '/send').send({});
+    await admin.post('/api/invoices/' + invoice.body.data.id + '/payments').send({ amount: 45, method: 'CASH', status: 'CONFIRMED', reference: 'raw_token=private', notes: 'internal gateway note' });
+
+    await admin.post('/api/jobs/job-other-worker/schedule').send({ workerId: 'wp-b', startsAt: '2026-03-04T10:00:00.000Z', durationMinutes: 60 });
+    await admin.post('/api/jobs/job-other-worker/reschedule').send({ workerId: 'wp-b', startsAt: '2026-03-05T10:00:00.000Z', durationMinutes: 60 });
+    await admin.post('/api/jobs/job-a/assign-worker').send({ workerId: 'wp-b' });
+    await admin.post('/api/jobs/job-a/complete').send({ completionNotes: 'Done for WhatsApp', adminOverride: true });
+
+    const whatsappEvents = new Set(app.locals.testDb.notificationLogs.filter((item) => item.channel === 'WHATSAPP').map((item) => item.eventType));
+    for (const eventType of ['BOOKING_CREATED', 'QUOTE_SENT', 'QUOTE_ACCEPTED', 'QUOTE_REJECTED', 'INVOICE_SENT', 'PAYMENT_RECEIVED', 'JOB_SCHEDULED', 'JOB_RESCHEDULED', 'WORKER_ASSIGNED', 'JOB_COMPLETED']) {
+      assert.equal(whatsappEvents.has(eventType), true, eventType);
+    }
+    const acceptedLogs = app.locals.testDb.notificationLogs.filter((item) => item.channel === 'WHATSAPP' && item.eventType === 'QUOTE_ACCEPTED' && item.relatedId === quote.body.data.id);
+    assert.deepEqual(acceptedLogs.map((item) => item.recipient).sort(), ['+12025550100', '+12025550101']);
+    const emailAcceptedLogs = app.locals.testDb.notificationLogs.filter((item) => item.channel === 'EMAIL' && item.eventType === 'QUOTE_ACCEPTED' && item.relatedId === quote.body.data.id);
+    assert.deepEqual(emailAcceptedLogs.map((item) => item.recipient).sort(), ['admin-a@test.local', 'owner-a@test.local']);
+    const workerAssigned = app.locals.testDb.notificationLogs.filter((item) => item.channel === 'WHATSAPP' && item.eventType === 'WORKER_ASSIGNED' && item.relatedId === 'job-a');
+    assert.deepEqual(workerAssigned.map((item) => item.recipient), ['+12025550111']);
+    assert.equal(workerAssigned.some((item) => item.recipient === '+12025550110'), false);
+    assert.equal(app.locals.testDb.notificationLogs.some((item) => item.channel === 'WHATSAPP' && item.recipient === '+12025550201'), false);
+    assert.equal(JSON.stringify(app.locals.testDb.notificationLogs).includes('raw_token=private'), false);
+    assert.equal(JSON.stringify(app.locals.testDb.notificationLogs).includes('passwordHash'), false);
+  } finally {
+    setWhatsAppProvider(null);
+  }
+});
+
+test('phone number normalization is conservative and country-code aware', async () => {
+  const { normalizePhoneNumber } = require('../src/services/phoneNumber.service');
+  assert.equal(normalizePhoneNumber('+1 (202) 555-0199'), '+12025550199');
+  assert.equal(normalizePhoneNumber('02025550199', { defaultCountryCode: '1' }), '+12025550199');
+  const previousCountryCode = process.env.WHATSAPP_DEFAULT_COUNTRY_CODE;
+  delete process.env.WHATSAPP_DEFAULT_COUNTRY_CODE;
+  assert.equal(normalizePhoneNumber('02025550199', { defaultCountryCode: '' }), null);
+  process.env.WHATSAPP_DEFAULT_COUNTRY_CODE = previousCountryCode;
+  assert.equal(normalizePhoneNumber('not-a-phone', { defaultCountryCode: '1' }), null);
+});
+
 
 test("client can register login session and logout without passwordHash leak", async () => {
   const app = await buildApp();
@@ -1048,6 +1772,7 @@ test("client can register login session and logout without passwordHash leak", a
   const registered = await agent.post("/api/client/auth/register").send({ name: "Portal Customer", email: "portal@test.local", phone: "0773333333", password: "ClientPass123!", role: "OWNER", status: "DISABLED" });
   assert.equal(registered.status, 201);
   assert.equal(registered.body.data.email, "portal@test.local");
+  assert.equal(registered.body.data.customerId, null);
   assert.equal(registered.body.data.status, "ACTIVE");
   assert.equal(registered.body.data.role, undefined);
   assertNoPasswordHash(registered.body);
@@ -1117,24 +1842,24 @@ test("client and internal auth boundaries remain separate", async () => {
   const worker = await login(app, "worker-a@test.local");
   const clientOnly = await worker.get("/api/client/dashboard");
   assert.equal(clientOnly.status, 401);
-  const publicBooking = await request(app).post("/api/public/booking-requests").send({ customerName: "Still Public", customerPhone: "0778888888" });
+  const publicBooking = await request(app).post("/api/public/booking-requests").send({ customerName: "Still Public", customerPhone: "0778888888", address: "Public Address", serviceId: "service-a" });
   assert.equal(publicBooking.status, 201);
   assert.equal(publicBooking.body.data.clientAccountId, undefined);
   assertNoPasswordHash(adminOnly.body);
   assertNoPasswordHash(clientOnly.body);
 });
 
-test('client dashboard includes matching public booking requests', async () => {
+test('client dashboard does not include public booking requests by raw contact match', async () => {
   const app = await buildApp();
-  const publicRequest = await request(app).post('/api/public/booking-requests').send({ customerName: 'Matched Client', customerEmail: 'matched-client@test.local', customerPhone: '0779999999' });
+  const publicRequest = await request(app).post('/api/public/booking-requests').send({ customerName: 'Matched Client', customerEmail: 'matched-client@test.local', customerPhone: '0779999999', address: 'Matched Address', serviceId: 'service-a' });
   assert.equal(publicRequest.status, 201);
   const client = request.agent(app);
   const registered = await client.post('/api/client/auth/register').send({ name: 'Matched Client', email: 'matched-client@test.local', phone: '0779999999', password: 'ClientPass123!' });
   assert.equal(registered.status, 201);
   const dashboard = await client.get('/api/client/dashboard');
   assert.equal(dashboard.status, 200);
-  assert.equal(dashboard.body.data.recentRequests.some((item) => item.id === publicRequest.body.data.id), true);
-  assert.equal(dashboard.body.data.stats.totalRequests >= 1, true);
+  assert.equal(dashboard.body.data.recentRequests.some((item) => item.id === publicRequest.body.data.id), false);
+  assert.equal(dashboard.body.data.stats.totalRequests, 0);
   assertNoPasswordHash(dashboard.body);
 });
 
@@ -1154,8 +1879,44 @@ test('client can change password and request reset', async () => {
   assert.equal(newLogin.status, 200);
   const forgot = await request(app).post('/api/client/auth/forgot-password').send({ email: 'password-client@test.local' });
   assert.equal(forgot.status, 200);
+  assert.equal(forgot.body.data.message.includes('not configured'), true);
   assertNoPasswordHash(newLogin.body);
   assertNoPasswordHash(forgot.body);
+});
+
+test('client registration does not auto-link by matching customer email or phone', async () => {
+  const app = await buildApp();
+  app.locals.testDb.customers[0].email = 'customer-a@test.local';
+  app.locals.testDb.customers[0].phone = '0771212121';
+  const client = request.agent(app);
+  const registered = await client.post('/api/client/auth/register').send({ name: 'Customer A Imposter', email: 'customer-a@test.local', phone: '0771212121', password: 'ClientPass123!' });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.data.customerId, null);
+  const quotes = await client.get('/api/client/quotes');
+  const invoices = await client.get('/api/client/invoices');
+  const jobs = await client.get('/api/client/jobs');
+  assert.deepEqual(quotes.body.data, []);
+  assert.deepEqual(invoices.body.data, []);
+  assert.deepEqual(jobs.body.data, []);
+  assertNoPasswordHash(registered.body);
+});
+
+test('client booking requests are not owned by raw email or phone matches', async () => {
+  const app = await buildApp();
+  app.locals.testDb.bookingRequests.push(
+    { id: 'raw-email-booking', companyId: 'company-a', customerName: 'Raw Email', customerEmail: 'raw-match@test.local', customerPhone: '0771010101', status: 'NEW', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'linked-customer-booking', companyId: 'company-a', customerId: 'customer-a', customerName: 'Linked Customer', customerEmail: 'other@test.local', customerPhone: '0772020202', status: 'NEW', createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' }
+  );
+  const unlinked = await loginClient(app, { id: 'client-raw-match', email: 'raw-match@test.local', phone: '0771010101', customerId: null });
+  const unlinkedList = await unlinked.get('/api/client/booking-requests');
+  assert.equal(unlinkedList.status, 200);
+  assert.deepEqual(unlinkedList.body.data, []);
+
+  const linked = await loginClient(app, { id: 'client-linked-customer', email: 'linked-customer@test.local', customerId: 'customer-a' });
+  const linkedList = await linked.get('/api/client/booking-requests');
+  assert.equal(linkedList.status, 200);
+  assert.equal(linkedList.body.data.some((item) => item.id === 'linked-customer-booking'), true);
+  assert.equal(linkedList.body.data.some((item) => item.id === 'raw-email-booking'), false);
 });
 
 test('client portal quotes are owned and accept reject safely', async () => {
@@ -1197,11 +1958,32 @@ test('client portal quotes are owned and accept reject safely', async () => {
   assertNoPasswordHash(accepted.body);
 });
 
+test('client portal hides draft quotes from list detail and actions', async () => {
+  const app = await buildApp();
+  app.locals.testDb.quotes.push({ id: 'quote-draft-client', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', title: 'Draft Client Quote', status: 'DRAFT', amount: 90, subtotal: 90, total: 90, createdAt: '2026-01-11T00:00:00.000Z' });
+  const client = await loginClient(app);
+  const list = await client.get('/api/client/quotes');
+  assert.equal(list.status, 200);
+  assert.equal(list.body.data.some((item) => item.id === 'quote-draft-client'), false);
+  const detail = await client.get('/api/client/quotes/quote-draft-client');
+  const accept = await client.post('/api/client/quotes/quote-draft-client/accept').send({});
+  const reject = await client.post('/api/client/quotes/quote-draft-client/reject').send({});
+  assert.equal(detail.status, 404);
+  assert.equal(accept.status, 404);
+  assert.equal(reject.status, 404);
+  assertNoPasswordHash(list.body);
+});
+
 test('client portal invoices payments receipts jobs and evidence are owned read-only views', async () => {
   const app = await buildApp();
   app.locals.testDb.payments.push({ id: 'payment-a', companyId: 'company-a', invoiceId: 'invoice-a', amount: 40, method: 'CASH', status: 'CONFIRMED', reference: 'SAFE-REF', notes: 'Internal note', receivedAt: '2026-01-08T00:00:00.000Z', confirmedAt: '2026-01-08T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' });
   app.locals.testDb.receipts.push({ id: 'receipt-a', companyId: 'company-a', invoiceId: 'invoice-a', paymentId: 'payment-a', receiptNumber: 'RCT-A', amount: 40, issuedAt: '2026-01-08T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' });
-  app.locals.testDb.jobProofPhotos.push({ id: 'photo-a', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', uploadedById: 'worker-a', url: '/uploads/jobs/proof/photo-a.jpg', filename: 'photo-a.jpg', mimeType: 'image/jpeg', sizeBytes: 10, caption: 'Finished panel', createdAt: '2026-01-09T00:00:00.000Z' });
+  app.locals.testDb.jobProofPhotos.push(
+    { id: 'photo-before-a', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', uploadedById: 'worker-a', url: '/uploads/jobs/proof/photo-before-a.jpg', filename: 'photo-before-a.jpg', mimeType: 'image/jpeg', sizeBytes: 10, category: 'BEFORE', caption: 'Before panel', createdAt: '2026-01-08T00:00:00.000Z' },
+    { id: 'photo-a', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', uploadedById: 'worker-a', url: '/uploads/jobs/proof/photo-a.jpg', filename: 'photo-a.jpg', mimeType: 'image/jpeg', sizeBytes: 10, category: 'AFTER', caption: 'Finished panel', createdAt: '2026-01-09T00:00:00.000Z' },
+    { id: 'photo-general-a', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', uploadedById: 'worker-a', url: '/uploads/jobs/proof/photo-general-a.jpg', filename: 'photo-general-a.jpg', mimeType: 'image/jpeg', sizeBytes: 10, category: 'GENERAL', caption: 'General panel', createdAt: '2026-01-09T01:00:00.000Z' }
+  );
+  app.locals.testDb.jobCompletionLocations.push({ id: 'location-a', companyId: 'company-a', jobId: 'job-a', capturedById: 'worker-a', latitude: -17.82, longitude: 31.05, accuracy: 15, source: 'WORKER_BROWSER', capturedAt: '2026-01-09T01:30:00.000Z', createdAt: '2026-01-09T01:30:00.000Z' });
   app.locals.testDb.jobSignatures.push({ id: 'signature-a', companyId: 'company-a', jobId: 'job-a', capturedById: 'worker-a', signerName: 'Customer A', signatureUrl: '/uploads/jobs/signatures/signature-a.png', mimeType: 'image/png', sizeBytes: 10, createdAt: '2026-01-09T00:00:00.000Z' });
   app.locals.testDb.jobActivities.push(
     { id: 'activity-safe', companyId: 'company-a', jobId: 'job-a', workerId: 'wp-a', userId: 'worker-a', type: 'ARRIVED', note: 'Worker arrived', createdAt: '2026-01-09T00:00:00.000Z' },
@@ -1229,11 +2011,16 @@ test('client portal invoices payments receipts jobs and evidence are owned read-
   const job = await client.get('/api/client/jobs/job-a');
   const photos = await client.get('/api/client/jobs/job-a/proof-photos');
   const signature = await client.get('/api/client/jobs/job-a/signature');
+  const proofSummary = await client.get('/api/client/jobs/job-a/proof-summary');
   const activity = await client.get('/api/client/jobs/job-a/activity');
   assert.equal(jobs.status, 200);
-  assert.equal(job.body.data.proofPhotos[0].caption, 'Finished panel');
-  assert.equal(photos.body.data[0].url, '/uploads/jobs/proof/photo-a.jpg');
+  assert.equal(job.body.data.proofSummary.beforePhotoCount, 1);
+  assert.equal(job.body.data.proofSummary.afterPhotoCount, 1);
+  assert.equal(photos.body.data.some((item) => item.category === 'BEFORE'), true);
+  assert.equal(photos.body.data.some((item) => item.category === 'AFTER'), true);
   assert.equal(signature.body.data.signedByName, 'Customer A');
+  assert.equal(proofSummary.body.data.locationPresent, true);
+  assert.equal(proofSummary.body.data.location.latitude, undefined);
   assert.deepEqual(activity.body.data.map((item) => item.type), ['ARRIVED']);
 
   const mutateJob = await client.post('/api/jobs/job-a/complete').send({ completionNotes: 'Client should not complete' });
@@ -1242,6 +2029,29 @@ test('client portal invoices payments receipts jobs and evidence are owned read-
   assert.equal(uploadProof.status, 401);
   assertNoPasswordHash(job.body);
   assertNoPasswordHash(activity.body);
+});
+
+test('client portal hides draft invoices and related payments receipts', async () => {
+  const app = await buildApp();
+  app.locals.testDb.invoices.push({ id: 'invoice-draft-client', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', number: 'INV-DRAFT', status: 'DRAFT', amount: 300, subtotal: 300, total: 300, balanceDue: 300, createdAt: '2026-01-11T00:00:00.000Z' });
+  app.locals.testDb.invoiceLineItems.push({ id: 'ili-draft-client', companyId: 'company-a', invoiceId: 'invoice-draft-client', serviceId: 'service-a', description: 'Draft invoice item', quantity: 1, unitPrice: 300, discountAmount: 0, taxAmount: 0, lineTotal: 300, sortOrder: 0 });
+  app.locals.testDb.payments.push({ id: 'payment-draft-client', companyId: 'company-a', invoiceId: 'invoice-draft-client', amount: 300, method: 'CASH', status: 'CONFIRMED', reference: 'DRAFT-PAY', createdAt: '2026-01-12T00:00:00.000Z' });
+  app.locals.testDb.receipts.push({ id: 'receipt-draft-client', companyId: 'company-a', invoiceId: 'invoice-draft-client', paymentId: 'payment-draft-client', receiptNumber: 'RCT-DRAFT', amount: 300, issuedAt: '2026-01-12T00:00:00.000Z', createdAt: '2026-01-12T00:00:00.000Z' });
+  const client = await loginClient(app);
+  const invoices = await client.get('/api/client/invoices');
+  const invoiceDetail = await client.get('/api/client/invoices/invoice-draft-client');
+  const payments = await client.get('/api/client/payments');
+  const receipts = await client.get('/api/client/receipts');
+  const receiptDetail = await client.get('/api/client/receipts/receipt-draft-client');
+  assert.equal(invoices.status, 200);
+  assert.equal(invoices.body.data.some((item) => item.id === 'invoice-draft-client'), false);
+  assert.equal(invoiceDetail.status, 404);
+  assert.equal(payments.body.data.some((item) => item.id === 'payment-draft-client'), false);
+  assert.equal(receipts.body.data.some((item) => item.id === 'receipt-draft-client'), false);
+  assert.equal(receiptDetail.status, 404);
+  assertNoPasswordHash(invoices.body);
+  assertNoPasswordHash(payments.body);
+  assertNoPasswordHash(receipts.body);
 });
 
 test('client properties are scoped and clients without linked customer get safe empty resources', async () => {

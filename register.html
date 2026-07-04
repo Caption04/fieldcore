@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Up | FieldCore</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/auth.js"></script>
+  </head>
+  <body class="auth-page" data-auth-page="register">
+    <main class="public-booking auth-wrap">
+      <section class="public-booking-card auth-card">
+        <div class="brand public-booking-brand">
+          <span class="brand-mark">FC</span>
+          <span class="brand-name">FieldCore</span>
+        </div>
+        <div class="hero-copy">
+          <h2>Create Account</h2>
+          <p>Start a new company workspace with an owner account.</p>
+        </div>
+        <form class="form-grid" data-register-form>
+          <div class="field span-2">
+            <label for="companyName">Company Name</label>
+            <input id="companyName" name="companyName" autocomplete="organization" required minlength="2">
+          </div>
+          <div class="field">
+            <label for="name">Your Name</label>
+            <input id="name" name="name" autocomplete="name" required minlength="2">
+          </div>
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" autocomplete="email" required>
+          </div>
+          <div class="field span-2">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8">
+          </div>
+          <div class="fc-form-actions span-2">
+            <a class="secondary-button" href="login.html">Sign In</a>
+            <button class="primary-button" type="submit">Create Account</button>
+          </div>
+          <p class="fc-form-error span-2" data-auth-message hidden></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

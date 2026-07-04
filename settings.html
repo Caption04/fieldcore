@@ -26,6 +26,7 @@
           <button class="settings-tab" type="button" data-settings-target="billing">Billing</button>
           <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
           <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
+          <button class="settings-tab" type="button" data-settings-target="admin-tools">Admin Tools</button>
           <button class="settings-tab" type="button" data-settings-target="security">Security</button>
         </aside>
         <div class="settings-panels">
@@ -316,6 +317,13 @@
                 <textarea id="invoiceFooter" placeholder="Payment instructions or legal footer."></textarea>
               </div>
             </form>
+            <div class="settings-subform" data-saas-billing-card>
+              <div class="panel-head">
+                <h3>FieldCore Subscription</h3>
+                <span class="badge gray">Loading</span>
+              </div>
+              <div class="empty-state"><div><strong>Subscription status unavailable.</strong><span>Open this panel to load SaaS billing details.</span></div></div>
+            </div>
           </div>
 
           <div class="panel settings-panel" data-settings-panel="notifications" hidden>
@@ -339,6 +347,28 @@
                 <label><input type="checkbox"> Notify admins when jobs are completed</label>
               </div>
             </form>
+            <div class="table-card span-2" data-notification-log-card>
+              <div class="panel-head card">
+                <h3>Recent Notifications</h3>
+                <span class="badge gray" data-notification-log-count>0</span>
+              </div>
+              <div class="row-actions">
+                <select data-notification-channel-filter aria-label="Notification channel">
+                  <option value="">All channels</option>
+                  <option value="EMAIL">Email</option>
+                  <option value="WHATSAPP">WhatsApp</option>
+                </select>
+                <select data-notification-status-filter aria-label="Notification status">
+                  <option value="">All statuses</option>
+                  <option value="SENT">Sent</option>
+                  <option value="FAILED">Failed</option>
+                  <option value="SKIPPED">Skipped</option>
+                </select>
+              </div>
+              <div class="empty-state">
+                <div><strong>No notifications logged yet.</strong><span>Business event delivery attempts will appear here.</span></div>
+              </div>
+            </div>
           </div>
 
           <div class="panel settings-panel" data-settings-panel="integrations" hidden>
@@ -351,6 +381,26 @@
               <div class="list-item"><span class="initials">PM</span><div><strong>Payments</strong><small>Stripe, Square, QuickBooks, or Xero.</small></div><span class="badge gray">Not connected</span></div>
               <div class="list-item"><span class="initials">MS</span><div><strong>Email &amp; SMS</strong><small>SendGrid, Postmark, and Twilio credentials.</small></div><span class="badge gray">Not connected</span></div>
               <div class="list-item"><span class="initials">FS</span><div><strong>File Storage</strong><small>S3-compatible storage or Cloudinary for job photos.</small></div><span class="badge gray">Not connected</span></div>
+            </div>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="admin-tools" hidden>
+            <div class="panel-head">
+              <h2>Admin Tools</h2>
+              <span class="badge blue">Production</span>
+            </div>
+            <div class="table-card span-2" data-system-status-card>
+              <div class="panel-head card"><h3>System Status</h3><span class="badge gray">No secrets</span></div>
+              <div class="empty-state"><div><strong>Status unavailable.</strong><span>Open this panel to load configuration status.</span></div></div>
+            </div>
+            <div class="table-card span-2" data-audit-log-card>
+              <div class="panel-head card"><h3>Recent Audit Logs</h3><span class="badge gray" data-audit-log-count>0</span></div>
+              <div class="empty-state"><div><strong>No audit logs loaded.</strong><span>Recent admin and system actions will appear here.</span></div></div>
+            </div>
+            <div class="settings-list span-2">
+              <a class="list-item" href="docs/deployment-checklist.md"><span class="initials">DC</span><div><strong>Deployment Checklist</strong><small>Environment, migrations, smoke tests, and launch checks.</small></div><span class="badge gray">Docs</span></a>
+              <a class="list-item" href="docs/backup-plan.md"><span class="initials">BP</span><div><strong>Backup Plan</strong><small>Database, uploads, environment variables, and restore drills.</small></div><span class="badge gray">Docs</span></a>
+              <a class="list-item" href="docs/security-review.md"><span class="initials">SR</span><div><strong>Security Review</strong><small>Route boundaries, secrets, uploads, errors, and rate limits.</small></div><span class="badge gray">Docs</span></a>
             </div>
           </div>
 

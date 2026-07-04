@@ -240,9 +240,14 @@ function invoiceDetail(item) {
 
 function jobDetail(item) {
   const timeline = ["arrivedAt", "startedAt", "pausedAt", "resumedAt", "completedAt"].map(function(key) { return item[key] ? '<div><span>' + key.replace("At", "") + '</span><strong>' + dateTime(item[key]) + "</strong></div>" : ""; }).join("");
-  const photos = item.proofPhotos && item.proofPhotos.length ? item.proofPhotos.map(function(photo) { return '<figure><img src="' + escapeHtml(photo.url) + '" alt=""><figcaption>' + escapeHtml(photo.caption || date(photo.createdAt)) + "</figcaption></figure>"; }).join("") : empty("No proof photos yet.");
+  function photoGroup(label, category) {
+    const photos = (item.proofPhotos || []).filter(function(photo) { return (photo.category || "GENERAL") === category || category === "GENERAL" && ["BEFORE", "AFTER"].indexOf(photo.category || "GENERAL") === -1; });
+    return '<h3>' + label + '</h3><div class="client-proof-grid">' + (photos.length ? photos.map(function(photo) { return '<figure><img src="' + escapeHtml(photo.url) + '" alt=""><figcaption>' + escapeHtml(photo.caption || date(photo.createdAt)) + "</figcaption></figure>"; }).join("") : empty("No " + label.toLowerCase() + " yet.")) + "</div>";
+  }
   const signature = item.signature ? '<figure><img src="' + escapeHtml(item.signature.signatureUrl) + '" alt=""><figcaption>' + escapeHtml(item.signature.signedByName || "Signature collected") + "</figcaption></figure>" : empty("No signature captured yet.");
-  return '<div class="client-detail-stack">' + badge(item.status) + '<p>' + escapeHtml(item.description || "") + '</p><div class="client-detail-lines"><div><span>Schedule</span><strong>' + dateTime(item.scheduledStart) + '</strong><small>' + escapeHtml(item.address || "") + '</small></div>' + timeline + '</div><h3>Proof Photos</h3><div class="client-proof-grid">' + photos + '</div><h3>Signature</h3><div class="client-proof-grid">' + signature + '</div></div>';
+  const summary = item.proofSummary || {};
+  const location = summary.locationPresent ? '<div><span>Completion location</span><strong>Captured</strong><small>' + escapeHtml(summary.location && summary.location.accuracy ? Math.round(summary.location.accuracy) + " m accuracy" : "") + '</small></div>' : "";
+  return '<div class="client-detail-stack">' + badge(item.status) + '<p>' + escapeHtml(item.description || "") + '</p><div class="client-detail-lines"><div><span>Schedule</span><strong>' + dateTime(item.scheduledStart) + '</strong><small>' + escapeHtml(item.address || "") + '</small></div>' + timeline + location + '</div>' + (item.completionNotes ? '<h3>Completion Notes</h3><p>' + escapeHtml(item.completionNotes) + '</p>' : '') + photoGroup("Before Photos", "BEFORE") + photoGroup("After Photos", "AFTER") + photoGroup("General Proof Photos", "GENERAL") + '<h3>Signature</h3><div class="client-proof-grid">' + signature + '</div></div>';
 }
 
 function receiptDetail(item) {
@@ -435,7 +440,7 @@ async function clientPasswordSubmitHandler(event) {
   try {
     await api(isChange ? "/client/profile/password" : "/client/auth/forgot-password", { method: "POST", body: JSON.stringify(clean(data(form))) });
     if (isChange) { form.reset(); message(msg, "Password updated.", true); setTimeout(closePasswordModals, 700); }
-    else message(msg, "If this email has a client account, a reset link will be sent.", true);
+    else message(msg, "Password reset email delivery is not configured yet. Please contact the company to reset your password.", true);
   } catch (error) {
     message(msg, error.message);
   }

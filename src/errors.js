@@ -20,6 +20,12 @@ function notFound(message = 'Resource not found') {
   return new AppError(404, message);
 }
 
+function redact(value) {
+  if (value == null) return value;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.replace(/(password|token|secret|api[_-]?key|authorization|cookie)=?[^,\s"}]*/gi, '$1=[redacted]');
+}
+
 function errorHandler(error, req, res, next) {
   if (error && error.name === 'ZodError') {
     return res.status(400).json({ ok: false, error: { message: 'Validation failed', details: error.flatten() } });
@@ -34,9 +40,15 @@ function errorHandler(error, req, res, next) {
   }
 
   const status = error.status || 500;
-  const message = status === 500 ? 'Internal server error' : error.message;
-  if (status === 500) console.error(error);
+  const message = status === 500 ? 'Something went wrong.' : error.message;
+  if (status === 500) {
+    console.error('[server-error]', {
+      method: req.method,
+      path: req.path,
+      message: redact(error && error.message || 'Unknown error')
+    });
+  }
   return res.status(status).json({ ok: false, error: { message, details: error.details } });
 }
 
-module.exports = { AppError, asyncHandler, errorHandler, notFound, sendData };
+module.exports = { AppError, asyncHandler, errorHandler, notFound, redact, sendData };

@@ -3,6 +3,53 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
+const saasPlans = [
+  {
+    id: 'starter',
+    name: 'Starter',
+    description: 'Small teams getting FieldCore online.',
+    price: 49,
+    currency: 'USD',
+    interval: 'month',
+    isActive: true,
+    limits: { maxUsers: 3, maxWorkers: 2, maxClients: 50, maxJobsPerMonth: 100, maxPublicBookingsPerMonth: 50, maxStorageMb: 1024, maxWhatsAppNotificationsPerMonth: 0, maxEmailNotificationsPerMonth: 500 },
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: false, proofOfWork: true, advancedReports: false, customBranding: false, multiLocation: false, apiAccess: false }
+  },
+  {
+    id: 'growth',
+    name: 'Growth',
+    description: 'Growing field teams with client self-service.',
+    price: 129,
+    currency: 'USD',
+    interval: 'month',
+    isActive: true,
+    limits: { maxUsers: 12, maxWorkers: 10, maxClients: 500, maxJobsPerMonth: 1000, maxPublicBookingsPerMonth: 400, maxStorageMb: 10240, maxWhatsAppNotificationsPerMonth: 1000, maxEmailNotificationsPerMonth: 5000 },
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: false, apiAccess: false }
+  },
+  {
+    id: 'business',
+    name: 'Business',
+    description: 'Larger operations with higher usage limits.',
+    price: 249,
+    currency: 'USD',
+    interval: 'month',
+    isActive: true,
+    limits: { maxUsers: 50, maxWorkers: 40, maxClients: 5000, maxJobsPerMonth: 10000, maxPublicBookingsPerMonth: 5000, maxStorageMb: 102400, maxWhatsAppNotificationsPerMonth: 10000, maxEmailNotificationsPerMonth: 50000 },
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: true }
+  },
+  {
+    id: 'free-internal',
+    name: 'Free Internal',
+    description: 'Internal, demo, and test companies.',
+    price: 0,
+    currency: 'USD',
+    interval: 'month',
+    isActive: false,
+    limits: { maxUsers: null, maxWorkers: null, maxClients: null, maxJobsPerMonth: null, maxPublicBookingsPerMonth: null, maxStorageMb: null, maxWhatsAppNotificationsPerMonth: null, maxEmailNotificationsPerMonth: null },
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: true }
+  }
+];
+
 async function main() {
   const password = process.env.DEMO_PASSWORD || 'FieldCoreDemo2026!';
   const hash = await bcrypt.hash(password, 12);
@@ -30,6 +77,33 @@ async function main() {
       email: 'support@fieldcore.test'
     }
   });
+
+  if (prisma.saaSPlan && prisma.companySubscription) {
+    for (const plan of saasPlans) {
+      await prisma.saaSPlan.upsert({ where: { id: plan.id }, update: plan, create: plan });
+    }
+
+    await prisma.companySubscription.upsert({
+      where: { companyId: company.id },
+      update: {
+        planId: 'free-internal',
+        status: 'FREE_INTERNAL',
+        provider: 'manual',
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+      },
+      create: {
+        companyId: company.id,
+        planId: 'free-internal',
+        status: 'FREE_INTERNAL',
+        provider: 'manual',
+        trialStartedAt: new Date(),
+        trialEndsAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+      }
+    });
+  }
 
 
   await prisma.companyBranding.upsert({

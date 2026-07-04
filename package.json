@@ -10,6 +10,7 @@
         "build": "prisma generate",
         "migrate": "prisma migrate dev",
         "seed": "prisma db seed",
+        "demo:reset": "node scripts/demo-reset.js",
         "test": "node --test"
     },
     "dependencies": {

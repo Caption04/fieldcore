@@ -1,3096 +1,1117 @@
-\# TASK.md
+# TASK.md
 
+# FieldCore Task: Phase 12 - Reporting & Analytics
 
-
-\# FieldCore Task: Complete Phase 6 - Full Client Portal
-
-
-
-\## Read First
-
-
+## Read First
 
 Read `AGENTS.md` before making changes.
 
-
-
 Work only inside:
 
-
-
-```cmd
-
-C:\\Dev\\FieldCore\_Software
-
+```bash
+~/code/FieldCore_Software
 ```
 
-
-
-Use Windows CMD-safe commands only:
-
-
-
-```cmd
-
-npm.cmd
-
-npx.cmd
-
-node
-
-```
-
-
-
-Do not use PowerShell.
-
-
+Do not work inside OneDrive.
 
 Do not inspect Codex attachment paths.
 
-
-
 Do not read:
 
-
-
-```cmd
-
-C:\\Users\\USER\\.codex\\attachments
-
-C:\\Users\\USER\\OneDrive
-
-C:\\Windows
-
+```text
+C:\Users\USER\.codex\attachments
+C:\Users\USER\OneDrive
+C:\Windows
 ```
-
-
 
 Do not request escalated access unless the user explicitly approves it.
 
-
-
-Do not fight the shell. If a command fails because of quoting, escaping, redirection, or sandbox ACL, do not retry the same approach more than once. Use direct file edits/patches instead.
-
-
+Do not fight the shell. If a command fails because of quoting, escaping, redirection, or sandbox permissions, do not retry the same approach more than once. Use direct file edits/patches instead.
 
 Do not run repeated full test/build loops after every small edit.
 
-
-
 Use the smallest relevant checks.
 
+---
 
-
-\---
-
-
-
-\# Current State
-
-
+# Current State
 
 Completed:
 
-
-
 ```text
-
 Phase 1: Backend foundation
-
 Phase 2: White-label branding
-
 Phase 3: Quote → Job → Invoice → Payment → Receipt
-
 Phase 4: Scheduling engine
-
 Phase 5: Worker operations
-
-Phase 6A: Public booking intake
-
-Phase 6B: Client portal foundation + client auth
-
-```
-
-
-
-Phase 6B added:
-
-
-
-```text
-
-ClientAccount model
-
-ClientAccountStatus enum
-
-Client auth register/login/logout/session
-
-client-login.html
-
-client-register.html
-
-client-portal.html
-
-assets/client-portal.js
-
-Client dashboard
-
-Client booking requests
-
-Client profile
-
-```
-
-
-
-Manual test has passed for Phase 6B.
-
-
-
-\---
-
-
-
-\# Big Goal
-
-
-
-Complete the rest of Phase 6:
-
-
-
-```text
-
-Full Client Portal
-
-```
-
-
-
-This is not a lightweight portal.
-
-
-
-This is the real customer/client-facing portal for FieldCore.
-
-
-
-The portal should now support:
-
-
-
-```text
-
-client quote viewing
-
-client quote accept/reject
-
-client invoice viewing
-
-client receipt viewing
-
-client payment status visibility
-
-client job tracking
-
-client proof-of-work viewing
-
-client completion/signature evidence viewing
-
-client profile management
-
-client property/address management
-
-client booking/request history
-
-client dashboard summary across requests, quotes, jobs, invoices, receipts
-
-```
-
-
-
-Do not build fake data.
-
-
-
-Do not build temporary throwaway pages.
-
-
-
-Use the real existing Phase 3, Phase 4, Phase 5, Phase 6A, and Phase 6B systems.
-
-
-
-\---
-
-
-
-\# Implementation Strategy
-
-
-
-You may implement this as one task, but keep it internally organized as:
-
-
-
-```text
-
-Phase 6C: Client Quotes
-
-Phase 6D: Client Invoices / Payments / Receipts
-
-Phase 6E: Client Jobs / Scheduling / Proof-of-Work
-
-Phase 6F: Client Profile / Properties / Addresses
-
-Phase 6G: Final Client Portal Polish + Security Regression
-
-```
-
-
-
-Do not break completed phases.
-
-
-
-Do not rewrite the whole app.
-
-
-
-Extend the existing client portal from Phase 6B.
-
-
-
-Prefer adding client-safe API routes under:
-
-
-
-```text
-
-/api/client/...
-
-```
-
-
-
-Do not expose admin routes to clients.
-
-
-
-\---
-
-
-
-\# Absolute Security Rules
-
-
-
-These rules apply to every client portal feature.
-
-
-
-```text
-
-Client can only access data for their own company
-
-Client can only access data linked to their ClientAccount and linked Customer
-
-Client cannot access admin routes
-
-Client cannot access worker routes
-
-Client cannot access other customers
-
-Client cannot set companyId
-
-Client cannot set customerId directly
-
-Client cannot set internal statuses directly
-
-Client cannot set quote totals
-
-Client cannot set invoice totals
-
-Client cannot edit job status
-
-Client cannot edit worker assignments
-
-Client cannot edit proof photos
-
-Client cannot edit signatures
-
-Client cannot see passwordHash
-
-Client cannot see internal user records
-
-Client cannot see admin-only notes unless they are clearly customer-facing
-
-Client cannot see company-wide revenue/stats
-
-Worker cannot access client portal routes
-
-Public unauthenticated users cannot access client portal routes
-
-No cross-company leaks
-
-No passwordHash leaks
-
-```
-
-
-
-Use the existing client auth middleware from Phase 6B.
-
-
-
-If middleware is incomplete, improve it carefully.
-
-
-
-Do not reuse internal OWNER/ADMIN/WORKER permissions for client access.
-
-
-
-\---
-
-
-
-\# Data Ownership Rule
-
-
-
-Client ownership should be based on:
-
-
-
-```text
-
-ClientAccount.companyId
-
-ClientAccount.customerId
-
-```
-
-
-
-If `ClientAccount.customerId` is missing, safely return empty lists for customer-linked resources until a Customer is linked.
-
-
-
-Do not guess ownership by email alone for sensitive data unless it happens during a controlled account-linking step.
-
-
-
-Safe default:
-
-
-
-```text
-
-No linked customer = no quotes, invoices, jobs, receipts
-
-```
-
-
-
-Booking requests may be visible if linked by:
-
-
-
-```text
-
-BookingRequest.clientAccountId
-
-```
-
-
-
-or safely linked customer ownership.
-
-
-
-\---
-
-
-
-\# Do Not Build Yet Unless Already Supported
-
-
-
-Do not build a brand-new payment gateway from scratch.
-
-
-
-If the app already has a payment initiation flow, expose a safe client-facing invoice payment action.
-
-
-
-If the app only supports admin-recorded payments, then the client portal should show:
-
-
-
-```text
-
-invoice status
-
-amount paid
-
-amount due
-
-receipts
-
-payment history
-
-```
-
-
-
-and should not fake payment processing.
-
-
-
-Do not build WhatsApp/email notifications in this task.
-
-
-
-Do not build full messaging/chat in this task.
-
-
-
-Do not build admin client-account management unless it is tiny and necessary.
-
-
-
-\---
-
-
-
-\# Required Client Portal Sections
-
-
-
-Update the client portal so the navigation has real sections:
-
-
-
-```text
-
-Dashboard
-
-My Requests
-
-My Quotes
-
-My Jobs
-
-My Invoices
-
-Receipts
-
-Profile
-
-Properties
-
-Logout
-
-```
-
-
-
-If `Properties` is too large, keep it simple but real.
-
-
-
-Do not show fake data.
-
-
-
-Do not use the admin sidebar.
-
-
-
-Do not show admin dashboards, worker dashboards, reports, settings, customers table, internal schedule management, or company-wide financial numbers to clients.
-
-
-
-\---
-
-
-
-\# Phase 6C - Client Quotes
-
-
-
-\## Backend Routes
-
-
-
-Add routes under:
-
-
-
-```text
-
-/api/client/quotes
-
-```
-
-
-
-Required:
-
-
-
-```text
-
-GET  /api/client/quotes
-
-GET  /api/client/quotes/:id
-
-POST /api/client/quotes/:id/accept
-
-POST /api/client/quotes/:id/reject
-
-```
-
-
-
-All require client auth.
-
-
-
-\## GET /api/client/quotes
-
-
-
-Return only quotes owned by the logged-in client.
-
-
-
-Suggested safe fields:
-
-
-
-```text
-
-id
-
-quoteNumber
-
-status
-
-customerId
-
-createdAt
-
-updatedAt
-
-validUntil / expiresAt if available
-
-subtotal
-
-tax
-
-discount
-
-total
-
-currency if available
-
-short service/job/request summary if available
-
-```
-
-
-
-Sort newest first.
-
-
-
-Do not expose:
-
-
-
-```text
-
-other customers
-
-internal users
-
-workers
-
-admin audit internals
-
-passwordHash
-
-```
-
-
-
-\## GET /api/client/quotes/:id
-
-
-
-Return safe quote detail.
-
-
-
-Include:
-
-
-
-```text
-
-quote header
-
-quote number
-
-status
-
-customer-safe customer details
-
-line items
-
-subtotal
-
-tax
-
-discount
-
-total
-
-customer-facing notes
-
-validUntil / expiry if available
-
-linked job if already created
-
-created date
-
-updated date
-
-```
-
-
-
-Line items should include:
-
-
-
-```text
-
-description/name
-
-quantity
-
-unit price
-
-total
-
-```
-
-
-
-Do not expose internal-only notes unless already clearly customer-facing.
-
-
-
-\## POST /api/client/quotes/:id/accept
-
-
-
-Allow the client to accept their own quote.
-
-
-
-Rules:
-
-
-
-```text
-
-client must own quote
-
-quote must be in acceptable status
-
-accept should use existing Phase 3 quote acceptance logic if available
-
-accept should create/link job only if existing admin quote acceptance flow does that
-
-do not duplicate jobs on repeated accept
-
-accept should be idempotent if already accepted
-
-write status history/audit if existing system supports it
-
-return updated safe quote
-
-```
-
-
-
-Suggested acceptable statuses:
-
-
-
-```text
-
-SENT
-
-PENDING
-
-```
-
-
-
-Already accepted status:
-
-
-
-```text
-
-ACCEPTED
-
-```
-
-
-
-Do not allow acceptance if quote is:
-
-
-
-```text
-
-DRAFT
-
-REJECTED
-
-CANCELLED
-
-EXPIRED
-
-```
-
-
-
-unless the existing app uses different status names.
-
-
-
-Use the existing enum/status names.
-
-
-
-\## POST /api/client/quotes/:id/reject
-
-
-
-Allow the client to reject their own quote.
-
-
-
-Request body:
-
-
-
-```json
-
-{
-
-&#x20; "reason": "optional text"
-
-}
-
-```
-
-
-
-Rules:
-
-
-
-```text
-
-client must own quote
-
-quote must be rejectable
-
-reject should update quote status using existing model/status history
-
-reason should be stored only if there is an existing safe place
-
-if no reason field exists, store as status history note if supported
-
-return updated safe quote
-
-```
-
-
-
-Reject should not delete the quote.
-
-
-
-Reject should not delete customer/job/payment data.
-
-
-
-\## Client Portal UI
-
-
-
-Make `My Quotes` real.
-
-
-
-Show:
-
-
-
-```text
-
-quote list
-
-quote status badge
-
-quote total
-
-quote date
-
-quote expiry if available
-
-View button
-
-```
-
-
-
-Quote detail view/modal should show:
-
-
-
-```text
-
-quote number
-
-status
-
-line items
-
-subtotal
-
-tax/discount if available
-
-total
-
-customer-facing notes
-
-accept button
-
-reject button
-
-```
-
-
-
-Accept flow:
-
-
-
-```text
-
-client clicks Accept
-
-confirmation appears
-
-client confirms
-
-quote updates to ACCEPTED
-
-UI refreshes
-
-accept button disappears/disabled
-
-success message appears
-
-```
-
-
-
-Reject flow:
-
-
-
-```text
-
-client clicks Reject
-
-optional reason input appears
-
-client confirms
-
-quote updates to REJECTED
-
-UI refreshes
-
-reject button disappears/disabled
-
-success message appears
-
-```
-
-
-
-Empty state:
-
-
-
-```text
-
-No quotes yet.
-
-When your quote is ready, it will appear here.
-
-```
-
-
-
-\---
-
-
-
-\# Phase 6D - Client Invoices / Payments / Receipts
-
-
-
-\## Backend Routes
-
-
-
-Add routes:
-
-
-
-```text
-
-GET /api/client/invoices
-
-GET /api/client/invoices/:id
-
-GET /api/client/receipts
-
-GET /api/client/receipts/:id
-
-GET /api/client/payments
-
-```
-
-
-
-Optional if existing payment initiation flow exists:
-
-
-
-```text
-
-POST /api/client/invoices/:id/pay
-
-```
-
-
-
-Do not build fake payment processing.
-
-
-
-\## GET /api/client/invoices
-
-
-
-Return only invoices belonging to the client’s linked customer.
-
-
-
-Safe fields:
-
-
-
-```text
-
-id
-
-invoiceNumber
-
-status
-
-customerId
-
-quoteId if available
-
-jobId if available
-
-createdAt
-
-updatedAt
-
-dueDate if available
-
-subtotal
-
-tax
-
-discount
-
-total
-
-amountPaid if available
-
-amountDue if available
-
-currency if available
-
-```
-
-
-
-Sort newest first.
-
-
-
-\## GET /api/client/invoices/:id
-
-
-
-Return safe invoice detail.
-
-
-
-Include:
-
-
-
-```text
-
-invoice header
-
-invoice number
-
-status
-
-line items
-
-subtotal
-
-tax
-
-discount
-
-total
-
-amount paid
-
-amount due
-
-due date
-
-linked quote/job if available
-
-payment history if safe
-
-receipt references if available
-
-customer-facing notes
-
-```
-
-
-
-Line items:
-
-
-
-```text
-
-description/name
-
-quantity
-
-unit price
-
-total
-
-```
-
-
-
-\## GET /api/client/payments
-
-
-
-Return only payment records linked to the client’s own invoices/customer.
-
-
-
-Safe fields:
-
-
-
-```text
-
-id
-
-invoiceId
-
-amount
-
-method
-
-status
-
-createdAt
-
-reference if customer-safe
-
-```
-
-
-
-Do not expose admin-only payment notes or gateway secrets.
-
-
-
-\## GET /api/client/receipts
-
-
-
-Return only receipts belonging to the client’s linked customer/invoices.
-
-
-
-Safe fields:
-
-
-
-```text
-
-id
-
-receiptNumber
-
-invoiceId
-
-paymentId
-
-amount
-
-createdAt
-
-download/view reference if existing
-
-```
-
-
-
-\## Optional Pay Action
-
-
-
-Only add:
-
-
-
-```text
-
-POST /api/client/invoices/:id/pay
-
-```
-
-
-
-if the existing codebase already has a payment initiation provider/service.
-
-
-
-Rules:
-
-
-
-```text
-
-client must own invoice
-
-invoice must have amount due
-
-do not allow paying another client’s invoice
-
-return safe payment redirect/session/reference
-
-do not expose provider secrets
-
-do not fake success
-
-```
-
-
-
-If no real provider flow exists, show a disabled/status message:
-
-
-
-```text
-
-Online payment is not available yet. Please contact the company.
-
-```
-
-
-
-\## Client Portal UI
-
-
-
-Make `My Invoices` real.
-
-
-
-Show:
-
-
-
-```text
-
-invoice list
-
-invoice number
-
-status badge
-
-total
-
-amount paid
-
-amount due
-
-due date
-
-View button
-
-Pay button only if real payment route exists and invoice is payable
-
-```
-
-
-
-Invoice detail:
-
-
-
-```text
-
-invoice number
-
-status
-
-line items
-
-subtotal
-
-tax/discount
-
-total
-
-paid
-
-due
-
-payment history
-
-linked receipts
-
-```
-
-
-
-Make `Receipts` real.
-
-
-
-Show:
-
-
-
-```text
-
-receipt list
-
-receipt number
-
-invoice number
-
-payment amount
-
-date
-
-View button
-
-```
-
-
-
-Receipt detail:
-
-
-
-```text
-
-receipt number
-
-invoice reference
-
-payment reference
-
-amount
-
-date
-
-customer/company safe details
-
-```
-
-
-
-Do not create fake PDF downloads unless existing generation exists.
-
-
-
-If existing receipt generation/download exists, expose it safely.
-
-
-
-\---
-
-
-
-\# Phase 6E - Client Jobs / Scheduling / Proof-of-Work
-
-
-
-\## Backend Routes
-
-
-
-Add routes:
-
-
-
-```text
-
-GET /api/client/jobs
-
-GET /api/client/jobs/:id
-
-GET /api/client/jobs/:id/proof-photos
-
-GET /api/client/jobs/:id/signature
-
-GET /api/client/jobs/:id/activity
-
-```
-
-
-
-All require client auth.
-
-
-
-\## GET /api/client/jobs
-
-
-
-Return only jobs belonging to the client’s linked customer.
-
-
-
-Safe fields:
-
-
-
-```text
-
-id
-
-jobNumber / reference if available
-
-status
-
-customerId
-
-quoteId if available
-
-invoiceId if available
-
-scheduledStart if available
-
-scheduledEnd if available
-
-address
-
-service summary
-
-createdAt
-
-updatedAt
-
-completedAt if available
-
-```
-
-
-
-Do not expose:
-
-
-
-```text
-
-all workers
-
-internal worker notes
-
-worker private phone/email unless deliberately customer-facing
-
-internal route optimization data
-
-admin notes
-
-company-wide schedule
-
-```
-
-
-
-\## GET /api/client/jobs/:id
-
-
-
-Return safe job detail.
-
-
-
-Include:
-
-
-
-```text
-
-job reference
-
-status
-
-service details
-
-address
-
-scheduled date/time
-
-arrival/start/pause/resume/complete timestamps if customer-safe
-
-completion notes if customer-facing
-
-linked quote
-
-linked invoice
-
-proof requirement summary
-
-signature/completion evidence summary
-
-```
-
-
-
-Do not expose internal notes unless safe.
-
-
-
-\## Proof Photos
-
-
-
-Route:
-
-
-
-```text
-
-GET /api/client/jobs/:id/proof-photos
-
-```
-
-
-
-Return only proof photos for the client’s own job.
-
-
-
-Safe fields:
-
-
-
-```text
-
-id
-
-url/path
-
-caption if available
-
-createdAt
-
-uploadedBy role/name only if safe
-
-```
-
-
-
-Do not allow clients to upload/delete proof photos in this phase.
-
-
-
-\## Signature
-
-
-
-Route:
-
-
-
-```text
-
-GET /api/client/jobs/:id/signature
-
-```
-
-
-
-Return customer-visible signature/completion evidence if present.
-
-
-
-Safe fields:
-
-
-
-```text
-
-id
-
-url/path
-
-signedByName if available
-
-createdAt
-
-```
-
-
-
-Do not allow clients to delete/edit signature in this phase.
-
-
-
-\## Activity
-
-
-
-Route:
-
-
-
-```text
-
-GET /api/client/jobs/:id/activity
-
-```
-
-
-
-Return customer-safe activity only.
-
-
-
-Allowed examples:
-
-
-
-```text
-
-Job scheduled
-
-Worker arrived
-
-Work started
-
-Work paused
-
-Work resumed
-
-Work completed
-
-Proof uploaded
-
-Signature collected
-
-```
-
-
-
-Do not expose internal admin/audit logs.
-
-
-
-\## Client Portal UI
-
-
-
-Make `My Jobs` real.
-
-
-
-Jobs list should show:
-
-
-
-```text
-
-job status
-
-service/job title
-
-scheduled date/time
-
-address
-
-completion status
-
-View button
-
-```
-
-
-
-Job detail should show:
-
-
-
-```text
-
-job status
-
-schedule
-
-service/address
-
-timeline
-
-linked quote/invoice if available
-
-proof photos gallery
-
-signature/completion evidence preview
-
-```
-
-
-
-Empty state:
-
-
-
-```text
-
-No jobs yet.
-
-Accepted quotes and scheduled work will appear here.
-
-```
-
-
-
-Do not let client mutate job status.
-
-
-
-No client reschedule requests in this phase unless already easy and safe.
-
-
-
-\---
-
-
-
-\# Phase 6F - Client Profile / Properties / Addresses
-
-
-
-\## Profile Routes
-
-
-
-Use existing Phase 6B profile routes, improve if needed:
-
-
-
-```text
-
-GET   /api/client/profile
-
-PATCH /api/client/profile
-
-```
-
-
-
-Safe editable fields:
-
-
-
-```text
-
-name
-
-phone
-
-```
-
-
-
-Email can remain read-only unless validation already exists.
-
-
-
-Client cannot edit:
-
-
-
-```text
-
-companyId
-
-customerId
-
-status
-
-passwordHash
-
-internal fields
-
-```
-
-
-
-If linked to Customer, keep safe fields synced where appropriate.
-
-
-
-\## Property / Address Model
-
-
-
-If there is already a customer address/property model, use it.
-
-
-
-If not, add a simple model.
-
-
-
-Suggested model:
-
-
-
-```text
-
-ClientProperty
-
-```
-
-
-
-or if better aligned with existing code:
-
-
-
-```text
-
-CustomerProperty
-
-```
-
-
-
-Suggested fields:
-
-
-
-```text
-
-id
-
-companyId
-
-customerId
-
-clientAccountId optional
-
-label
-
-addressLine1 / address
-
-city optional
-
-notes optional
-
-isDefault
-
-createdAt
-
-updatedAt
-
-```
-
-
-
-Rules:
-
-
-
-```text
-
-belongs to company
-
-belongs to customer or client account
-
-client can only access own properties
-
-client cannot set companyId directly
-
-client cannot attach property to another customer
-
-```
-
-
-
-If creating a new model, add Prisma migration:
-
-
-
-```cmd
-
-npm.cmd run migrate -- --name phase\_6\_client\_properties
-
-```
-
-
-
-\## Property Routes
-
-
-
-Add:
-
-
-
-```text
-
-GET    /api/client/properties
-
-POST   /api/client/properties
-
-PATCH  /api/client/properties/:id
-
-DELETE /api/client/properties/:id
-
-```
-
-
-
-Rules:
-
-
-
-```text
-
-client can list own properties
-
-client can create own property
-
-client can update own property
-
-client can delete own property only if safe
-
-client cannot access another client’s property
-
-client cannot set companyId
-
-client cannot set customerId unless server verifies it
-
-```
-
-
-
-Validation:
-
-
-
-```text
-
-label required or defaulted
-
-address required
-
-notes max length
-
-isDefault boolean
-
-only one default property per client/customer if implemented
-
+Phase 6: Full Client Portal
+Phase 7A: Email Notifications Engine
+Phase 7B: WhatsApp Notifications Completion
+Phase 8: Public Booking / Request Portal
+Phase 9: Proof-of-Work System
+Phase 10: Production Readiness
+Phase 11: SaaS Billing / Subscriptions
 ```
-
 
+Phase 11 was validated with:
 
-\## Client Portal UI
-
-
-
-Make `Profile` real.
-
-
-
-Show:
-
-
-
 ```text
-
-name
-
-email
-
-phone
-
-linked customer summary if available
-
-save button
-
+npx prisma validate passed
+npm run build passed
+npm test passed
+68 tests passed
+0 failed
+npx prisma migrate deploy passed
+All migrations successfully applied
 ```
-
 
+Now begin the final planned roadmap phase:
 
-Make `Properties` real.
-
-
-
-Show:
-
-
-
 ```text
-
-property/address list
-
-default badge
-
-add property form/modal
-
-edit property
-
-delete property confirmation
-
+Phase 12: Reporting & Analytics
 ```
-
-
-
-Booking request forms inside the client portal may optionally use saved properties.
-
 
+---
 
-Do not break public `booking.html`.
+# Big Goal
 
+Build the reporting and analytics layer for FieldCore.
 
+Owners/admins should be able to understand business performance from the platform.
 
-\---
+Required analytics:
 
-
-
-\# Phase 6G - Dashboard + Portal Polish
-
-
-
-Update client dashboard to summarize the full portal.
-
-
-
-Dashboard should include:
-
-
-
 ```text
-
-open booking requests
-
-pending quotes
-
-accepted quotes
-
-upcoming jobs
-
-active jobs
-
+revenue
 unpaid invoices
-
-paid invoices/receipts
-
-recent activity
-
-profile completeness
-
+completed jobs
+worker performance
+service popularity
+quote conversion
+customer history
 ```
 
+This phase should make the system feel like a real operating dashboard, not just a CRUD tool.
 
+Do not break Phases 1-11.
 
-Only use client-owned data.
+Do not rewrite the app.
 
+Do not create fake analytics.
 
+Do not count cross-company data.
 
-Do not show company-wide stats.
+Do not expose analytics to workers/clients/public unless explicitly safe.
 
+This is the final planned feature/build phase of the MVP roadmap.
 
-
-Dashboard should include useful quick actions:
-
-
+After this phase, the project should move into:
 
 ```text
-
-Submit New Request
-
-View Quotes
-
-View Jobs
-
-View Invoices
-
-Update Profile
-
+manual QA
+bug fixing
+UI polish
+deployment QA
+provider smoke testing
+demo setup
+launch preparation
 ```
 
+---
 
+# Analytics Access Rules
 
-No fake numbers.
+Analytics must be company-scoped.
 
-
-
-If data is unavailable, show clean empty states.
-
-
-
-\---
-
-
-
-\# Client Portal Routing / Frontend Structure
-
-
-
-You can keep using:
-
-
+Allowed:
 
 ```text
-
-client-portal.html
-
-assets/client-portal.js
-
+owner
+admin
 ```
 
+Restricted:
 
+```text
+worker
+client portal user
+public user
+```
 
-with tabbed sections.
+Workers may have their own operational dashboard, but Phase 12 business analytics should not expose company financial analytics to workers unless the app already intentionally supports it.
 
+Client portal users must not access company analytics.
 
+Public users must not access analytics.
 
-Do not create many separate pages unless simpler.
+Mandatory:
 
+```text
+Company A cannot see Company B analytics.
+No passwordHash leaks.
+No provider secrets.
+No raw storage secrets.
+No private customer data beyond the authenticated company's records.
+```
 
+---
+
+# Required Reporting Areas
+
+## 1. Revenue Analytics
+
+Show revenue over time.
+
+Minimum metrics:
+
+```text
+total revenue
+paid invoice total
+payments received total
+revenue by period
+revenue by service if possible
+revenue by customer if useful
+average invoice value
+```
+
+Date filters:
+
+```text
+today
+this week
+this month
+last month
+last 30 days
+this year
+custom start/end dates
+```
+
+Use actual invoice/payment records.
+
+Do not count unpaid invoices as revenue unless clearly labeled as projected/outstanding.
+
+Separate:
+
+```text
+paid revenue
+unpaid/open invoice value
+overdue invoice value
+```
+
+---
+
+## 2. Unpaid Invoice Analytics
+
+Show unpaid money clearly.
+
+Minimum metrics:
+
+```text
+unpaid invoice count
+unpaid invoice total
+overdue invoice count
+overdue invoice total
+partially paid invoice count if supported
+oldest unpaid invoice
+top unpaid customers
+```
+
+If due dates do not exist, use invoice status and created/sent dates.
+
+Do not fake overdue logic.
+
+If overdue cannot be calculated safely, label it as unpaid instead of overdue.
+
+---
+
+## 3. Completed Jobs Analytics
+
+Show job completion performance.
+
+Minimum metrics:
+
+```text
+completed jobs count
+scheduled jobs count
+cancelled jobs count if supported
+in-progress jobs count
+completion rate
+average completion time if timestamps support it
+jobs completed by period
+jobs completed by service
+jobs completed by worker
+```
+
+Use real job statuses and timestamps.
+
+Do not invent completion time if job start/completion timestamps are missing.
+
+---
+
+## 4. Worker Performance Analytics
+
+Show worker-level performance.
+
+Minimum metrics:
+
+```text
+jobs assigned
+jobs completed
+jobs in progress
+completion rate
+average job duration if possible
+proof-of-work completion compliance
+late/missed jobs if scheduling data supports it
+```
+
+Use worker/company scoping.
+
+Do not expose worker private information unnecessarily.
+
+Owner/admin should be able to filter by worker.
+
+Do not let workers compare everyone unless the app already intentionally supports that.
+
+---
+
+## 5. Service Popularity Analytics
+
+Show which services are driving demand.
+
+Minimum metrics:
+
+```text
+booking requests by service
+jobs by service
+revenue by service
+quote conversion by service if possible
+average invoice value by service if possible
+```
+
+Include public booking requests from Phase 8 if safe.
+
+Separate requested services from completed/paid services where needed.
+
+Do not mix service demand and revenue without labels.
+
+---
+
+## 6. Quote Conversion Analytics
+
+Show quote funnel performance.
+
+Minimum metrics:
+
+```text
+quotes created
+quotes sent
+quotes accepted
+quotes rejected
+acceptance rate
+rejection rate
+draft quote count
+average quote value
+accepted quote value
+quote conversion by service if possible
+quote conversion over time
+```
+
+Use existing quote statuses.
+
+Quote accept/reject should remain idempotent.
+
+Do not count draft quotes as sent.
+
+---
+
+## 7. Customer History / Customer Analytics
+
+Show useful customer history.
+
+Minimum metrics:
+
+```text
+total customers
+new customers by period
+repeat customers
+top customers by revenue
+customers with unpaid invoices
+customer job history
+customer quote history
+customer payment history
+customer service history
+```
+
+This may be shown:
+
+```text
+on a reporting page
+inside customer detail
+both if simple
+```
+
+Do not expose one customer's history to another customer.
+
+Client portal users should only see their own records via existing client portal routes, not company-wide analytics.
+
+---
+
+# Reporting Dashboard UI
+
+Add a reporting/analytics page.
 
 Preferred:
 
-
-
 ```text
-
-client-portal.html
-
-assets/client-portal.js
-
+reports.html
+assets/reports.js
 ```
 
+or integrate into the existing admin dashboard if the project style fits better.
 
-
-Sections:
-
-
+Minimum UI sections:
 
 ```text
+Overview cards
+Revenue
+Unpaid invoices
+Jobs
+Workers
+Services
+Quote conversion
+Customers
+```
 
-dashboard
+Add filters:
 
-requests
+```text
+date range
+service
+worker
+customer if useful
+```
 
+Do not make the UI overly fancy.
+
+Make it useful and readable.
+
+No external chart library is required unless already present.
+
+Simple cards/tables are acceptable.
+
+Charts are optional.
+
+If charts are added, keep them simple.
+
+---
+
+# Backend Reporting API
+
+Add reporting endpoints.
+
+Suggested routes:
+
+```text
+GET /api/reports/overview
+GET /api/reports/revenue
+GET /api/reports/invoices
+GET /api/reports/jobs
+GET /api/reports/workers
+GET /api/reports/services
+GET /api/reports/quotes
+GET /api/reports/customers
+```
+
+or one route with sections:
+
+```text
+GET /api/reports?startDate=&endDate=&serviceId=&workerId=&customerId=
+```
+
+Choose the simplest maintainable approach.
+
+Rules:
+
+```text
+all routes require internal auth
+owner/admin only
+company scoped
+validate date inputs
+validate IDs belong to authenticated company
+return safe empty results
+do not throw on empty data
+do not leak passwordHash/secrets
+```
+
+---
+
+# Date Filtering Rules
+
+Reports must support date filtering.
+
+Minimum accepted inputs:
+
+```text
+startDate
+endDate
+```
+
+Rules:
+
+```text
+validate date format
+reject invalid dates
+endDate should be inclusive or documented clearly
+do not allow huge unbounded expensive queries if avoidable
+default to last 30 days or this month
+```
+
+Suggested defaults:
+
+```text
+period=last30days
+```
+
+If custom dates are provided:
+
+```text
+startDate <= endDate
+```
+
+Return safe 400 for invalid filters.
+
+---
+
+# Export Requirement
+
+Add simple export support if practical.
+
+Minimum acceptable:
+
+```text
+CSV export for reports
+```
+
+Suggested routes:
+
+```text
+GET /api/reports/revenue.csv
+GET /api/reports/invoices.csv
+GET /api/reports/jobs.csv
+```
+
+or:
+
+```text
+GET /api/reports/export?section=revenue
+```
+
+Rules:
+
+```text
+owner/admin only
+company scoped
+date filters respected
+safe CSV escaping
+no passwordHash/secrets
+```
+
+If export is too large, implement at least one useful CSV export:
+
+```text
+unpaid invoices CSV
+completed jobs CSV
+revenue/payments CSV
+```
+
+Do not overbuild PDF exports.
+
+---
+
+# Dashboard Integration
+
+Existing dashboard should be improved or linked.
+
+Add:
+
+```text
+Reports/Analytics nav link
+summary cards on admin dashboard if simple
+```
+
+Possible dashboard cards:
+
+```text
+This month revenue
+Unpaid invoice total
+Jobs completed this month
+Quote acceptance rate
+Top service
+```
+
+Do not duplicate everything.
+
+Dashboard can show summary; reports page can show detail.
+
+---
+
+# SaaS Billing Interaction
+
+Phase 11 added SaaS plans/features.
+
+Reporting may be plan-gated.
+
+Minimum behavior:
+
+```text
+basic reports available to allowed active/internal plans
+advanced reports can be gated if feature flag exists
+blocked plan gets clear message
+owner can still access billing
+```
+
+If plan gating is too risky, keep reports available to all ACTIVE/FREE_INTERNAL plans and document advanced reports as future.
+
+Do not break existing companies/tests.
+
+---
+
+# Notifications / Audit / Production Integration
+
+Phase 7, 10, 11 must remain intact.
+
+Reporting should not create duplicate notifications.
+
+If reporting export/download is important, optional audit log event can be recorded.
+
+Do not notify customers about internal analytics.
+
+Do not expose notification logs publicly.
+
+System status should not expose analytics data.
+
+---
+
+# Performance Guidance
+
+Keep reports efficient.
+
+Use Prisma aggregations/counts where possible.
+
+Avoid loading every record and doing huge in-memory calculations if a database aggregate is simple.
+
+However, do not over-optimize prematurely.
+
+For MVP scale, simple queries are acceptable if company-scoped and filtered.
+
+Rules:
+
+```text
+companyId filter must be applied first
+date filters must be applied where possible
+large lists should be limited
+top lists should have reasonable limits
+```
+
+Suggested top list limit:
+
+```text
+5 or 10
+```
+
+---
+
+# Customer Detail Enhancement
+
+If there is an admin customer detail page/modal, enhance it with customer history.
+
+Show:
+
+```text
 quotes
-
 jobs
-
 invoices
-
+payments
 receipts
-
-profile
-
-properties
-
+booking requests
+total paid
+unpaid total
+last job date
+last payment date
 ```
 
+If no customer detail page exists, add customer history to reports/customers instead.
 
+Do not create a massive CRM rewrite.
 
-State should be simple and reliable.
+---
 
-
-
-Use existing API helper style if available.
-
-
-
-Do not use admin `layout.js` sidebar for client portal.
-
-
-
-Client portal should have its own shell.
-
-
-
-\---
-
-
-
-\# Public Booking Integration
-
-
-
-Do not break:
-
-
-
-```text
-
-booking.html
-
-assets/booking.js
-
-```
-
-
-
-Public booking must still work without login.
-
-
-
-Optional improvement:
-
-
-
-If client is logged in and submits a request from the public booking page, link it to ClientAccount where safe.
-
-
-
-But do not spend too much time on this if it risks breaking Phase 6A.
-
-
-
-Client portal should have its own logged-in request submission already from Phase 6B.
-
-
-
-\---
-
-
-
-\# Admin Integration
-
-
-
-Do not rewrite admin systems.
-
-
-
-But ensure:
-
-
-
-```text
-
-admin-created quotes appear in correct client portal
-
-admin-created invoices appear in correct client portal
-
-admin-created receipts appear in correct client portal
-
-admin-created/scheduled jobs appear in correct client portal
-
-admin booking request conversion still works
-
-```
-
-
-
-Admin booking request detail may show:
-
-
-
-```text
-
-linked ClientAccount yes/no
-
-client name/email
-
-```
-
-
-
-Only if easy and already partly present.
-
-
-
-Do not build full admin client management now unless tiny.
-
-
-
-\---
-
-
-
-\# Worker Integration
-
-
-
-Do not change worker flows except if necessary to make proof/job data visible client-side.
-
-
-
-Worker must still be able to:
-
-
-
-```text
-
-view assigned jobs
-
-arrive/start/pause/resume/complete
-
-upload proof photos
-
-collect signature
-
-complete job with required proof/signature
-
-```
-
-
-
-Client portal must only read safe outputs of worker operations.
-
-
-
-Clients must not be able to alter worker operations.
-
-
-
-\---
-
-
-
-\# Database / Prisma Guidance
-
-
+# Database / Prisma Guidance
 
 Avoid schema changes unless needed.
 
+Reporting should mostly use existing data.
 
+Do not add analytics snapshot tables unless necessary.
 
-Possible schema changes:
-
-
+Possible schema addition only if helpful:
 
 ```text
-
-ClientProperty / CustomerProperty model
-
-BookingRequest clientAccountId already exists from Phase 6B
-
-Maybe customer-facing notes fields only if absolutely necessary
-
+ReportExportLog
 ```
 
-
-
-Do not rename existing models/enums.
-
-
+But prefer no schema changes unless required.
 
 Do not destroy migrations.
 
-
-
 Do not reset database.
-
-
 
 If schema changed:
 
-
-
-```cmd
-
-npx.cmd prisma validate
-
-npm.cmd run build
-
-npm.cmd run migrate -- --name phase\_6\_complete\_client\_portal
-
+```bash
+npx prisma validate
+npm run build
+npx prisma migrate dev --name phase_12_reporting_analytics
 ```
-
-
 
 If schema is not changed, do not run migration.
 
+---
 
+# Environment Variables
 
-\---
+No new env vars should be needed for basic reporting.
 
+If export storage/email delivery is added, document any new env vars.
 
+Do not add unnecessary env complexity.
 
-\# Required Tests
+---
 
+# Security Rules
 
-
-Add focused tests for each area.
-
-
-
-\## Client Quotes
-
-
-
-Test:
-
-
+Mandatory:
 
 ```text
-
-client can list own quotes
-
-client with no linked customer gets empty list
-
-client cannot see another customer’s quote
-
-company A client cannot see company B quote
-
-client can open own quote detail
-
-quote detail includes line items/totals
-
-client can accept own acceptable quote
-
-accept does not duplicate job on repeated call
-
-client can reject own rejectable quote
-
-client cannot accept/reject another customer’s quote
-
-unauthenticated cannot access client quotes
-
-worker/internal auth does not count as client auth
-
-no passwordHash leaks
-
+No worker access to company financial reports
+No client access to company reports
+No public access to reports
+No cross-company analytics
+No passwordHash leaks
+No provider secret leaks
+No raw storage secrets
+No private internal notes in exports unless intentionally admin-only
+No unvalidated companyId from query/body
+No fake metrics
+No counting another company's data
+No unsafe CSV injection if exporting
 ```
 
+CSV export should guard against formula injection by prefixing dangerous cell values if needed.
 
-
-\## Client Invoices / Receipts / Payments
-
-
-
-Test:
-
-
+Dangerous CSV cell prefixes:
 
 ```text
-
-client can list own invoices
-
-client can open own invoice detail
-
-client cannot see another customer’s invoice
-
-client can list own receipts
-
-client can open own receipt detail
-
-client can list own payments if route exists
-
-client cannot see another customer’s payments/receipts
-
-invoice detail includes safe line items/totals/payment status
-
-unauthenticated cannot access client invoices
-
-no gateway secrets leak
-
-no passwordHash leaks
-
+=
++
+-
+@
 ```
 
+---
 
+# Backend Tests Required
 
-\## Client Jobs / Proof / Signature
+Add focused tests.
 
+Do not rely only on manual testing.
 
+## Report Access Tests
 
 Test:
 
-
-
 ```text
-
-client can list own jobs
-
-client can open own job detail
-
-client cannot see another customer’s job
-
-client can see own job proof photos
-
-client can see own job signature/completion evidence
-
-client can see customer-safe activity
-
-client cannot mutate job status
-
-client cannot upload/delete proof photos
-
-client cannot delete/edit signatures
-
-unauthenticated cannot access client jobs
-
-worker/internal auth does not count as client auth
-
-no internal notes leak
-
-no passwordHash leaks
-
+owner can access reports
+admin can access reports
+worker cannot access reports
+client cannot access reports
+public cannot access reports
+company A cannot access company B report data
+report responses do not expose passwordHash/secrets
 ```
 
-
-
-\## Client Profile / Properties
-
-
+## Revenue Tests
 
 Test:
 
-
-
 ```text
-
-client can read profile
-
-client can update safe profile fields
-
-client cannot update companyId/customerId/status/passwordHash
-
-client can list own properties
-
-client can create own property
-
-client can update own property
-
-client can delete own property if safe
-
-client cannot access another customer’s property
-
-company A client cannot access company B property
-
-no passwordHash leaks
-
+paid revenue totals are calculated correctly
+unpaid invoice totals are separate from paid revenue
+date filters affect revenue totals
+company scope is enforced
 ```
 
-
-
-\## Dashboard
-
-
+## Invoice Report Tests
 
 Test:
 
-
-
 ```text
-
-client dashboard summarizes only own data
-
-dashboard does not include admin/company-wide stats
-
-dashboard handles empty data
-
-dashboard does not leak other customer data
-
+unpaid invoice count/total works
+paid invoices are not counted as unpaid
+overdue logic is safe if implemented
+top unpaid customers are company scoped
 ```
 
-
-
-\## Regression
-
-
+## Job Report Tests
 
 Test:
 
+```text
+completed job counts work
+jobs by status work
+jobs by service work
+jobs by worker work
+date filters work
+company scope is enforced
+```
 
+## Worker Performance Tests
+
+Test:
 
 ```text
+worker assigned/completed counts work
+worker completion rate works
+worker performance does not include another company
+worker private data is not overexposed
+```
 
-client auth still works
+## Service Popularity Tests
 
-client booking requests still work
+Test:
 
-public booking intake still works
+```text
+booking requests by service works
+jobs by service works
+revenue by service works if implemented
+service rankings are company scoped
+```
 
-admin booking request review/decline/convert still works
+## Quote Conversion Tests
 
-admin quote flow still works
+Test:
 
-quote-to-job flow still works
+```text
+created/sent/accepted/rejected counts work
+acceptance rate is calculated safely
+draft quotes are not counted as sent
+date filters work
+company scope is enforced
+```
 
-invoice/payment/receipt flow still works
+## Customer Analytics Tests
 
-schedule conflict detection still works
+Test:
 
-worker dashboard still works
+```text
+top customers by revenue works
+customer unpaid totals work
+customer history is company scoped
+client cannot access company-wide customer analytics
+```
 
-worker proof/signature completion still works
+## Export Tests
 
-admin nav still works
+If CSV export implemented, test:
 
-worker nav still restricted
+```text
+owner/admin can export
+worker/client/public cannot export
+date filters apply
+CSV escapes values safely
+CSV does not include secrets/passwordHash
+company scope is enforced
+```
 
+## Regression Tests
+
+Test:
+
+```text
+Phase 7 notifications still work
+Phase 8 public booking still works
+Phase 9 proof-of-work still works
+Phase 10 health/readiness/rate limiting still work
+Phase 11 billing/subscription gates still work
+customer invoice/payment/receipt flow still works
+client portal still works
+worker job lifecycle still works
 no cross-company leaks
-
 no passwordHash leaks
-
 ```
 
+---
 
+# Frontend Tests / Checks
 
-\---
+If frontend test system exists, add relevant tests.
 
+If not, use syntax checks and manual QA.
 
+Required syntax checks for changed frontend files:
 
-\# Manual Test Plan
-
-
-
-After implementation, start server:
-
-
-
-```cmd
-
-npm.cmd run dev
-
+```bash
+node --check assets/reports.js
+node --check assets/api.js
 ```
 
+If reports are added to another file, check that file too.
 
+---
 
-\## Client Login
+# Manual Test Plan
 
+After implementation, run:
 
+```bash
+npm run dev
+```
 
 Open:
 
-
-
 ```text
-
-http://localhost:3000/client-login.html
-
+http://localhost:3000/reports.html
 ```
 
+or the route chosen by implementation.
 
+## Owner/Admin Reports
 
-Login with existing test client or register:
-
-
-
-```text
-
-Name: Client Test
-
-Email: client-test@example.com
-
-Phone: 0771111111
-
-Password: ClientTest123!
-
-```
-
-
-
-Open:
-
-
+As owner/admin:
 
 ```text
-
-http://localhost:3000/client-portal.html
-
+open reports page
+view overview
+change date range
+filter by worker
+filter by service
+view revenue
+view unpaid invoices
+view jobs
+view worker performance
+view service popularity
+view quote conversion
+view customer history
+export CSV if implemented
 ```
-
-
 
 Expected:
 
-
-
 ```text
-
-client portal loads
-
-client nav shows Dashboard, My Requests, My Quotes, My Jobs, My Invoices, Receipts, Profile, Properties, Logout
-
-no admin sidebar
-
-no worker sidebar
-
-no admin stats
-
+reports load
+numbers are not obviously wrong
+filters work
+empty states are safe
+no console errors
+no secrets
 ```
 
-
-
-\## Quotes
-
-
-
-As admin, create/send a quote for the linked customer.
-
-
-
-As client:
-
-
-
-```text
-
-My Quotes shows quote
-
-quote detail opens
-
-line items/totals are correct
-
-accept works
-
-status changes to ACCEPTED
-
-repeated accept does not duplicate job
-
-```
-
-
-
-Create another quote.
-
-
-
-As client:
-
-
-
-```text
-
-reject works
-
-optional reason works
-
-status changes to REJECTED
-
-accept no longer available
-
-```
-
-
-
-\## Invoices / Receipts
-
-
-
-As admin, create invoice/payment/receipt for the linked customer.
-
-
-
-As client:
-
-
-
-```text
-
-My Invoices shows invoice
-
-invoice detail opens
-
-line items/totals are correct
-
-amount paid/due is correct
-
-Receipts shows receipt
-
-receipt detail opens
-
-```
-
-
-
-If online payment is not implemented, there must be no fake payment success.
-
-
-
-\## Jobs / Proof / Signature
-
-
-
-As admin/worker, create/schedule/operate a job for the linked customer.
-
-
+## Worker/Client/Public Restrictions
 
 As worker:
 
-
-
 ```text
-
-arrive/start/pause/resume/complete still works
-
-proof photo upload still works
-
-signature canvas still works
-
-completion requirements still work
-
+try reports page and API
 ```
-
-
-
-As client:
-
-
-
-```text
-
-My Jobs shows job
-
-job detail opens
-
-schedule/status are visible
-
-timeline is visible
-
-proof photos are visible after upload
-
-signature/completion evidence is visible after collected
-
-client cannot alter job status
-
-client cannot delete proof/signature
-
-```
-
-
-
-\## Profile / Properties
-
-
-
-As client:
-
-
-
-```text
-
-Profile loads
-
-name/phone update works
-
-email is read-only or safely validated
-
-restricted fields cannot be changed
-
-Properties loads
-
-add property works
-
-edit property works
-
-delete property works if enabled
-
-default property works if implemented
-
-```
-
-
-
-\## Security
-
-
-
-Try:
-
-
-
-```text
-
-logged-out user opens client routes
-
-worker opens client routes
-
-client guesses another quote ID
-
-client guesses another invoice ID
-
-client guesses another job ID
-
-client guesses another receipt ID
-
-client guesses another property ID
-
-```
-
-
 
 Expected:
 
-
-
 ```text
-
-401/403/404 safe rejection
-
-no data leak
-
-no passwordHash
-
-no cross-company access
-
+403 or safe redirect
+no company analytics leak
 ```
 
+As client portal user:
 
+```text
+try reports API
+```
 
-\## Regression
+Expected:
 
+```text
+401/403
+no company analytics leak
+```
 
+As public user:
+
+```text
+try reports API
+```
+
+Expected:
+
+```text
+401
+no data leak
+```
+
+## Cross-Company Check
+
+Use seeded/test companies if available.
+
+Expected:
+
+```text
+Company A reports do not include Company B data.
+Company A cannot request Company B worker/customer/service report data.
+```
+
+## Regression
 
 Confirm:
 
-
-
 ```text
-
-Public booking page still works without login
-
-Logged-in client booking request still works
-
-Admin Booking Requests page still works
-
-Admin can review/decline/convert booking requests
-
-Admin quote pages still work
-
-Quote acceptance still creates/links job according to existing logic
-
-Schedule conflict modal still works
-
-New Job form still works
-
-Proof/signature requirement fields still work
-
-Invoice/payment/receipt flow still works
-
-Worker dashboard still works
-
-Worker nav still restricted
-
-Admin nav still has Booking Requests
-
-No console errors
-
+public booking still works
+public tracking still works
+client portal still works
+admin quote/invoice/payment/receipt still works
+worker proof-of-work flow still works
+notifications still log/send
+billing page still works
+health/readiness still work
 ```
 
+---
 
-
-\---
-
-
-
-\# Checks
-
-
+# Checks
 
 Use the smallest relevant checks.
 
-
-
 If Prisma schema changed:
 
-
-
-```cmd
-
-npx.cmd prisma validate
-
-npm.cmd run build
-
-npm.cmd run migrate -- --name phase\_6\_complete\_client\_portal
-
+```bash
+npx prisma validate
+npm run build
+npx prisma migrate dev --name phase_12_reporting_analytics
 ```
-
-
 
 Backend syntax:
 
-
-
-```cmd
-
+```bash
 node --check src/routes/api.js
-
 ```
 
+Check new service files:
 
+```bash
+node --check src/services/reporting.service.js
+```
 
 Frontend syntax:
 
-
-
-```cmd
-
+```bash
 node --check assets/api.js
-
-node --check assets/layout.js
-
-node --check assets/booking.js
-
-node --check assets/client-portal.js
-
+node --check assets/reports.js
 ```
 
+Run build:
 
+```bash
+npm run build
+```
 
 Run tests:
 
-
-
-```cmd
-
-npm.cmd test
-
+```bash
+npm test
 ```
 
+If migrations were added and local Postgres is available:
 
-
-If a new frontend file is added, run `node --check` on it too.
-
-
+```bash
+npx prisma migrate status
+npx prisma migrate deploy
+```
 
 Do not run repeated full build/test loops after every small edit.
 
+---
 
+# Final MVP Sign-Off Checklist
 
-\---
+Because Phase 12 is the final planned roadmap phase, add a final MVP sign-off checklist document.
 
-
-
-\# Done When
-
-
-
-Phase 6 is complete when:
-
-
+Suggested file:
 
 ```text
-
-Client portal has real Dashboard, Requests, Quotes, Jobs, Invoices, Receipts, Profile, and Properties sections
-
-Client can view own quotes
-
-Client can accept/reject own quotes
-
-Client can view own invoices
-
-Client can view own payments/payment status where available
-
-Client can view own receipts
-
-Client can view own jobs
-
-Client can view own job schedule/status/timeline
-
-Client can view own proof photos
-
-Client can view own signature/completion evidence
-
-Client can manage own profile safely
-
-Client can manage own properties/addresses safely
-
-Client cannot access another customer’s data
-
-Client cannot access admin/worker/internal data
-
-Public booking intake still works
-
-Admin booking requests still work
-
-Admin quote/invoice/payment/receipt flows still work
-
-Worker operations still work
-
-Scheduling still works
-
-Proof/signature completion still works
-
-Tests pass
-
-Manual browser test passes
-
-No passwordHash leaks
-
-No cross-company leaks
-
-No fake payment success
-
-No fake data
-
+docs/mvp-signoff-checklist.md
 ```
 
+It should include:
+
+```text
+Phase 1-12 complete
+manual browser QA complete
+database migrations applied
+seed/demo reset verified
+backup plan reviewed
+deployment checklist reviewed
+security review reviewed
+provider smoke tests complete
+email provider tested
+WhatsApp provider tested
+file upload/storage tested
+public booking tested
+client portal tested
+worker app/flow tested
+proof-of-work tested
+billing tested
+reports tested
+no known critical bugs
+launch decision
+```
+
+Do not claim items are complete automatically.
+
+This document is a checklist for final review.
+
+---
+
+# Done When
+
+Phase 12 is complete when:
+
+```text
+Reporting/analytics APIs exist
+Owner/admin can access reports
+Workers/clients/public cannot access company reports
+Revenue analytics work
+Unpaid invoice analytics work
+Completed jobs analytics work
+Worker performance analytics work
+Service popularity analytics work
+Quote conversion analytics work
+Customer history analytics work
+Date filters work
+Company scoping is enforced
+CSV export exists if implemented
+Reports UI exists
+Dashboard links/summary exist
+SaaS billing gates still work
+Public booking still works
+Client portal still works
+Worker proof-of-work still works
+Notifications still work
+Production readiness checks still work
+Customer invoice/payment/receipt flow still works
+Tests pass
+Manual reports QA passes
+Final MVP sign-off checklist document exists
+No cross-company leaks
+No passwordHash leaks
+No provider secret leaks
+No fake metrics
+No broken previous phases
+```

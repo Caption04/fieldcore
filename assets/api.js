@@ -3,7 +3,7 @@
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], availability: {} };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], availability: {}, notificationLogs: [], billing: null };
 
   const tableConfigs = {
     customers: {
@@ -270,6 +270,7 @@
       if (item.status === 'NEW') add('Mark Reviewed', 'booking-review');
       if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Decline', 'booking-decline');
       if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Convert to Job', 'booking-convert');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Create Quote', 'booking-quote');
     }
     if (resource === 'invoices') {
       const status = String(item.status || '').toUpperCase();
@@ -402,6 +403,73 @@
       { name: 'Quoted', value: pipeline.quoted || 0 },
       { name: 'Won', value: pipeline.won || 0 }
     ], (item) => [item.name, `${item.value} records`]);
+  }
+
+  function reportQueryFromForm() {
+    const form = document.querySelector('[data-report-filters]');
+    const params = new URLSearchParams();
+    if (!form) return params;
+    ['period', 'startDate', 'endDate', 'serviceId', 'workerId', 'customerId'].forEach((name) => {
+      const field = form.elements[name];
+      if (field && field.value) params.set(name, field.value);
+    });
+    return params;
+  }
+
+  function reportOptionList(items, label, selected) {
+    return '<option value="">' + escapeHtml(label) + '</option>' + (items || []).map((item) => '<option value="' + escapeHtml(item.id) + '"' + (selected === item.id ? ' selected' : '') + '>' + escapeHtml(item.name || item.id) + '</option>').join('');
+  }
+
+  function reportTable(columns, rows, emptyText) {
+    if (!rows || !rows.length) return '<div class="empty-state compact-empty"><div><strong>' + escapeHtml(emptyText || 'No data for this range.') + '</strong></div></div>';
+    return '<div class="table-scroll"><table><thead><tr>' + columns.map((column) => '<th>' + escapeHtml(column.label) + '</th>').join('') + '</tr></thead><tbody>' + rows.map((row) => '<tr>' + columns.map((column) => '<td>' + (column.html ? column.value(row) : escapeHtml(column.value(row))) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+  }
+
+  function renderReports(data) {
+    const root = document.querySelector('[data-reports-root]');
+    if (!root) return;
+    const filters = data.filters || {};
+    const options = data.options || {};
+    const overview = data.overview || {};
+    const revenue = data.revenue || {};
+    const invoices = data.invoices || {};
+    const jobs = data.jobs || {};
+    const quotes = data.quotes || {};
+    const customers = data.customers || {};
+    const exportBase = '/api/reports/export?' + reportQueryFromForm().toString();
+    root.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Business Performance</h2><p>Company-scoped analytics from ' + escapeHtml(formatDate(filters.startDate)) + ' to ' + escapeHtml(formatDate(filters.endDate)) + '.</p></div><span class="api-status" data-api-status>Connected</span></div>' +
+      '<form class="panel form-grid" data-report-filters><div class="field"><label for="reportPeriod">Period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option></select></div><div class="field"><label for="reportStart">Start</label><input id="reportStart" name="startDate" type="date"></div><div class="field"><label for="reportEnd">End</label><input id="reportEnd" name="endDate" type="date"></div><div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div><div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div><div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Apply Filters</button><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=revenue') + '">Export Revenue CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=invoices') + '">Export Invoices CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=jobs') + '">Export Jobs CSV</a></div><p class="fc-form-error span-2" data-report-message hidden></p></form>' +
+      '<section class="stats"><article class="card stat-card"><div class="stat-label">Paid Revenue</div><div class="stat-value">' + money.format(overview.totalRevenue || 0) + '</div><div class="trend">Confirmed payments</div></article><article class="card stat-card"><div class="stat-label">Unpaid Invoices</div><div class="stat-value">' + money.format(overview.unpaidInvoiceTotal || 0) + '</div><div class="trend">' + escapeHtml(invoices.unpaidCount || 0) + ' open invoices</div></article><article class="card stat-card"><div class="stat-label">Jobs Completed</div><div class="stat-value">' + escapeHtml(overview.completedJobs || 0) + '</div><div class="trend">' + escapeHtml(jobs.completionRate || 0) + '% completion rate</div></article><article class="card stat-card"><div class="stat-label">Quote Acceptance</div><div class="stat-value">' + escapeHtml(overview.quoteAcceptanceRate || 0) + '%</div><div class="trend">Sent quote outcomes</div></article></section>' +
+      '<section class="split"><div class="panel"><div class="panel-head"><h2>Revenue</h2><span class="badge green">' + money.format(revenue.totalRevenue || 0) + '</span></div>' + reportTable([{ label: 'Date', value: (row) => row.date }, { label: 'Revenue', value: (row) => money.format(row.value) }], revenue.byPeriod || [], 'No confirmed payments in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Unpaid Invoices</h3><span class="badge gray">' + money.format(invoices.unpaidTotal || 0) + '</span></div>' + reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Count', value: (row) => row.count }, { label: 'Total', value: (row) => money.format(row.total) }], invoices.topUnpaidCustomers || [], 'No unpaid invoices.') + '</aside></section>' +
+      '<section class="split"><div class="panel"><div class="panel-head"><h2>Jobs</h2><span class="badge blue">' + escapeHtml(jobs.completedCount || 0) + ' completed</span></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Jobs', value: (row) => row.count }], jobs.byService || [], 'No jobs in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Worker Performance</h3></div>' + reportTable([{ label: 'Worker', value: (row) => row.name }, { label: 'Assigned', value: (row) => row.assigned }, { label: 'Completed', value: (row) => row.completed }, { label: 'Rate', value: (row) => row.completionRate + '%' }], data.workers || [], 'No worker activity in this range.') + '</aside></section>' +
+      '<section class="split"><div class="panel"><div class="panel-head"><h2>Services</h2></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Bookings', value: (row) => row.bookingRequests }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Revenue', value: (row) => money.format(row.revenue) }], data.services || [], 'No service activity in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Quote Conversion</h3><span class="badge blue">' + escapeHtml(quotes.acceptanceRate || 0) + '%</span></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Accepted', value: (row) => row.accepted }, { label: 'Rate', value: (row) => row.acceptanceRate + '%' }], quotes.byService || [], 'No quotes in this range.') + '</aside></section>' +
+      '<section class="panel"><div class="panel-head"><h2>Customers</h2><span class="badge gray">' + escapeHtml(customers.totalCustomers || 0) + ' total</span></div>' + reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Revenue', value: (row) => money.format(row.revenue) }, { label: 'Unpaid', value: (row) => money.format(row.unpaidTotal) }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Last Payment', value: (row) => formatDate(row.lastPaymentDate) }], customers.topCustomers || [], 'No customer history yet.') + '</section>';
+    const form = document.querySelector('[data-report-filters]');
+    if (form) {
+      form.elements.period.value = filters.period || 'last30days';
+      form.elements.startDate.value = filters.period === 'custom' ? String(filters.startDate || '').slice(0, 10) : '';
+      form.elements.endDate.value = filters.period === 'custom' ? String(filters.endDate || '').slice(0, 10) : '';
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await loadReports();
+      });
+    }
+  }
+
+  async function loadReports() {
+    const root = document.querySelector('[data-reports-root]');
+    if (!root) return;
+    const message = document.querySelector('[data-report-message]');
+    if (message) message.hidden = true;
+    try {
+      const params = reportQueryFromForm();
+      const data = await api('/reports' + (params.toString() ? '?' + params.toString() : ''));
+      state.reports = data;
+      renderReports(data);
+    } catch (error) {
+      if (message) { message.textContent = error.message; message.hidden = false; }
+      else root.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Business Performance</h2><p>Reports could not be loaded.</p></div><span class="api-status" data-api-status>Disconnected</span></div><section class="panel"><div class="empty-state"><div><strong>Reports unavailable</strong><span>' + escapeHtml(error.message) + '</span></div></div></section>';
+    }
   }
 
   function jobCustomer(job) {
@@ -568,7 +636,10 @@
     field('total', 'Total', 'number', 'min="0" step="0.01"') +
     formSection('Completion Requirements') +
     checkboxField('requiresProofPhotos', 'Require proof of work photo') +
-    checkboxField('requiresSignature', 'Require customer signature')
+    checkboxField('requiresBeforePhotos', 'Require before photo') +
+    checkboxField('requiresAfterPhotos', 'Require after photo') +
+    checkboxField('requiresSignature', 'Require customer signature') +
+    checkboxField('requiresLocation', 'Require completion location')
 };
     if (resource === 'quotes') return { title: 'New Quote', action: '/quotes', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('validUntil', 'Valid Until', 'date') };
     if (resource === 'invoices') return { title: 'New Invoice', action: '/invoices', fields: field('number', 'Number') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('jobId', 'Job', optionList(state.jobs, 'No job'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('dueDate', 'Due Date', 'date') };
@@ -596,7 +667,10 @@
       if (config.action === '/jobs') {
         const form = event.currentTarget;
         body.requiresProofPhotos = Boolean(form.elements.requiresProofPhotos && form.elements.requiresProofPhotos.checked);
+        body.requiresBeforePhotos = Boolean(form.elements.requiresBeforePhotos && form.elements.requiresBeforePhotos.checked);
+        body.requiresAfterPhotos = Boolean(form.elements.requiresAfterPhotos && form.elements.requiresAfterPhotos.checked);
         body.requiresSignature = Boolean(form.elements.requiresSignature && form.elements.requiresSignature.checked);
+        body.requiresLocation = Boolean(form.elements.requiresLocation && form.elements.requiresLocation.checked);
         body.minimumProofPhotos = body.requiresProofPhotos ? 1 : 0;
       }
       if ((config.action === '/quotes' || config.action === '/invoices') && body.amount) {
@@ -891,22 +965,32 @@
     const proofPhotoCount = Number(evidence.proofPhotoCount != null ? evidence.proofPhotoCount : (job.proofPhotos || []).length);
     const proofRequired = Boolean(job.requiresProofPhotos || evidence.proofPhotosRequired);
     const proofMissing = proofRequired && proofPhotoCount < 1;
+    const beforeMissing = Boolean(job.requiresBeforePhotos || evidence.beforePhotosRequired) && Number(evidence.beforePhotoCount || 0) < 1;
+    const afterMissing = Boolean(job.requiresAfterPhotos || evidence.afterPhotosRequired) && Number(evidence.afterPhotoCount || 0) < 1;
     const signatureCaptured = Boolean(job.signature || evidence.signatureCaptured);
     const signatureMissing = Boolean(job.requiresSignature || evidence.signatureRequired) && !signatureCaptured;
-    return { proofPhotoCount, proofMissing, signatureMissing, missing: proofMissing || signatureMissing };
+    const locationMissing = Boolean(job.requiresLocation || evidence.locationRequired) && !evidence.locationCaptured;
+    return { proofPhotoCount, proofMissing, beforeMissing, afterMissing, signatureMissing, locationMissing, missing: proofMissing || beforeMissing || afterMissing || signatureMissing || locationMissing };
   }
 
   function renderCompletionRequirements(job) {
     const summary = jobEvidenceSummary(job);
     const proofLabel = job.requiresProofPhotos ? (summary.proofMissing ? 'Missing' : 'Captured') : "Not required";
+    const beforeLabel = job.requiresBeforePhotos ? (summary.beforeMissing ? 'Missing' : 'Captured') : "Not required";
+    const afterLabel = job.requiresAfterPhotos ? (summary.afterMissing ? 'Missing' : 'Captured') : "Not required";
     const signatureLabel = job.requiresSignature ? (summary.signatureMissing ? "Missing" : "Captured") : "Not required";
-    return `<section class="job-evidence-section"><h4>Completion Requirements</h4><div class="job-detail-grid">${detailItem("Proof Photos", proofLabel)}${detailItem("Customer Signature", signatureLabel)}${detailItem("Completion Notes", "Required")}</div></section>`;
+    const locationLabel = job.requiresLocation ? (summary.locationMissing ? "Missing" : "Captured") : "Optional";
+    return `<section class="job-evidence-section"><h4>Completion Requirements</h4><div class="job-detail-grid">${detailItem("Proof Photos", proofLabel)}${detailItem("Before Photos", beforeLabel)}${detailItem("After Photos", afterLabel)}${detailItem("Customer Signature", signatureLabel)}${detailItem("Completion Location", locationLabel)}${detailItem("Completion Notes", "Required")}</div></section>`;
   }
 
   function renderProofPhotos(job) {
     const photos = job.proofPhotos || [];
-    const items = photos.length ? photos.map((photo) => `<div class="job-proof-photo"><button class="proof-thumb-button" type="button" data-proof-preview="${escapeHtml(photo.id)}"><img src="${escapeHtml(photo.url)}" alt="Proof photo"></button><div><strong>${escapeHtml(photo.caption || "Proof photo")}</strong><small>${escapeHtml(formatDateTime(photo.createdAt))}</small></div><button class="secondary-button compact" type="button" data-proof-delete="${escapeHtml(photo.id)}">Remove</button></div>`).join("") : `<div class="empty-state compact-empty"><div><strong>No proof photos</strong><span>Upload job evidence here.</span></div></div>`;
-    return `<section class="job-evidence-section"><h4>Proof Photos</h4><div class="job-proof-list">${items}</div><form class="job-proof-form"><div class="form-grid"><div class='field span-2'><label for='fc-proof-photo'>Photo</label><div class='evidence-upload proof-upload-panel'><div class='proof-selected-preview' data-evidence-preview='proof'><strong>No photos selected</strong></div><div class='logo-upload-controls'><div class='file-upload-row'><label class='file-upload-button' for='fc-proof-photo'>Choose photos</label><span class='file-name' data-evidence-file-name='proof'>No files selected</span></div><input id='fc-proof-photo' name='photo' type='file' accept='image/png,image/jpeg,image/webp' data-evidence-input='proof' required multiple hidden><small>Upload one or more PNG, JPG, or WEBP proof photos. Max 5MB each.</small></div></div></div><div class="field"><label for="fc-proof-caption">Caption</label><input id="fc-proof-caption" name="caption" maxlength="500"></div></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Upload Photo</button></div><p class="fc-form-error" hidden></p></form></section>`;
+    const group = (label, category) => {
+      const groupPhotos = photos.filter((photo) => (photo.category || 'GENERAL') === category || category === 'GENERAL' && !['BEFORE', 'AFTER'].includes(photo.category || 'GENERAL'));
+      const items = groupPhotos.length ? groupPhotos.map((photo) => `<div class="job-proof-photo"><button class="proof-thumb-button" type="button" data-proof-preview="${escapeHtml(photo.id)}"><img src="${escapeHtml(photo.url)}" alt="Proof photo"></button><div><strong>${escapeHtml(photo.caption || label)}</strong><small>${escapeHtml((photo.category || 'GENERAL').replace(/_/g, ' '))} / ${escapeHtml(formatDateTime(photo.createdAt))}</small></div><button class="secondary-button compact" type="button" data-proof-delete="${escapeHtml(photo.id)}">Remove</button></div>`).join("") : `<div class="empty-state compact-empty"><div><strong>No ${escapeHtml(label.toLowerCase())}</strong><span>Upload evidence here.</span></div></div>`;
+      return `<h5>${escapeHtml(label)}</h5><div class="job-proof-list">${items}</div>`;
+    };
+    return `<section class="job-evidence-section"><h4>Proof Photos</h4>${group('Before Photos', 'BEFORE')}${group('After Photos', 'AFTER')}${group('General Proof Photos', 'GENERAL')}<form class="job-proof-form"><div class="form-grid"><div class='field span-2'><label for='fc-proof-photo'>Photo</label><div class='evidence-upload proof-upload-panel'><div class='proof-selected-preview' data-evidence-preview='proof'><strong>No photos selected</strong></div><div class='logo-upload-controls'><div class='file-upload-row'><label class='file-upload-button' for='fc-proof-photo'>Choose photos</label><span class='file-name' data-evidence-file-name='proof'>No files selected</span></div><input id='fc-proof-photo' name='photo' type='file' accept='image/png,image/jpeg,image/webp' data-evidence-input='proof' required multiple hidden><small>Upload one or more PNG, JPG, or WEBP proof photos. Max 5MB each.</small></div></div></div><div class="field"><label for="fc-proof-category">Category</label><select id="fc-proof-category" name="category"><option value="GENERAL">General</option><option value="BEFORE">Before</option><option value="AFTER">After</option><option value="DAMAGE">Damage</option><option value="ISSUE">Issue</option><option value="EXTRA_WORK">Extra Work</option><option value="CUSTOMER_APPROVAL">Customer Approval</option></select></div><div class="field"><label for="fc-proof-caption">Caption</label><input id="fc-proof-caption" name="caption" maxlength="500"></div></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Upload Photo</button></div><p class="fc-form-error" hidden></p></form></section>`;
   }
 
 
@@ -1106,12 +1190,27 @@
     return true;
   }
 
+  function captureBrowserLocation() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error('Location capture is not available in this browser.'));
+      navigator.geolocation.getCurrentPosition((position) => {
+        resolve({ latitude: position.coords.latitude, longitude: position.coords.longitude, accuracy: position.coords.accuracy, capturedAt: new Date().toISOString(), source: 'WORKER_BROWSER' });
+      }, () => reject(new Error('Location capture was not allowed or failed.')), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+    });
+  }
+
+  function renderCompletionLocation(job) {
+    const location = job.completionLocation;
+    const status = location ? detailItem('Location Captured', formatDateTime(location.capturedAt)) + detailItem('Accuracy', location.accuracy ? Math.round(Number(location.accuracy)) + ' m' : '-') : detailItem('Location', job.requiresLocation ? 'Missing' : 'Not captured');
+    return `<section class="job-evidence-section"><div class="signature-section-head"><h4>Completion Location</h4><button class="secondary-button compact" type="button" data-location-capture>Capture</button></div><div class="job-detail-grid">${status}</div><p class="fc-form-error" data-location-message hidden></p></section>`;
+  }
+
   async function openJobDetail(jobId) {
     closeModal();
     const [job, activity] = await Promise.all([api('/jobs/' + jobId), api('/jobs/' + jobId + '/activity')]);
     const modal = document.createElement('div');
     modal.className = 'fc-modal';
-    modal.innerHTML = `<div class="fc-dialog job-detail-dialog"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}<div class="job-lifecycle-actions">${lifecycleActions(job)}</div>${renderCompletionRequirements(job)}${renderProofPhotos(job)}${renderSignature(job)}<form class="job-note-form"><div class="field"><label for="fc-job-note">Activity Note</label><textarea id="fc-job-note" name="note" maxlength="2000"></textarea></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Add Note</button></div><p class="fc-form-error" hidden></p></form><section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
+    modal.innerHTML = `<div class="fc-dialog job-detail-dialog"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}${detailItem('Completed', formatDateTime(job.completedAt))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}<div class="job-lifecycle-actions">${lifecycleActions(job)}</div>${renderCompletionRequirements(job)}${renderProofPhotos(job)}${renderSignature(job)}${renderCompletionLocation(job)}<form class="job-note-form"><div class="field"><label for="fc-job-note">Activity Note</label><textarea id="fc-job-note" name="note" maxlength="2000"></textarea></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Add Note</button></div><p class="fc-form-error" hidden></p></form><section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
     modal.addEventListener('click', async (event) => {
       if (event.target === modal || event.target.closest('[data-close]')) return closeModal();
       const proofDelete = event.target.closest('[data-proof-delete]');
@@ -1119,8 +1218,9 @@
       const signatureDelete = event.target.closest('[data-signature-delete]');
       const signatureCapture = event.target.closest('[data-signature-capture]');
       const signaturePreview = event.target.closest('[data-signature-preview]');
+      const locationCapture = event.target.closest('[data-location-capture]');
       const actionButton = event.target.closest('[data-job-lifecycle]');
-      if (!proofDelete && !proofPreview && !signatureDelete && !signatureCapture && !signaturePreview && !actionButton) return;
+      if (!proofDelete && !proofPreview && !signatureDelete && !signatureCapture && !signaturePreview && !locationCapture && !actionButton) return;
       const action = actionButton && actionButton.dataset.jobLifecycle;
       try {
         if (proofDelete) {
@@ -1139,6 +1239,9 @@
           const confirmed = await openConfirmModal({ title: 'Delete Signature', message: 'Are you sure you want to delete this customer signature?', okLabel: 'Delete', cancelLabel: 'Cancel', closeExisting: false });
           if (!confirmed) return;
           await api('/jobs/' + job.id + '/signature', { method: 'DELETE' });
+        } else if (locationCapture) {
+          const location = await captureBrowserLocation();
+          await api('/jobs/' + job.id + '/completion-location', { method: 'POST', body: JSON.stringify(location) });
         } else if (action === 'complete') {
           const completed = await completeJobWithNotes(job);
           if (!completed) return;
@@ -1161,10 +1264,12 @@
         const files = Array.from(event.currentTarget.photo && event.currentTarget.photo.files || []);
         if (files.length > 1) {
           const caption = event.currentTarget.caption && event.currentTarget.caption.value || '';
+          const category = event.currentTarget.category && event.currentTarget.category.value || 'GENERAL';
           for (const file of files) {
             const formData = new FormData();
             formData.append('photo', file);
             formData.append('caption', caption);
+            formData.append('category', category);
             await uploadJobEvidence(job.id, '/proof-photos', formData);
           }
         } else {
@@ -1222,7 +1327,8 @@
     const service = item.service && item.service.name || item.serviceName || '-';
     const contact = [item.customerEmail, item.customerPhone].filter(Boolean).join(' / ') || '-';
     const preferred = [formatDate(item.preferredDate), item.preferredTimeWindow && String(item.preferredTimeWindow).replace(/_/g, ' ')].filter(Boolean).join(' / ') || '-';
-    modal.innerHTML = '<div class=' + q + 'fc-dialog job-detail-dialog' + q + '><div class=' + q + 'panel-head' + q + '><div><h3>Booking Request</h3><p class=' + q + 'modal-copy' + q + '>' + escapeHtml(item.customerName || 'Customer') + '</p></div><button class=' + q + 'icon-button' + q + ' type=' + q + 'button' + q + ' data-close>&times;</button></div><div class=' + q + 'job-detail-grid' + q + '>' + bookingDetail('Customer', item.customerName) + bookingDetail('Contact', contact) + bookingDetail('Service', service) + bookingDetail('Preferred', preferred) + bookingDetail('Address', item.address) + bookingDetail('Status', String(item.status || '-').replace(/_/g, ' ')) + bookingDetail('Created', formatDateTime(item.createdAt)) + bookingDetail('Converted Job', item.convertedJob && item.convertedJob.title) + '</div>' + (item.notes ? '<div class=' + q + 'job-notes' + q + '><span>Notes</span><p>' + escapeHtml(item.notes) + '</p></div>' : '') + '<div class=' + q + 'fc-form-actions' + q + '><button class=' + q + 'secondary-button' + q + ' type=' + q + 'button' + q + ' data-close>Close</button></div></div>';
+    const photos = (item.photos || []).map((photo) => '<a class=' + q + 'secondary-button compact' + q + ' href=' + q + escapeHtml(photo.url) + q + ' target=' + q + '_blank' + q + ' rel=' + q + 'noreferrer' + q + '>' + escapeHtml(photo.originalName || photo.filename || 'Photo') + '</a>').join('');
+    modal.innerHTML = '<div class=' + q + 'fc-dialog job-detail-dialog' + q + '><div class=' + q + 'panel-head' + q + '><div><h3>Booking Request</h3><p class=' + q + 'modal-copy' + q + '>' + escapeHtml(item.customerName || 'Customer') + '</p></div><button class=' + q + 'icon-button' + q + ' type=' + q + 'button' + q + ' data-close>&times;</button></div><div class=' + q + 'job-detail-grid' + q + '>' + bookingDetail('Reference', item.publicReference) + bookingDetail('Source', item.source) + bookingDetail('Customer', item.customerName) + bookingDetail('Contact', contact) + bookingDetail('Service', service) + bookingDetail('Preferred', preferred) + bookingDetail('Address', item.address) + bookingDetail('City/Suburb', item.city) + bookingDetail('Property Type', item.propertyType) + bookingDetail('Status', String(item.status || '-').replace(/_/g, ' ')) + bookingDetail('Created', formatDateTime(item.createdAt)) + bookingDetail('Converted Job', item.convertedJob && item.convertedJob.title) + '</div>' + (item.accessNotes ? '<div class=' + q + 'job-notes' + q + '><span>Access Notes</span><p>' + escapeHtml(item.accessNotes) + '</p></div>' : '') + (item.notes ? '<div class=' + q + 'job-notes' + q + '><span>Notes</span><p>' + escapeHtml(item.notes) + '</p></div>' : '') + (item.customerFacingMessage ? '<div class=' + q + 'job-notes' + q + '><span>Customer Message</span><p>' + escapeHtml(item.customerFacingMessage) + '</p></div>' : '') + (photos ? '<div class=' + q + 'job-notes' + q + '><span>Photos</span><div class=' + q + 'row-actions' + q + '>' + photos + '</div></div>' : '') + '<div class=' + q + 'fc-form-actions' + q + '><button class=' + q + 'secondary-button' + q + ' type=' + q + 'button' + q + ' data-close>Close</button></div></div>';
     modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('[data-close]')) modal.remove(); });
     document.body.appendChild(modal);
   }
@@ -1244,6 +1350,7 @@
         await api('/booking-requests/' + id + '/decline', { method: 'POST', body: '{}' });
       }
       if (action === 'booking-convert') await api('/booking-requests/' + id + '/convert', { method: 'POST', body: '{}' });
+      if (action === 'booking-quote') await api('/booking-requests/' + id + '/create-quote', { method: 'POST', body: '{}' });
       if (action === 'quote-send') await api('/quotes/' + id + '/send', { method: 'POST', body: '{}' });
       if (action === 'quote-accept') await api('/quotes/' + id + '/accept', { method: 'POST', body: '{}' });
       if (action === 'quote-reject') await api('/quotes/' + id + '/reject', { method: 'POST', body: '{}' });
@@ -1414,6 +1521,124 @@
       if (message) { message.textContent = error.message; message.hidden = false; }
     }
   }
+
+  function renderNotificationLogs(logs) {
+    const card = document.querySelector('[data-notification-log-card]');
+    if (!card) return;
+    const count = document.querySelector('[data-notification-log-count]');
+    const channel = document.querySelector('[data-notification-channel-filter]');
+    const status = document.querySelector('[data-notification-status-filter]');
+    const filtered = logs.filter((item) => (!channel || !channel.value || item.channel === channel.value) && (!status || !status.value || item.status === status.value));
+    if (count) count.textContent = String(filtered.length);
+    const controls = '<div class="panel-head card"><h3>Recent Notifications</h3><span class="badge gray" data-notification-log-count>' + filtered.length + '</span></div><div class="row-actions"><select data-notification-channel-filter aria-label="Notification channel"><option value="">All channels</option><option value="EMAIL"' + (channel && channel.value === 'EMAIL' ? ' selected' : '') + '>Email</option><option value="WHATSAPP"' + (channel && channel.value === 'WHATSAPP' ? ' selected' : '') + '>WhatsApp</option></select><select data-notification-status-filter aria-label="Notification status"><option value="">All statuses</option><option value="SENT"' + (status && status.value === 'SENT' ? ' selected' : '') + '>Sent</option><option value="FAILED"' + (status && status.value === 'FAILED' ? ' selected' : '') + '>Failed</option><option value="SKIPPED"' + (status && status.value === 'SKIPPED' ? ' selected' : '') + '>Skipped</option></select></div>';
+    if (!filtered.length) {
+      card.innerHTML = controls + '<div class="empty-state"><div><strong>No matching notifications.</strong><span>Change the filters or trigger a notification event.</span></div></div>';
+      bindNotificationFilters();
+      return;
+    }
+    const rows = filtered.slice(0, 25).map((item) => '<tr><td>' + escapeHtml(String(item.eventType || '-').replace(/_/g, ' ')) + '</td><td>' + escapeHtml(item.channel || '-') + '</td><td>' + escapeHtml(item.recipient || '-') + '</td><td>' + badge(item.status) + '</td><td>' + escapeHtml([item.relatedType, item.relatedId].filter(Boolean).join(' / ') || '-') + '</td><td>' + escapeHtml(formatDateTime(item.sentAt || item.createdAt)) + '</td><td>' + escapeHtml(item.error || '') + '</td></tr>').join('');
+    card.innerHTML = controls + '<div class="table-scroll"><table><thead><tr><th>Event</th><th>Channel</th><th>Recipient</th><th>Status</th><th>Related</th><th>Time</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    bindNotificationFilters();
+  }
+
+  function bindNotificationFilters() {
+    document.querySelectorAll('[data-notification-channel-filter], [data-notification-status-filter]').forEach((field) => {
+      field.onchange = () => renderNotificationLogs(state.notificationLogs || []);
+    });
+  }
+
+  async function loadNotificationLogs() {
+    if (!document.querySelector('[data-notification-log-card]')) return;
+    try {
+      state.notificationLogs = await api('/notification-logs');
+      renderNotificationLogs(state.notificationLogs);
+    } catch (error) {
+      const card = document.querySelector('[data-notification-log-card]');
+      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Notification history unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+    }
+  }
+
+  function renderSaaSBilling(summary) {
+    const card = document.querySelector('[data-saas-billing-card]');
+    if (!card) return;
+    const subscription = summary && summary.subscription || {};
+    const plan = summary && summary.plan || {};
+    const provider = summary && summary.provider || {};
+    const usageRows = summary && summary.usageRows || [];
+    const plans = summary && summary.plans || [];
+    const events = summary && summary.events || [];
+    const status = subscription.status || 'UNKNOWN';
+    const statusBadge = '<span class="badge ' + (status === 'ACTIVE' || status === 'FREE_INTERNAL' ? 'green' : status === 'TRIALING' ? 'blue' : 'gray') + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span>';
+    const trial = subscription.trialDaysRemaining == null ? '-' : subscription.trialDaysRemaining + ' days';
+    const period = [formatDate(subscription.currentPeriodStart), formatDate(subscription.currentPeriodEnd)].filter(Boolean).join(' - ') || '-';
+    const providerText = provider.configured ? (provider.mode === 'manual' ? 'Manual/internal mode' : 'Configured') : 'Provider not configured';
+    const usageTable = usageRows.length ? '<div class="table-scroll"><table><thead><tr><th>Usage</th><th>Used</th><th>Limit</th></tr></thead><tbody>' + usageRows.map((row) => '<tr><td>' + escapeHtml(row.key.replace(/^max/, '').replace(/([A-Z])/g, ' $1')) + '</td><td>' + escapeHtml(row.used == null ? 'Unknown' : row.used) + '</td><td>' + escapeHtml(row.unlimited ? 'Unlimited' : row.limit) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No usage limits.</strong><span>This plan is currently unlimited.</span></div></div>';
+    const planCards = plans.map((item) => '<div class="metric-card"><span>' + escapeHtml(item.name) + '</span><strong>' + escapeHtml(item.currency || 'USD') + ' ' + escapeHtml(item.price) + '</strong><small>' + escapeHtml(item.description || item.interval || '') + '</small><div class="row-actions"><button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="secondary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button></div></div>').join('');
+    const eventsTable = events.length ? '<div class="table-scroll"><table><thead><tr><th>Event</th><th>Status</th><th>Provider</th><th>Time</th></tr></thead><tbody>' + events.slice(0, 8).map((event) => '<tr><td>' + escapeHtml(event.eventType || '-') + '</td><td>' + escapeHtml(event.status || '-') + '</td><td>' + escapeHtml(event.provider || '-') + '</td><td>' + escapeHtml(formatDateTime(event.createdAt)) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No billing events yet.</strong><span>Checkout and plan changes will appear here.</span></div></div>';
+    card.innerHTML = '<div class="panel-head"><h3>FieldCore Subscription</h3>' + statusBadge + '</div><div class="metrics-grid"><div class="metric-card"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(plan.interval || '') + '</small></div><div class="metric-card"><span>Trial Remaining</span><strong>' + escapeHtml(trial) + '</strong><small>Managed by FieldCore</small></div><div class="metric-card"><span>Billing Period</span><strong>' + escapeHtml(period) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Cancels at period end' : providerText) + '</small></div></div><div class="panel-head card"><h3>Usage</h3><span class="badge gray">Company scoped</span></div>' + usageTable + '<div class="panel-head card"><h3>Available Plans</h3><button class="secondary-button compact" type="button" data-billing-cancel>Cancel</button></div><div class="metrics-grid">' + planCards + '</div><div class="panel-head card"><h3>Billing Events</h3><span class="badge gray">No secrets</span></div>' + eventsTable + '<p class="fc-form-error" data-billing-message hidden></p>';
+    bindBillingActions();
+  }
+
+  async function loadBilling() {
+    if (!document.querySelector('[data-saas-billing-card]')) return;
+    try {
+      state.billing = await api('/billing/subscription');
+      renderSaaSBilling(state.billing);
+    } catch (error) {
+      const card = document.querySelector('[data-saas-billing-card]');
+      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Billing unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+    }
+  }
+
+  function bindBillingActions() {
+    const message = document.querySelector('[data-billing-message]');
+    const run = async (fn) => {
+      if (message) { message.hidden = true; message.classList.remove('green'); }
+      try {
+        const result = await fn();
+        if (result && result.checkoutUrl) window.location.href = result.checkoutUrl;
+        if (message) { message.textContent = result && result.message || 'Billing request saved.'; message.classList.add('green'); message.hidden = false; }
+        await loadBilling();
+      } catch (error) {
+        if (message) { message.textContent = error.message; message.hidden = false; }
+      }
+    };
+    document.querySelectorAll('[data-billing-checkout]').forEach((button) => {
+      button.onclick = () => run(() => api('/billing/checkout', { method: 'POST', body: JSON.stringify({ planId: button.dataset.billingCheckout }) }));
+    });
+    document.querySelectorAll('[data-billing-change-plan]').forEach((button) => {
+      button.onclick = () => run(() => api('/billing/change-plan', { method: 'POST', body: JSON.stringify({ planId: button.dataset.billingChangePlan }) }));
+    });
+    const cancel = document.querySelector('[data-billing-cancel]');
+    if (cancel) cancel.onclick = () => run(() => api('/billing/cancel', { method: 'POST', body: JSON.stringify({}) }));
+  }
+
+  function renderSystemStatus(status) {
+    const card = document.querySelector('[data-system-status-card]');
+    if (!card) return;
+    const rows = Object.entries(status || {}).map(([key, value]) => '<tr><td>' + escapeHtml(key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())) + '</td><td>' + escapeHtml(value) + '</td></tr>').join('');
+    card.innerHTML = '<div class="panel-head card"><h3>System Status</h3><span class="badge gray">No secrets</span></div><div class="table-scroll"><table><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function renderAuditLogs(logs) {
+    const card = document.querySelector('[data-audit-log-card]');
+    if (!card) return;
+    const rows = (logs || []).slice(0, 50).map((item) => '<tr><td>' + escapeHtml(item.action || '-') + '</td><td>' + escapeHtml(item.entity || '-') + '</td><td>' + escapeHtml(item.entityId || '-') + '</td><td>' + escapeHtml(item.actor && (item.actor.name || item.actor.email) || 'System') + '</td><td>' + escapeHtml(formatDateTime(item.createdAt)) + '</td></tr>').join('');
+    card.innerHTML = '<div class="panel-head card"><h3>Recent Audit Logs</h3><span class="badge gray" data-audit-log-count>' + (logs || []).length + '</span></div>' + (rows ? '<div class="table-scroll"><table><thead><tr><th>Action</th><th>Entity</th><th>Record</th><th>Actor</th><th>Time</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<div class="empty-state"><div><strong>No audit logs yet.</strong><span>Important actions will appear here.</span></div></div>');
+  }
+
+  async function loadAdminTools() {
+    if (!document.querySelector('[data-system-status-card]')) return;
+    try {
+      const [status, logs] = await Promise.all([api('/system/status'), api('/audit-logs')]);
+      renderSystemStatus(status);
+      renderAuditLogs(logs);
+    } catch (error) {
+      const card = document.querySelector('[data-system-status-card]');
+      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Admin tools unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+    }
+  }
+
   function setupSettings() {
     const tabs = Array.from(document.querySelectorAll('[data-settings-target]'));
     const panels = Array.from(document.querySelectorAll('[data-settings-panel]'));
@@ -1428,6 +1653,9 @@
           panel.classList.toggle('active', active);
           panel.hidden = !active;
         });
+        if (target === 'billing') loadBilling();
+        if (target === 'notifications') loadNotificationLogs();
+        if (target === 'admin-tools') loadAdminTools();
       });
     });
 
@@ -1534,28 +1762,10 @@
     });
   }
 
-  function showLogin(errorMessage) {
-    const config = {
-      title: 'Log In',
-      fields: field('email', 'Email', 'email', 'required value="owner@fieldcore.test"') + field('password', 'Password', 'password', 'required value="FieldCoreDemo2026!"')
-    };
-    openModal(config);
-    const form = document.querySelector('.fc-modal form');
-    form.querySelector('.fc-form-actions').innerHTML = '<button class="primary-button" type="submit">Log In</button>';
-    const error = form.querySelector('.fc-form-error');
-    if (errorMessage) { error.textContent = errorMessage; error.hidden = false; }
-    form.onsubmit = async (event) => {
-      event.preventDefault();
-      const body = Object.fromEntries(new FormData(form).entries());
-      try {
-        await api('/auth/login', { method: 'POST', body: JSON.stringify(body) });
-        closeModal();
-        await load();
-      } catch (err) {
-        error.textContent = err.message;
-        error.hidden = false;
-      }
-    };
+  function redirectToLogin() {
+    const current = window.location.pathname.split('/').pop() || 'index.html';
+    const query = window.location.search || '';
+    window.location.href = 'login.html?return=' + encodeURIComponent(current + query);
   }
 
   async function uploadLogo(file) {
@@ -1588,10 +1798,13 @@
         return;
       }
       if (page === 'settings' && isWorker()) renderWorkerSettings();
-      if (page === 'settings' && !isWorker()) await loadSchedulingSettings();
+      if (page === 'settings' && !isWorker()) {
+        await loadSchedulingSettings();
+        await loadNotificationLogs();
+      }
     } catch (error) {
       setStatus('Log in to load company data.', false);
-      showLogin();
+      redirectToLogin();
       return;
     }
 
@@ -1614,6 +1827,7 @@
       }
       await preloadLookups();
       if (page === 'dashboard') renderDashboard(await api('/dashboard'));
+      if (page === 'reports') await loadReports();
       if (page === 'schedule') {
         const [data, settings] = await Promise.all([api('/schedule'), api('/company/scheduling-settings').catch(() => ({ workingDayStart: '08:00', workingDayEnd: '17:00' }))]);
         state.schedule = data;
@@ -1639,7 +1853,7 @@
     if (!ok) return;
     await api('/auth/logout', { method: 'POST', body: '{}' });
     state.user = null;
-    showLogin();
+    window.location.href = 'login.html';
   });
   document.addEventListener('click', handleWorkerDashboardAction);
   document.addEventListener('click', handleRowAction);

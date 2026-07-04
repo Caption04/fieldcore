@@ -8,9 +8,15 @@ const { Prisma } = require('@prisma/client');
 const { z } = require('zod');
 const { prisma } = require('../db');
 const { AppError, asyncHandler, notFound, sendData } = require('../errors');
+const { configStatus } = require('../config/env');
+const { notify } = require('../services/notification.service');
+const { billingSummary, cancelSubscription, changePlan, createCheckout } = require('../services/saasBilling.service');
+const { reportCsv, reportData } = require('../services/reporting.service');
+const { canUseFeature, getUsage, listPlans, requireFeature, requirePlanLimit } = require('../services/subscription.service');
 const {
   COOKIE_NAME,
   SAFE_LOGIN_USER_SELECT,
+  SAFE_USER_SELECT,
   SAFE_WORKER_INCLUDE,
   audit,
   clearAuthCookie,
@@ -53,8 +59,10 @@ const optionalUrl = z
   .transform((value) => value || undefined);
 const optionalColor = hexColor.optional().or(z.literal('')).transform((value) => value || undefined);
 const adminRoles = ['OWNER', 'ADMIN'];
+const ownerRoles = ['OWNER'];
 const jobStatusValues = ['NEW', 'SCHEDULED', 'DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
 const activityTypeValues = ['ASSIGNED','ARRIVED','STARTED','PAUSED','RESUMED','COMPLETED','ADMIN_NOTE','STATUS_CHANGED','PROOF_PHOTO_ADDED','PROOF_PHOTO_REMOVED','SIGNATURE_ADDED','SIGNATURE_REMOVED'];
+const proofCategoryValues = ['BEFORE', 'AFTER', 'GENERAL', 'DAMAGE', 'ISSUE', 'EXTRA_WORK', 'CUSTOMER_APPROVAL'];
 const bookingRequestStatusValues = ['NEW', 'REVIEWED', 'CONVERTED', 'DECLINED', 'CANCELLED'];
 
 function validate(schema, source = 'body') {
@@ -174,7 +182,7 @@ async function validateInvoiceRelations(req, body) {
 }
 
 const jobInclude = { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE } };
-const jobDetailInclude = { ...jobInclude, proofPhotos: { orderBy: { createdAt: 'desc' } }, signature: true };
+const jobDetailInclude = { ...jobInclude, completedBy: { select: { id: true, companyId: true, name: true, email: true, role: true } }, proofPhotos: { orderBy: { createdAt: 'desc' } }, signature: true, completionLocation: true };
 const jobActivityInclude = { worker: { include: SAFE_WORKER_INCLUDE }, user: { select: { id: true, companyId: true, email: true, name: true, role: true, createdAt: true, updatedAt: true } } };
 
 function lifecycleWorkerId(req, job) {
@@ -182,24 +190,68 @@ function lifecycleWorkerId(req, job) {
 }
 
 function evidenceStatus(job) {
-  const proofPhotoCount = Array.isArray(job.proofPhotos) ? job.proofPhotos.length : 0;
+  const proofPhotos = Array.isArray(job.proofPhotos) ? job.proofPhotos : [];
+  const countByCategory = (category) => proofPhotos.filter((photo) => (photo.category || 'GENERAL') === category).length;
+  const beforePhotoCount = countByCategory('BEFORE');
+  const afterPhotoCount = countByCategory('AFTER');
+  const generalPhotoCount = proofPhotos.filter((photo) => !['BEFORE', 'AFTER'].includes(photo.category || 'GENERAL')).length;
+  const proofPhotoCount = proofPhotos.length;
   const proofPhotosRequired = Boolean(job.requiresProofPhotos);
   const signatureCaptured = Boolean(job.signature);
+  const locationCaptured = Boolean(job.completionLocation);
   return {
     proofPhotosRequired,
     minimumProofPhotos: proofPhotosRequired ? 1 : 0,
     proofPhotoCount,
+    beforePhotoCount,
+    afterPhotoCount,
+    generalPhotoCount,
     proofPhotosSatisfied: !proofPhotosRequired || proofPhotoCount >= 1,
+    beforePhotosRequired: Boolean(job.requiresBeforePhotos),
+    beforePhotosSatisfied: !job.requiresBeforePhotos || beforePhotoCount >= 1,
+    afterPhotosRequired: Boolean(job.requiresAfterPhotos),
+    afterPhotosSatisfied: !job.requiresAfterPhotos || afterPhotoCount >= 1,
     signatureRequired: Boolean(job.requiresSignature),
     signatureCaptured,
     signatureSatisfied: !job.requiresSignature || signatureCaptured,
-    completionNotesRequired: true
+    completionNotesRequired: true,
+    completionNotesSatisfied: Boolean(job.completionNotes),
+    locationRequired: Boolean(job.requiresLocation),
+    locationCaptured,
+    locationSatisfied: !job.requiresLocation || locationCaptured
   };
 }
 
 function jobWithEvidenceStatus(job) {
   if (!job) return job;
   return { ...job, completionEvidence: evidenceStatus(job) };
+}
+
+function proofSummary(job, clientSafe = false) {
+  const evidence = evidenceStatus(job);
+  const location = job.completionLocation ? {
+    present: true,
+    capturedAt: job.completionLocation.capturedAt,
+    source: job.completionLocation.source || null,
+    accuracy: job.completionLocation.accuracy || null,
+    ...(clientSafe ? {} : { latitude: job.completionLocation.latitude, longitude: job.completionLocation.longitude, capturedById: job.completionLocation.capturedById || null })
+  } : { present: false };
+  return {
+    jobId: job.id,
+    status: job.status,
+    completedAt: job.completedAt || null,
+    completedBy: clientSafe ? undefined : job.completedBy && { id: job.completedBy.id, name: job.completedBy.name, role: job.completedBy.role },
+    beforePhotoCount: evidence.beforePhotoCount,
+    afterPhotoCount: evidence.afterPhotoCount,
+    generalProofPhotoCount: evidence.generalPhotoCount,
+    proofPhotoCount: evidence.proofPhotoCount,
+    signaturePresent: evidence.signatureCaptured,
+    signedByName: job.signature && job.signature.signerName || null,
+    completionNotes: job.completionNotes || null,
+    locationPresent: location.present,
+    location,
+    requirements: evidence
+  };
 }
 
 function createActivityData(req, job, type, note, metadata) {
@@ -244,9 +296,11 @@ async function validateScheduleRelations(req, body) {
 const uploadDir = path.resolve(__dirname, '../../uploads/logos');
 const proofUploadDir = path.resolve(__dirname, '../../uploads/jobs/proof');
 const signatureUploadDir = path.resolve(__dirname, '../../uploads/jobs/signatures');
+const bookingUploadDir = path.resolve(__dirname, '../../uploads/booking-requests');
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(proofUploadDir, { recursive: true });
 fs.mkdirSync(signatureUploadDir, { recursive: true });
+fs.mkdirSync(bookingUploadDir, { recursive: true });
 
 const evidenceImageTypes = ['image/png', 'image/jpeg', 'image/webp'];
 
@@ -305,6 +359,29 @@ const signatureUpload = multer({
     cb(null, true);
   }
 });
+
+const bookingPhotoUpload = multer({
+  storage: multer.diskStorage({
+    destination: bookingUploadDir,
+    filename: (req, file, cb) => cb(null, uploadFilename('booking', file))
+  }),
+  limits: { fileSize: 5 * 1024 * 1024, files: 5 },
+  fileFilter: (req, file, cb) => {
+    if (!evidenceImageTypes.includes(file.mimetype)) return cb(new AppError(400, 'Only PNG, JPG, and WEBP booking photos are allowed'));
+    cb(null, true);
+  }
+});
+
+function bookingPhotoUploadMiddleware(req, res, next) {
+  if (!String(req.headers['content-type'] || '').startsWith('multipart/form-data')) return next();
+  bookingPhotoUpload.array('photos', 5)(req, res, (error) => {
+    if (!error) return next();
+    if (error instanceof AppError) return next(error);
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') return next(new AppError(400, 'Uploaded image is too large'));
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_COUNT') return next(new AppError(400, 'Too many photos uploaded'));
+    return next(error);
+  });
+}
 
 const companyProfileSchema = z.object({
   name: z.string().trim().min(2).max(120).optional(),
@@ -491,6 +568,9 @@ const schedulingSettingsSchema = z.object({
   defaultJobStatus: z.enum(jobStatusValues).optional(),
   requireCompletionNotes: z.boolean().optional(),
   requireProofPhotos: z.boolean().optional(),
+  requireBeforePhotos: z.boolean().optional(),
+  requireAfterPhotos: z.boolean().optional(),
+  requireLocation: z.boolean().optional(),
   autoCreateScheduleOnAssign: z.boolean().optional(),
   timezone: z.string().trim().min(1).optional(),
   workingDayStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
@@ -522,7 +602,7 @@ function rangesOverlap(startA, endA, startB, endB) {
 }
 
 function schedulingDefaults() {
-  return { defaultJobDurationMinutes: 60, defaultTravelBufferMinutes: 0, allowOverbooking: false, defaultJobStatus: 'NEW', requireCompletionNotes: true, requireProofPhotos: true, autoCreateScheduleOnAssign: false, timezone: 'UTC', workingDayStart: '08:00', workingDayEnd: '17:00' };
+  return { defaultJobDurationMinutes: 60, defaultTravelBufferMinutes: 0, allowOverbooking: false, defaultJobStatus: 'NEW', requireCompletionNotes: true, requireProofPhotos: true, requireBeforePhotos: false, requireAfterPhotos: false, requireLocation: false, autoCreateScheduleOnAssign: false, timezone: 'UTC', workingDayStart: '08:00', workingDayEnd: '17:00' };
 }
 
 async function getSchedulingSettings(companyId) {
@@ -657,6 +737,11 @@ const passwordPatchSchema = z.object({
 router.post('/auth/register', validate(registerSchema), asyncHandler(async (req, res) => {
   const user = await prisma.$transaction(async (tx) => {
     const company = await tx.company.create({ data: { name: req.body.companyName } });
+    const trialStartedAt = new Date();
+    const trialEndsAt = new Date(trialStartedAt.getTime() + 14 * 24 * 60 * 60 * 1000);
+    if (tx.companySubscription) {
+      await tx.companySubscription.create({ data: { companyId: company.id, status: 'TRIALING', trialStartedAt, trialEndsAt, currentPeriodStart: trialStartedAt, currentPeriodEnd: trialEndsAt, provider: process.env.SAAS_BILLING_PROVIDER || null } });
+    }
     return tx.user.create({
       data: {
         companyId: company.id,
@@ -718,20 +803,34 @@ router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), as
 }));
 
 
-const bookingRequestInclude = { customer: true, service: true, convertedJob: true, clientAccount: { select: { id: true, name: true, email: true, phone: true, status: true } } };
+const bookingRequestInclude = { customer: true, service: true, convertedJob: true, photos: true, clientAccount: { select: { id: true, name: true, email: true, phone: true, status: true } } };
 const publicTimeWindow = z.enum(['MORNING', 'AFTERNOON', 'EVENING', 'ANY_TIME']).optional().or(z.literal('')).transform((value) => value || undefined);
 const publicBookingRequestSchema = z.object({
   customerName: z.string().trim().min(2).max(160),
   customerEmail: optionalEmail,
   customerPhone: optionalText(60),
-  address: optionalText(300),
+  address: z.string().trim().min(3).max(300),
+  city: optionalText(120),
+  propertyType: optionalText(80),
+  accessNotes: optionalText(1000),
   serviceId: optionalText(120),
   serviceName: optionalText(160),
   preferredDate: optionalDate,
   preferredTimeWindow: publicTimeWindow,
   notes: optionalText(2000),
+  photos: z.array(z.object({
+    url: z.string().regex(/^\/uploads\/booking-requests\/[a-zA-Z0-9._-]+$/),
+    filename: optionalText(240),
+    originalName: optionalText(240),
+    mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']).default('image/jpeg'),
+    sizeBytes: z.coerce.number().int().min(0).max(5 * 1024 * 1024).default(0),
+    caption: optionalText(500)
+  })).max(5).optional(),
   source: optionalText(80)
-}).refine((data) => data.customerEmail || data.customerPhone, { message: 'Email or phone is required', path: ['customerEmail'] });
+}).refine((data) => data.customerEmail || data.customerPhone, { message: 'Email or phone is required', path: ['customerEmail'] })
+  .refine((data) => data.serviceId || data.serviceName, { message: 'Service is required', path: ['serviceId'] });
+const publicTrackSchema = z.object({ reference: z.string().trim().min(4).max(40), contact: z.string().trim().min(3).max(160) });
+const bookingRequestMessageSchema = z.object({ customerFacingMessage: optionalText(1000) });
 
 async function publicBookingCompany() {
   const company = await prisma.company.findFirst({ orderBy: { createdAt: 'asc' }, include: { branding: true } });
@@ -744,6 +843,67 @@ function publicCompanySummary(company) {
   return { brandName: branding.brandName, logoUrl: branding.logoUrl, primaryColor: branding.primaryColor, secondaryColor: branding.secondaryColor, accentColor: branding.accentColor, supportEmail: branding.supportEmail, supportPhone: branding.supportPhone };
 }
 
+function contactKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function phoneKey(value) {
+  return String(value || '').replace(/[^\d+]/g, '');
+}
+
+function phoneMatches(stored, provided) {
+  const left = phoneKey(stored).replace(/^\+/, '');
+  const right = phoneKey(provided).replace(/^\+/, '');
+  if (!left || !right) return false;
+  return left === right || left.endsWith(right) && right.length >= 7 || right.endsWith(left) && left.length >= 7;
+}
+
+function publicRequestStatus(request) {
+  const status = request && request.status;
+  if (/quote has been sent/i.test(String(request && request.customerFacingMessage || ''))) return { label: 'Quote Sent', nextStep: 'Review the quote sent by the company and follow the acceptance instructions.' };
+  if (status === 'REVIEWED') return { label: 'Under Review', nextStep: 'The team is reviewing your request and will contact you with the next step.' };
+  if (status === 'CONVERTED') return { label: 'Approved', nextStep: 'Your request has been approved. The team will follow up to quote or schedule the work.' };
+  if (status === 'DECLINED' || status === 'CANCELLED') return { label: 'Rejected', nextStep: 'This request is not moving forward. Contact the company if you need more detail.' };
+  return { label: 'Submitted', nextStep: 'Your request has been received. The team will review it and contact you shortly.' };
+}
+
+function publicTrackingResponse(request) {
+  const state = publicRequestStatus(request);
+  const serviceName = request.service && request.service.name || request.serviceName || 'Service request';
+  return {
+    reference: request.publicReference,
+    status: state.label,
+    service: { name: serviceName, description: request.service && request.service.description || null },
+    submittedAt: request.createdAt,
+    preferredDate: request.preferredDate,
+    preferredTimeWindow: request.preferredTimeWindow,
+    customerFacingMessage: request.customerFacingMessage || null,
+    nextStep: request.customerFacingMessage || state.nextStep
+  };
+}
+
+function bookingPhotoData(companyId, bookingRequestId, file) {
+  return {
+    companyId,
+    bookingRequestId,
+    url: '/uploads/booking-requests/' + file.filename,
+    filename: file.filename,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
+    sizeBytes: file.size
+  };
+}
+
+async function createPublicReference(tx, companyId) {
+  const prefix = 'REQ';
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const reference = prefix + '-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+    const existing = await tx.bookingRequest.findFirst({ where: { companyId, publicReference: reference } });
+    if (!existing) return reference;
+  }
+  throw new AppError(409, 'Could not allocate request reference');
+}
+
 router.get('/public/company', asyncHandler(async (req, res) => {
   sendData(res, normalize(publicCompanySummary(await publicBookingCompany())));
 }));
@@ -754,15 +914,37 @@ router.get('/public/services', asyncHandler(async (req, res) => {
   sendData(res, normalize(services.map((service) => ({ id: service.id, name: service.name, description: service.description || null, basePrice: service.price }))));
 }));
 
-router.post('/public/booking-requests', validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
+router.post('/public/booking-requests', bookingPhotoUploadMiddleware, validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
   const company = await publicBookingCompany();
+  await requireFeature(company.id, 'publicBookingPortal');
+  await requirePlanLimit(company.id, 'maxPublicBookingsPerMonth');
   let service = null;
   if (req.body.serviceId) {
     service = await prisma.service.findFirst({ where: { id: req.body.serviceId, companyId: company.id, active: true } });
     if (!service) throw notFound('Service not found');
   }
-  const data = await prisma.bookingRequest.create({ data: { companyId: company.id, status: 'NEW', customerName: req.body.customerName, customerEmail: req.body.customerEmail, customerPhone: req.body.customerPhone, address: req.body.address, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: req.body.source || 'public_booking' } });
+  const data = await prisma.$transaction(async (tx) => {
+    const publicReference = await createPublicReference(tx, company.id);
+    const created = await tx.bookingRequest.create({ data: { companyId: company.id, publicReference, status: 'NEW', customerName: req.body.customerName, customerEmail: req.body.customerEmail, customerPhone: req.body.customerPhone, address: req.body.address, city: req.body.city, propertyType: req.body.propertyType, accessNotes: req.body.accessNotes, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: req.body.source || 'public_booking' } });
+    const uploaded = (req.files || []).map((file) => bookingPhotoData(company.id, created.id, file));
+    const provided = (req.body.photos || []).map((photo) => ({ companyId: company.id, bookingRequestId: created.id, url: photo.url, filename: photo.filename || path.basename(photo.url), originalName: photo.originalName, mimeType: photo.mimeType, sizeBytes: photo.sizeBytes, caption: photo.caption }));
+    for (const photo of uploaded.concat(provided).slice(0, 5)) await tx.bookingRequestPhoto.create({ data: photo });
+    return tx.bookingRequest.findFirst({ where: { id: created.id, companyId: company.id }, include: bookingRequestInclude });
+  });
+  await notify('BOOKING_CREATED', { companyId: company.id, relatedType: 'BookingRequest', relatedId: data.id, record: { ...data, service } });
   sendData(res, normalize(data), 201);
+}));
+
+router.post('/public/booking-requests/track', validate(publicTrackSchema), asyncHandler(async (req, res) => {
+  const company = await publicBookingCompany();
+  const request = await prisma.bookingRequest.findFirst({ where: { companyId: company.id, publicReference: req.body.reference }, include: { service: true } });
+  const contact = req.body.contact;
+  const matches = request && (
+    request.customerEmail && contactKey(request.customerEmail) === contactKey(contact) ||
+    phoneMatches(request.customerPhone, contact)
+  );
+  if (!matches) throw notFound('Request not found or details do not match.');
+  sendData(res, normalize(publicTrackingResponse(request)));
 }));
 
 const CLIENT_COOKIE_NAME = process.env.CLIENT_COOKIE_NAME || "fieldcore_client_token";
@@ -775,6 +957,8 @@ const clientLoginSchema = z.object({ email: clientEmailSchema, password: z.strin
 const clientProfilePatchSchema = z.object({ name: z.string().trim().min(2).max(160).optional(), phone: optionalText(60) });
 const clientChangePasswordSchema = z.object({ currentPassword: z.string().min(1).max(200), newPassword: clientPasswordSchema });
 const clientForgotPasswordSchema = z.object({ email: clientEmailSchema });
+const clientVisibleQuoteStatuses = ["SENT", "ACCEPTED", "REJECTED", "EXPIRED"];
+const clientVisibleInvoiceStatuses = ["SENT", "PARTIALLY_PAID", "PAID", "OVERDUE"];
 
 function signClientToken(account) {
   return jwt.sign({ sub: account.id, companyId: account.companyId, kind: "client" }, CLIENT_JWT_SECRET, { expiresIn: "8h" });
@@ -801,20 +985,14 @@ async function requireClientAuth(req, res, next) {
     if (payload.kind !== "client") throw new AppError(401, "Client authentication required");
     const account = await prisma.clientAccount.findFirst({ where: { id: payload.sub, companyId: payload.companyId } });
     if (!account || account.status === "DISABLED") throw new AppError(401, "Client authentication required");
+    const feature = await canUseFeature(account.companyId, 'clientPortal');
+    if (!feature.allowed) throw new AppError(403, feature.reason, { code: 'FEATURE_NOT_AVAILABLE', feature: 'clientPortal' });
     req.clientAccount = account;
     req.companyId = account.companyId;
     next();
   } catch (error) {
     next(error.status ? error : new AppError(401, "Client authentication required"));
   }
-}
-
-async function findOrCreateClientCustomer(companyId, input) {
-  let customer = null;
-  if (input.email) customer = await prisma.customer.findFirst({ where: { companyId: companyId, email: input.email } });
-  if (!customer && input.phone) customer = await prisma.customer.findFirst({ where: { companyId: companyId, phone: input.phone } });
-  if (customer) return customer;
-  return prisma.customer.create({ data: { companyId: companyId, name: input.name, email: input.email, phone: input.phone } });
 }
 
 function uniqueRequests(records) {
@@ -825,9 +1003,7 @@ function uniqueRequests(records) {
 async function clientBookingRequests(account, extra) {
   const filters = [
     { clientAccountId: account.id },
-    account.customerId ? { customerId: account.customerId } : null,
-    account.email ? { customerEmail: account.email } : null,
-    account.phone ? { customerPhone: account.phone } : null
+    account.customerId ? { customerId: account.customerId } : null
   ].filter(Boolean);
   const lists = await Promise.all(filters.map(function(filter) {
     return prisma.bookingRequest.findMany({ where: { companyId: account.companyId, ...filter, ...(extra || {}) }, include: bookingRequestInclude, orderBy: { createdAt: "desc" } });
@@ -837,16 +1013,18 @@ async function clientBookingRequests(account, extra) {
 
 router.post("/client/auth/register", validate(clientRegisterSchema), asyncHandler(async (req, res) => {
   const company = await publicBookingCompany();
+  await requireFeature(company.id, 'clientPortal');
+  await requirePlanLimit(company.id, 'maxClients');
   const existing = await prisma.clientAccount.findFirst({ where: { companyId: company.id, email: req.body.email } });
   if (existing) throw new AppError(409, "A client account already exists for this email");
-  const customer = await findOrCreateClientCustomer(company.id, req.body);
-  const account = await prisma.clientAccount.create({ data: { companyId: company.id, customerId: customer.id, name: req.body.name, email: req.body.email, phone: req.body.phone, passwordHash: await hashPassword(req.body.password), status: "ACTIVE" } });
+  const account = await prisma.clientAccount.create({ data: { companyId: company.id, customerId: null, name: req.body.name, email: req.body.email, phone: req.body.phone, passwordHash: await hashPassword(req.body.password), status: "ACTIVE" } });
   setClientAuthCookie(res, account);
   sendData(res, normalize(publicClientAccount(account)), 201);
 }));
 
 router.post("/client/auth/login", validate(clientLoginSchema), asyncHandler(async (req, res) => {
   const company = await publicBookingCompany();
+  await requireFeature(company.id, 'clientPortal');
   const account = await prisma.clientAccount.findFirst({ where: { companyId: company.id, email: req.body.email } });
   if (!account || !(await verifyPassword(req.body.password, account.passwordHash))) throw new AppError(401, "Invalid email or password");
   if (account.status === "DISABLED") throw new AppError(403, "Client account is disabled");
@@ -878,11 +1056,13 @@ router.get("/client/dashboard", requireClientAuth, asyncHandler(async (req, res)
   const requests = await clientBookingRequests(req.clientAccount);
   const statusCounts = requests.reduce(function(counts, item) { counts[item.status] = (counts[item.status] || 0) + 1; return counts; }, {});
   const customerWhere = clientCustomerWhere(req.clientAccount);
+  const quoteWhere = clientQuoteWhere(req.clientAccount);
+  const invoiceWhere = clientInvoiceWhere(req.clientAccount);
   const now = new Date();
   const [quotes, jobs, invoices, profileCustomer] = customerWhere ? await Promise.all([
-    prisma.quote.findMany({ where: customerWhere, include: quoteInclude, orderBy: { createdAt: "desc" } }),
-    prisma.job.findMany({ where: customerWhere, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: true, signature: true }, orderBy: { createdAt: "desc" } }),
-    prisma.invoice.findMany({ where: customerWhere, include: invoiceInclude, orderBy: { createdAt: "desc" } }),
+    quoteWhere ? prisma.quote.findMany({ where: quoteWhere, include: quoteInclude, orderBy: { createdAt: "desc" } }) : Promise.resolve([]),
+    prisma.job.findMany({ where: customerWhere, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: true, signature: true, completionLocation: true }, orderBy: { createdAt: "desc" } }),
+    invoiceWhere ? prisma.invoice.findMany({ where: invoiceWhere, include: invoiceInclude, orderBy: { createdAt: "desc" } }) : Promise.resolve([]),
     prisma.customer.findFirst({ where: { id: req.clientAccount.customerId, companyId: req.clientAccount.companyId } })
   ]) : [[], [], [], null];
   const invoiceIds = invoices.map(function(invoice) { return invoice.id; });
@@ -923,13 +1103,21 @@ router.get("/client/booking-requests/:id", requireClientAuth, validate(idParam, 
   sendData(res, normalize(matches[0]));
 }));
 
-router.post("/client/booking-requests", requireClientAuth, validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
+router.post("/client/booking-requests", requireClientAuth, bookingPhotoUploadMiddleware, validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
   let service = null;
   if (req.body.serviceId) {
     service = await prisma.service.findFirst({ where: { id: req.body.serviceId, companyId: req.clientAccount.companyId, active: true } });
     if (!service) throw notFound("Service not found");
   }
-  const data = await prisma.bookingRequest.create({ data: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId, clientAccountId: req.clientAccount.id, status: "NEW", customerName: req.body.customerName, customerEmail: req.body.customerEmail || req.clientAccount.email, customerPhone: req.body.customerPhone || req.clientAccount.phone, address: req.body.address, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: "client_portal" } });
+  const data = await prisma.$transaction(async (tx) => {
+    const publicReference = await createPublicReference(tx, req.clientAccount.companyId);
+    const created = await tx.bookingRequest.create({ data: { companyId: req.clientAccount.companyId, publicReference, customerId: req.clientAccount.customerId, clientAccountId: req.clientAccount.id, status: "NEW", customerName: req.body.customerName, customerEmail: req.body.customerEmail || req.clientAccount.email, customerPhone: req.body.customerPhone || req.clientAccount.phone, address: req.body.address, city: req.body.city, propertyType: req.body.propertyType, accessNotes: req.body.accessNotes, serviceId: service && service.id, serviceName: service ? service.name : req.body.serviceName, preferredDate: req.body.preferredDate, preferredTimeWindow: req.body.preferredTimeWindow, notes: req.body.notes, source: "client_portal" } });
+    const uploaded = (req.files || []).map((file) => bookingPhotoData(req.clientAccount.companyId, created.id, file));
+    const provided = (req.body.photos || []).map((photo) => ({ companyId: req.clientAccount.companyId, bookingRequestId: created.id, url: photo.url, filename: photo.filename || path.basename(photo.url), originalName: photo.originalName, mimeType: photo.mimeType, sizeBytes: photo.sizeBytes, caption: photo.caption }));
+    for (const photo of uploaded.concat(provided).slice(0, 5)) await tx.bookingRequestPhoto.create({ data: photo });
+    return tx.bookingRequest.findFirst({ where: { id: created.id, companyId: req.clientAccount.companyId }, include: bookingRequestInclude });
+  });
+  await notify("BOOKING_CREATED", { companyId: req.clientAccount.companyId, relatedType: "BookingRequest", relatedId: data.id, record: { ...data, service, clientAccount: req.clientAccount } });
   sendData(res, normalize(data), 201);
 }));
 
@@ -957,7 +1145,7 @@ router.post("/client/profile/password", requireClientAuth, validate(clientChange
 router.post("/client/auth/forgot-password", validate(clientForgotPasswordSchema), asyncHandler(async (req, res) => {
   const company = await publicBookingCompany();
   await prisma.clientAccount.findFirst({ where: { companyId: company.id, email: req.body.email } });
-  sendData(res, { requested: true });
+  sendData(res, { requested: true, message: "Password reset email delivery is not configured yet. Please contact the company to reset your password." });
 }));
 
 const clientRejectSchema = z.object({ reason: optionalText(500) });
@@ -970,18 +1158,20 @@ function clientQuote(quote) { return quote && { id: quote.id, quoteNumber: quote
 function clientPayment(payment) { return payment && { id: payment.id, invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, status: payment.status, reference: payment.reference, receivedAt: payment.receivedAt, confirmedAt: payment.confirmedAt, createdAt: payment.createdAt }; }
 function clientReceipt(receipt) { return receipt && { id: receipt.id, receiptNumber: receipt.receiptNumber, invoiceId: receipt.invoiceId, paymentId: receipt.paymentId, amount: receipt.amount, issuedAt: receipt.issuedAt, createdAt: receipt.createdAt, invoice: receipt.invoice && { id: receipt.invoice.id, number: receipt.invoice.number, status: receipt.invoice.status }, payment: clientPayment(receipt.payment) }; }
 function clientInvoice(invoice) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
-function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresSignature: job.requiresSignature, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature) }; }
-function clientProofPhoto(photo) { return photo && { id: photo.id, jobId: photo.jobId, url: photo.url, caption: photo.caption, createdAt: photo.createdAt }; }
+function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresBeforePhotos: job.requiresBeforePhotos, requiresAfterPhotos: job.requiresAfterPhotos, requiresSignature: job.requiresSignature, requiresLocation: job.requiresLocation, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature), proofSummary: proofSummary(jobWithEvidenceStatus(job), true) }; }
+function clientProofPhoto(photo) { return photo && { id: photo.id, jobId: photo.jobId, url: photo.url, category: photo.category || 'GENERAL', caption: photo.caption, createdAt: photo.createdAt }; }
 function clientSignature(signature) { return signature && { id: signature.id, jobId: signature.jobId, signatureUrl: signature.signatureUrl, signedByName: signature.signerName, createdAt: signature.createdAt }; }
 function clientActivity(item) { const labels = { ASSIGNED: "Job scheduled", ARRIVED: "Worker arrived", STARTED: "Work started", PAUSED: "Work paused", RESUMED: "Work resumed", COMPLETED: "Work completed", PROOF_PHOTO_ADDED: "Proof uploaded", SIGNATURE_ADDED: "Signature collected" }; return labels[item.type] && { id: item.id, jobId: item.jobId, type: item.type, label: labels[item.type], note: item.type === "COMPLETED" ? item.note : undefined, createdAt: item.createdAt }; }
-async function clientOwnedQuote(account, id) { if (!account.customerId) return null; return prisma.quote.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: quoteInclude }); }
-async function clientOwnedInvoice(account, id) { if (!account.customerId) return null; return prisma.invoice.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: invoiceInclude }); }
-async function clientOwnedJob(account, id) { if (!account.customerId) return null; return prisma.job.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true } }); }
-async function clientInvoiceIds(account) { if (!account.customerId) return []; const rows = await prisma.invoice.findMany({ where: { companyId: account.companyId, customerId: account.customerId }, select: { id: true } }); return rows.map(function(row) { return row.id; }); }
+function clientQuoteWhere(account, extra) { return account.customerId ? { companyId: account.companyId, customerId: account.customerId, status: { in: clientVisibleQuoteStatuses }, ...(extra || {}) } : null; }
+function clientInvoiceWhere(account, extra) { return account.customerId ? { companyId: account.companyId, customerId: account.customerId, status: { in: clientVisibleInvoiceStatuses }, ...(extra || {}) } : null; }
+async function clientOwnedQuote(account, id) { const where = clientQuoteWhere(account, { id: id }); if (!where) return null; return prisma.quote.findFirst({ where, include: quoteInclude }); }
+async function clientOwnedInvoice(account, id) { const where = clientInvoiceWhere(account, { id: id }); if (!where) return null; return prisma.invoice.findFirst({ where, include: invoiceInclude }); }
+async function clientOwnedJob(account, id) { if (!account.customerId) return null; return prisma.job.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true, completionLocation: true } }); }
+async function clientInvoiceIds(account) { const where = clientInvoiceWhere(account); if (!where) return []; const rows = await prisma.invoice.findMany({ where, select: { id: true } }); return rows.map(function(row) { return row.id; }); }
 async function clientOwnedReceipt(account, id) { const invoiceIds = await clientInvoiceIds(account); if (!invoiceIds.length) return null; return prisma.receipt.findFirst({ where: { id: id, companyId: account.companyId, invoiceId: { in: invoiceIds } }, include: { invoice: true, payment: true } }); }
 
 router.get("/client/quotes", requireClientAuth, asyncHandler(async (req, res) => {
-  const where = clientCustomerWhere(req.clientAccount);
+  const where = clientQuoteWhere(req.clientAccount);
   if (!where) return sendData(res, []);
   const data = await prisma.quote.findMany({ where, include: quoteInclude, orderBy: { createdAt: "desc" } });
   sendData(res, normalize(data.map(clientQuote)));
@@ -996,6 +1186,7 @@ router.get("/client/quotes/:id", requireClientAuth, validate(idParam, "params"),
 router.post("/client/quotes/:id/accept", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
   const quote = await clientOwnedQuote(req.clientAccount, req.params.id);
   if (!quote) throw notFound("Quote not found");
+  const wasAccepted = quote.status === "ACCEPTED";
   if (["REJECTED", "EXPIRED", "DRAFT"].includes(quote.status)) throw new AppError(409, "Quote cannot be accepted");
   const data = await prisma.$transaction(async (tx) => {
     const current = await tx.quote.findFirst({ where: { id: quote.id, companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId }, include: quoteInclude });
@@ -1013,6 +1204,7 @@ router.post("/client/quotes/:id/accept", requireClientAuth, validate(idParam, "p
     await tx.auditLog.create({ data: { companyId: req.clientAccount.companyId, action: "CLIENT_ACCEPT", entity: "Quote", entityId: current.id, metadata: { clientAccountId: req.clientAccount.id, jobId } } });
     return tx.quote.update({ where: { id: current.id }, data: { status: "ACCEPTED", acceptedAt: current.acceptedAt || new Date(), jobId }, include: quoteInclude });
   });
+  if (!wasAccepted) await notify("QUOTE_ACCEPTED", { companyId: req.clientAccount.companyId, relatedType: "Quote", relatedId: data.id, record: data });
   sendData(res, normalize(clientQuote(data)));
 }));
 
@@ -1027,11 +1219,12 @@ router.post("/client/quotes/:id/reject", requireClientAuth, validate(idParam, "p
     await tx.auditLog.create({ data: { companyId: req.clientAccount.companyId, action: "CLIENT_REJECT", entity: "Quote", entityId: quote.id, metadata: { clientAccountId: req.clientAccount.id, reason: req.body.reason } } });
     return tx.quote.update({ where: { id: quote.id }, data: { status: "REJECTED", rejectedAt: new Date() }, include: quoteInclude });
   });
+  await notify("QUOTE_REJECTED", { companyId: req.clientAccount.companyId, relatedType: "Quote", relatedId: data.id, record: data, context: { reason: req.body.reason } });
   sendData(res, normalize(clientQuote(data)));
 }));
 
 router.get("/client/invoices", requireClientAuth, asyncHandler(async (req, res) => {
-  const where = clientCustomerWhere(req.clientAccount);
+  const where = clientInvoiceWhere(req.clientAccount);
   if (!where) return sendData(res, []);
   const data = await prisma.invoice.findMany({ where, include: invoiceInclude, orderBy: { createdAt: "desc" } });
   sendData(res, normalize(data.map(clientInvoice)));
@@ -1066,7 +1259,7 @@ router.get("/client/receipts/:id", requireClientAuth, validate(idParam, "params"
 router.get("/client/jobs", requireClientAuth, asyncHandler(async (req, res) => {
   const where = clientCustomerWhere(req.clientAccount);
   if (!where) return sendData(res, []);
-  const data = await prisma.job.findMany({ where, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true }, orderBy: { createdAt: "desc" } });
+  const data = await prisma.job.findMany({ where, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true, completionLocation: true }, orderBy: { createdAt: "desc" } });
   sendData(res, normalize(data.map(clientJob)));
 }));
 
@@ -1088,6 +1281,12 @@ router.get("/client/jobs/:id/signature", requireClientAuth, validate(idParam, "p
   if (!job) throw notFound("Job not found");
   const data = await prisma.jobSignature.findFirst({ where: { companyId: req.clientAccount.companyId, jobId: job.id } });
   sendData(res, normalize(clientSignature(data)));
+}));
+
+router.get("/client/jobs/:id/proof-summary", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await clientOwnedJob(req.clientAccount, req.params.id);
+  if (!job) throw notFound("Job not found");
+  sendData(res, normalize(proofSummary(job, true)));
 }));
 
 router.get("/client/jobs/:id/activity", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
@@ -1150,6 +1349,7 @@ router.get('/company/branding', asyncHandler(async (req, res) => {
 }));
 
 router.patch('/company/branding', requireRole(...adminRoles), validate(companyBrandingSchema), asyncHandler(async (req, res) => {
+  await requireFeature(req.companyId, 'customBranding');
   const data = await prisma.companyBranding.upsert({
     where: { companyId: req.companyId },
     update: req.body,
@@ -1271,6 +1471,75 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
   sendData(res, normalize({ branding: publicBranding(company), company: profileResponse(company), totals, schedule, workers, recentJobs, pipeline: pipe }));
 }));
 
+router.get('/notification-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.notificationLog, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/audit-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.auditLog, req, { where: { companyId: req.companyId }, include: { user: { select: SAFE_USER_SELECT } }, orderBy: { createdAt: 'desc' } });
+  const data = result.data.map((item) => ({
+    id: item.id,
+    action: item.action,
+    entity: item.entity,
+    entityId: item.entityId,
+    actor: item.user ? publicUser(item.user) : null,
+    message: [item.action, item.entity, item.entityId].filter(Boolean).join(' '),
+    createdAt: item.createdAt
+  }));
+  sendData(res, normalize(data), 200, result.meta);
+}));
+
+router.get('/system/status', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, configStatus());
+}));
+
+const billingPlanSchema = z.object({ planId: z.string().min(1) });
+
+router.get('/billing/plans', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, await listPlans());
+}));
+
+router.get('/billing/subscription', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await billingSummary(req.companyId)));
+}));
+
+router.get('/billing/usage', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await getUsage(req.companyId)));
+}));
+
+router.post('/billing/checkout', requireRole(...ownerRoles), validate(billingPlanSchema), asyncHandler(async (req, res) => {
+  const data = await createCheckout(req.companyId, req.body.planId, req.user.id);
+  await audit(req, 'CHECKOUT_STARTED', 'CompanySubscription', req.companyId, { planId: req.body.planId, provider: data.provider, mode: data.mode });
+  sendData(res, normalize(data), 202);
+}));
+
+router.post('/billing/change-plan', requireRole(...ownerRoles), validate(billingPlanSchema), asyncHandler(async (req, res) => {
+  const data = await changePlan(req.companyId, req.body.planId, req.user.id);
+  await audit(req, 'CHANGE_PLAN', 'CompanySubscription', req.companyId, { planId: req.body.planId });
+  sendData(res, normalize(data));
+}));
+
+router.post('/billing/cancel', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
+  const data = await cancelSubscription(req.companyId, req.user.id);
+  await audit(req, 'CANCEL_SUBSCRIPTION', 'CompanySubscription', req.companyId);
+  sendData(res, normalize(data));
+}));
+
+router.get('/reports', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await reportData(req.companyId, req.query)));
+}));
+
+router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const section = String(req.query.section || 'revenue');
+  if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'Unsupported report export section.');
+  const data = await reportData(req.companyId, req.query);
+  await audit(req, 'EXPORT', 'Report', section, { section, startDate: data.filters.startDate, endDate: data.filters.endDate });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="fieldcore-${section}-report.csv"`);
+  return res.status(200).send(reportCsv(section, data));
+}));
+
 const customerSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().optional().or(z.literal('')).transform((v) => v || undefined),
@@ -1333,7 +1602,15 @@ function bookingJobTitle(request) {
 }
 
 function bookingJobDescription(request) {
-  return [request.notes, request.address ? 'Address: ' + request.address : null, request.preferredDate ? 'Preferred date: ' + new Date(request.preferredDate).toISOString().slice(0, 10) : null, request.preferredTimeWindow ? 'Preferred time: ' + String(request.preferredTimeWindow).replace(/_/g, ' ') : null].filter(Boolean).join('\n');
+  return [
+    request.notes,
+    request.address ? 'Address: ' + request.address : null,
+    request.city ? 'City/Suburb: ' + request.city : null,
+    request.propertyType ? 'Property type: ' + request.propertyType : null,
+    request.accessNotes ? 'Access notes: ' + request.accessNotes : null,
+    request.preferredDate ? 'Preferred date: ' + new Date(request.preferredDate).toISOString().slice(0, 10) : null,
+    request.preferredTimeWindow ? 'Preferred time: ' + String(request.preferredTimeWindow).replace(/_/g, ' ') : null
+  ].filter(Boolean).join('\n');
 }
 
 async function setBookingRequestStatus(req, id, status, action) {
@@ -1358,7 +1635,13 @@ router.post('/booking-requests/:id/review', requireRole(...adminRoles), validate
 }));
 
 router.post('/booking-requests/:id/decline', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
-  sendData(res, normalize(await setBookingRequestStatus(req, req.params.id, 'DECLINED', 'DECLINE')));
+  const parsed = bookingRequestMessageSchema.safeParse(req.body || {});
+  if (!parsed.success) throw parsed.error;
+  const existing = await requireBookingRequest(req, req.params.id);
+  if (existing.status === 'CONVERTED') throw new AppError(409, 'Converted booking requests cannot be changed');
+  const data = await prisma.bookingRequest.update({ where: { id: existing.id }, data: { status: 'DECLINED', customerFacingMessage: parsed.data.customerFacingMessage }, include: bookingRequestInclude });
+  await audit(req, 'DECLINE', 'BookingRequest', existing.id, { fromStatus: existing.status, toStatus: 'DECLINED' });
+  sendData(res, normalize(data));
 }));
 
 router.post('/booking-requests/:id/convert', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
@@ -1373,6 +1656,25 @@ router.post('/booking-requests/:id/convert', requireRole(...adminRoles), validat
   const updated = await prisma.bookingRequest.update({ where: { id: existing.id }, data: { status: 'CONVERTED', customerId: customer.id, convertedJobId: job.id }, include: bookingRequestInclude });
   await audit(req, 'CONVERT', 'BookingRequest', existing.id, { customerId: customer.id, jobId: job.id });
   sendData(res, normalize({ ...updated, convertedJob: job }), 201);
+}));
+
+router.post('/booking-requests/:id/create-quote', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireBookingRequest(req, req.params.id);
+  if (['DECLINED', 'CANCELLED'].includes(existing.status)) throw new AppError(409, 'Declined or cancelled booking requests cannot be quoted');
+  const customer = await findOrCreateBookingCustomer(prisma, req, existing);
+  const amountValue = existing.service && existing.service.price || 0;
+  const data = await prisma.$transaction(async (tx) => {
+    const quote = await tx.quote.create({ data: { companyId: req.companyId, customerId: customer.id, serviceId: existing.serviceId, jobId: existing.convertedJobId, title: bookingJobTitle(existing), description: bookingJobDescription(existing), status: 'DRAFT' } });
+    await tx.quoteLineItem.create({ data: { companyId: req.companyId, quoteId: quote.id, serviceId: existing.serviceId, description: existing.serviceName || quote.title, quantity: 1, unitPrice: amountValue, discountAmount: 0, taxAmount: 0, ...moneyLine({ quantity: 1, unitPrice: amountValue, discountAmount: 0, taxAmount: 0 }), sortOrder: 0 } });
+    await addQuoteStatusHistory(tx, req, { ...quote, status: null }, 'DRAFT', 'Quote created from booking request');
+    const draft = await recalcQuote(tx, req.companyId, quote.id);
+    await addQuoteStatusHistory(tx, req, draft, 'SENT', 'Quote sent from booking request');
+    await tx.bookingRequest.update({ where: { id: existing.id }, data: { customerId: customer.id, status: 'REVIEWED', customerFacingMessage: 'A quote has been sent for your request.' } });
+    return tx.quote.update({ where: { id: draft.id }, data: { status: 'SENT', sentAt: new Date() }, include: quoteInclude });
+  });
+  await audit(req, 'CREATE_QUOTE', 'BookingRequest', existing.id, { quoteId: data.id, customerId: customer.id });
+  await notify('QUOTE_SENT', { companyId: req.companyId, relatedType: 'Quote', relatedId: data.id, record: data });
+  sendData(res, normalize(data), 201);
 }));
 const workerCreateSchema = z.object({
   name: z.string().min(2),
@@ -1425,6 +1727,8 @@ router.get('/workers', requireRole(...adminRoles), asyncHandler(async (req, res)
 }));
 
 router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema), asyncHandler(async (req, res) => {
+  await requirePlanLimit(req.companyId, 'maxUsers');
+  await requirePlanLimit(req.companyId, 'maxWorkers');
   let role = req.body.roleId ? await requireWorkerRole(req, req.body.roleId) : null;
   if (!role && req.body.title) role = await ensureWorkerRole(req, req.body.title);
   const user = await prisma.user.create({
@@ -1475,7 +1779,10 @@ const jobSchema = z.object({
   travelBufferMinutes: z.coerce.number().int().min(0).optional(),
   requiresProofPhotos: z.boolean().optional(),
   minimumProofPhotos: z.coerce.number().int().min(0).max(20).optional(),
+  requiresBeforePhotos: z.boolean().optional(),
+  requiresAfterPhotos: z.boolean().optional(),
   requiresSignature: z.boolean().optional(),
+  requiresLocation: z.boolean().optional(),
   total: amount.optional(),
   adminOverride: z.boolean().optional()
 });
@@ -1491,6 +1798,10 @@ router.get('/worker/jobs', requireRole('WORKER'), asyncHandler(async (req, res) 
 }));
 
 router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandler(async (req, res) => {
+  await requirePlanLimit(req.companyId, 'maxJobsPerMonth');
+  if (req.body.requiresProofPhotos || req.body.requiresBeforePhotos || req.body.requiresAfterPhotos || req.body.requiresSignature || req.body.requiresLocation || Number(req.body.minimumProofPhotos || 0) > 0) {
+    await requireFeature(req.companyId, 'proofOfWork');
+  }
   await validateJobRelations(req, req.body);
 
   const wantsSchedule = Boolean(req.body.scheduledStart);
@@ -1558,6 +1869,7 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
     });
 
     await audit(req, 'CREATE', 'Job', data.id, { scheduled: true, scheduleItemId: scheduled.schedule.id });
+    await notify('JOB_SCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: scheduled.job.id });
 
     return sendData(res, normalize({
       ...scheduled.job,
@@ -1592,7 +1904,7 @@ router.patch('/jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'
 }));
 
 router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1) })), asyncHandler(async (req, res) => {
-  await requireJob(req, req.params.id, { assignedOnly: false });
+  const existing = await requireJob(req, req.params.id, { assignedOnly: false });
   await requireWorker(req, req.body.workerId);
   const data = await prisma.$transaction(async (tx) => {
     const updated = await tx.job.update({ where: { id: req.params.id }, data: { workerId: req.body.workerId, status: 'SCHEDULED' } });
@@ -1600,11 +1912,19 @@ router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idPa
     await addAuditLog(tx, req, 'ASSIGN_WORKER', 'Job', updated.id, { workerId: req.body.workerId });
     return updated;
   });
+  if (existing.workerId !== req.body.workerId) await notify('WORKER_ASSIGNED', { companyId: req.companyId, relatedType: 'Job', relatedId: data.id });
   sendData(res, normalize(data));
 }));
 
 const noteActivitySchema = z.object({ note: z.string().trim().min(1).max(2000), metadata: z.record(z.any()).optional() });
-const completeJobSchema = z.object({ completionNotes: z.string().trim().min(1).max(2000).optional(), adminOverride: z.boolean().optional(), customerSignatureUrl: z.string().url().optional(), proofPhotoIds: z.array(z.string().min(1)).optional() });
+const completionLocationSchema = z.object({
+  latitude: z.coerce.number().min(-90).max(90),
+  longitude: z.coerce.number().min(-180).max(180),
+  accuracy: z.coerce.number().min(0).max(100000).optional(),
+  capturedAt: optionalDate,
+  source: z.enum(['WORKER_BROWSER', 'WORKER_DEVICE', 'MANUAL_NOT_AVAILABLE']).optional()
+});
+const completeJobSchema = z.object({ completionNotes: z.string().trim().min(1).max(2000).optional(), adminOverride: z.boolean().optional(), customerSignatureUrl: z.string().url().optional(), proofPhotoIds: z.array(z.string().min(1)).optional(), location: completionLocationSchema.optional() });
 
 router.post('/jobs/:id/arrive', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const data = await lifecycleTransition(req, req.params.id, { allowed: ['SCHEDULED', 'DISPATCHED'], status: 'ARRIVED', stamp: 'arrivedAt', type: 'ARRIVED', cancelledLabel: 'arrived' });
@@ -1637,38 +1957,59 @@ router.post("/jobs/:id/complete", validate(idParam, "params"), validate(complete
   if (req.body.adminOverride && !isAdmin) throw new AppError(403, "Only admins can use completion override");
   if (!req.body.completionNotes && !req.body.adminOverride) throw new AppError(400, "Completion notes are required");
   if (!["IN_PROGRESS", "PAUSED"].includes(job.status) && !(isAdmin && req.body.adminOverride)) assertTransition(job, ["IN_PROGRESS", "PAUSED"], "COMPLETED");
-  const [proofPhotoCount, signature] = await Promise.all([
-    prisma.jobProofPhoto.count({ where: { companyId: req.companyId, jobId: job.id } }),
-    prisma.jobSignature.findFirst({ where: { companyId: req.companyId, jobId: job.id } })
+  const [proofPhotos, signature, existingLocation] = await Promise.all([
+    prisma.jobProofPhoto.findMany({ where: { companyId: req.companyId, jobId: job.id } }),
+    prisma.jobSignature.findFirst({ where: { companyId: req.companyId, jobId: job.id } }),
+    prisma.jobCompletionLocation.findFirst({ where: { companyId: req.companyId, jobId: job.id } })
   ]);
+  const proofPhotoCount = proofPhotos.length;
+  const beforePhotoCount = proofPhotos.filter((photo) => photo.category === 'BEFORE').length;
+  const afterPhotoCount = proofPhotos.filter((photo) => photo.category === 'AFTER').length;
+  const locationProvided = Boolean(req.body.location);
   const missing = {
     proofPhotos: Boolean(job.requiresProofPhotos) && proofPhotoCount < 1,
-    signature: Boolean(job.requiresSignature) && !signature
+    beforePhotos: Boolean(job.requiresBeforePhotos) && beforePhotoCount < 1,
+    afterPhotos: Boolean(job.requiresAfterPhotos) && afterPhotoCount < 1,
+    signature: Boolean(job.requiresSignature) && !signature,
+    location: Boolean(job.requiresLocation) && !existingLocation && !locationProvided
   };
-  if ((missing.proofPhotos || missing.signature) && !req.body.adminOverride) {
+  if ((missing.proofPhotos || missing.beforePhotos || missing.afterPhotos || missing.signature || missing.location) && !req.body.adminOverride) {
     throw new AppError(409, "Completion evidence is required", {
       proofPhotos: { required: Boolean(job.requiresProofPhotos), minimum: Boolean(job.requiresProofPhotos) ? 1 : 0, count: proofPhotoCount, satisfied: !missing.proofPhotos },
-      signature: { required: Boolean(job.requiresSignature), captured: Boolean(signature), satisfied: !missing.signature }
+      beforePhotos: { required: Boolean(job.requiresBeforePhotos), minimum: Boolean(job.requiresBeforePhotos) ? 1 : 0, count: beforePhotoCount, satisfied: !missing.beforePhotos },
+      afterPhotos: { required: Boolean(job.requiresAfterPhotos), minimum: Boolean(job.requiresAfterPhotos) ? 1 : 0, count: afterPhotoCount, satisfied: !missing.afterPhotos },
+      signature: { required: Boolean(job.requiresSignature), captured: Boolean(signature), satisfied: !missing.signature },
+      location: { required: Boolean(job.requiresLocation), captured: Boolean(existingLocation || locationProvided), satisfied: !missing.location }
     });
   }
   const now = new Date();
   const updateData = {
     status: "COMPLETED",
     completedAt: now,
+    completedById: req.user.id,
     completionNotes: req.body.completionNotes || job.completionNotes
   };
   if (proofPhotoCount > 0 && !job.proofCompletedAt) updateData.proofCompletedAt = now;
   if (signature && !job.signatureCompletedAt) updateData.signatureCompletedAt = now;
   const data = await prisma.$transaction(async (tx) => {
+    if (req.body.location) {
+      await tx.jobCompletionLocation.upsert({
+        where: { jobId: job.id },
+        update: { capturedById: req.user.id, latitude: req.body.location.latitude, longitude: req.body.location.longitude, accuracy: req.body.location.accuracy, source: req.body.location.source || 'WORKER_BROWSER', capturedAt: req.body.location.capturedAt || now },
+        create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude: req.body.location.latitude, longitude: req.body.location.longitude, accuracy: req.body.location.accuracy, source: req.body.location.source || 'WORKER_BROWSER', capturedAt: req.body.location.capturedAt || now }
+      });
+      await addJobActivity(tx, req, job, "COMPLETION_LOCATION_CAPTURED", null, { source: req.body.location.source || 'WORKER_BROWSER', accuracy: req.body.location.accuracy });
+    }
     const updated = await tx.job.update({ where: { id: job.id }, data: updateData, include: jobDetailInclude });
     await addJobActivity(tx, req, job, "COMPLETED", req.body.completionNotes, { fromStatus: job.status, toStatus: "COMPLETED", adminOverride: Boolean(req.body.adminOverride) });
     await addAuditLog(tx, req, req.body.adminOverride ? "COMPLETE_ADMIN_OVERRIDE" : "COMPLETE", "Job", job.id, { fromStatus: job.status, toStatus: "COMPLETED", proofPhotoCount, signatureCaptured: Boolean(signature) });
     return updated;
   });
+  await notify("JOB_COMPLETED", { companyId: req.companyId, relatedType: "Job", relatedId: data.id, record: data });
   sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 
-const proofPhotoBodySchema = z.object({ caption: optionalText(500) });
+const proofPhotoBodySchema = z.object({ caption: optionalText(500), category: z.enum(proofCategoryValues).default('GENERAL') });
 const signatureBodySchema = z.object({ signerName: optionalText(160) });
 const proofPhotoParam = z.object({ id: z.string().min(1), photoId: z.string().min(1) });
 
@@ -1696,15 +2037,36 @@ router.get("/jobs/:id/proof-photos", validate(idParam, "params"), asyncHandler(a
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
+router.get("/jobs/:id/proof-summary", validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const job = await prisma.job.findFirst({ where: { id: req.params.id, companyId: req.companyId, ...(req.user.role === "WORKER" ? workerJobScope(req) : {}) }, include: jobDetailInclude });
+  if (!job) throw notFound("Job not found");
+  sendData(res, normalize(proofSummary(job, false)));
+}));
+
+router.post("/jobs/:id/completion-location", validate(idParam, "params"), validate(completionLocationSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
+  const data = await prisma.$transaction(async (tx) => {
+    const captured = await tx.jobCompletionLocation.upsert({
+      where: { jobId: job.id },
+      update: { capturedById: req.user.id, latitude: req.body.latitude, longitude: req.body.longitude, accuracy: req.body.accuracy, source: req.body.source || 'WORKER_BROWSER', capturedAt: req.body.capturedAt || new Date() },
+      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude: req.body.latitude, longitude: req.body.longitude, accuracy: req.body.accuracy, source: req.body.source || 'WORKER_BROWSER', capturedAt: req.body.capturedAt || new Date() }
+    });
+    await addJobActivity(tx, req, job, "COMPLETION_LOCATION_CAPTURED", null, { source: captured.source, accuracy: captured.accuracy });
+    await addAuditLog(tx, req, "CAPTURE_LOCATION", "Job", job.id, { locationId: captured.id });
+    return captured;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
 router.post("/jobs/:id/proof-photos", validate(idParam, "params"), loadEvidenceJob, singleUpload(proofUpload, "photo"), asyncHandler(async (req, res) => {
   if (!req.file) throw new AppError(400, "Proof photo is required");
   const parsed = proofPhotoBodySchema.safeParse(req.body);
   if (!parsed.success) throw parsed.error;
   const job = req.evidenceJob;
   const data = await prisma.$transaction(async (tx) => {
-    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: uploadedFileUrl("proof", req.file), filename: req.file.filename, mimeType: req.file.mimetype, sizeBytes: req.file.size, caption: parsed.data.caption } });
-    await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", parsed.data.caption, { proofPhotoId: photo.id });
-    await addAuditLog(tx, req, "CREATE", "JobProofPhoto", photo.id, { jobId: job.id });
+    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: uploadedFileUrl("proof", req.file), filename: req.file.filename, mimeType: req.file.mimetype, sizeBytes: req.file.size, category: parsed.data.category, caption: parsed.data.caption } });
+    await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", parsed.data.caption, { proofPhotoId: photo.id, category: photo.category });
+    await addAuditLog(tx, req, "CREATE", "JobProofPhoto", photo.id, { jobId: job.id, category: photo.category });
     return photo;
   });
   sendData(res, normalize(data), 201);
@@ -1854,13 +2216,16 @@ async function transitionQuote(req, status, stamp, note) {
 }
 
 router.post('/quotes/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const before = await requireQuote(req, req.params.id);
   const data = await transitionQuote(req, 'SENT', 'sentAt', 'Quote sent');
   await audit(req, 'SEND', 'Quote', data.id);
+  if (before.status !== 'SENT') await notify('QUOTE_SENT', { companyId: req.companyId, relatedType: 'Quote', relatedId: data.id, record: data });
   sendData(res, normalize(data));
 }));
 
 router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
+  const wasAccepted = quote.status === 'ACCEPTED';
   if (quote.status === 'REJECTED' || quote.status === 'EXPIRED') throw new AppError(409, 'Rejected or expired quotes cannot be accepted');
   const data = await prisma.$transaction(async (tx) => {
     const current = await tx.quote.findFirst({ where: { id: quote.id, companyId: req.companyId }, include: quoteInclude });
@@ -1875,12 +2240,15 @@ router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam, 
     return tx.quote.update({ where: { id: current.id }, data: { status: 'ACCEPTED', acceptedAt: current.acceptedAt || new Date(), jobId }, include: quoteInclude });
   });
   await audit(req, 'ACCEPT', 'Quote', data.id, { jobId: data.jobId });
+  if (!wasAccepted) await notify('QUOTE_ACCEPTED', { companyId: req.companyId, relatedType: 'Quote', relatedId: data.id, record: data });
   sendData(res, normalize(data));
 }));
 
 router.post('/quotes/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const before = await requireQuote(req, req.params.id);
   const data = await transitionQuote(req, 'REJECTED', 'rejectedAt', 'Quote rejected');
   await audit(req, 'REJECT', 'Quote', data.id);
+  if (before.status !== 'REJECTED') await notify('QUOTE_REJECTED', { companyId: req.companyId, relatedType: 'Quote', relatedId: data.id, record: data });
   sendData(res, normalize(data));
 }));
 
@@ -2030,8 +2398,10 @@ async function transitionInvoice(req, status, stamp, note) {
 }
 
 router.post('/invoices/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const before = await requireInvoice(req, req.params.id);
   const data = await transitionInvoice(req, 'SENT', 'sentAt', 'Invoice sent');
   await audit(req, 'SEND', 'Invoice', data.id);
+  if (before.status !== 'SENT') await notify('INVOICE_SENT', { companyId: req.companyId, relatedType: 'Invoice', relatedId: data.id, record: data });
   sendData(res, normalize(data));
 }));
 
@@ -2049,6 +2419,7 @@ router.post('/invoices/:id/mark-paid', requireRole(...adminRoles), validate(idPa
   await createReceiptForPayment(prisma, payment, invoice);
   const data = await recalcInvoice(prisma, req.companyId, invoice.id);
   await audit(req, 'MARK_PAID', 'Invoice', data.id);
+  await notify('PAYMENT_RECEIVED', { companyId: req.companyId, relatedType: 'Payment', relatedId: payment.id });
   sendData(res, normalize(data));
 }));
 
@@ -2105,12 +2476,15 @@ router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idPar
   const confirmNow = req.body.status === 'CONFIRMED';
   const balance = toDecimal(invoice.balanceDue || invoice.total || invoice.amount);
   if (confirmNow && toDecimal(req.body.amount).greaterThan(balance)) throw new AppError(400, 'Payment exceeds invoice balance');
+  let createdPayment = null;
   const data = await prisma.$transaction(async (tx) => {
     const payment = await tx.payment.create({ data: { ...req.body, companyId: req.companyId, invoiceId: invoice.id, status: confirmNow ? 'CONFIRMED' : 'PENDING', receivedAt: req.body.receivedAt || new Date(), confirmedAt: confirmNow ? new Date() : null, createdById: req.user.id } });
+    createdPayment = payment;
     if (confirmNow) await createReceiptForPayment(tx, payment, invoice);
     return confirmNow ? recalcInvoice(tx, req.companyId, invoice.id) : tx.invoice.findFirst({ where: { id: invoice.id, companyId: req.companyId }, include: invoiceInclude });
   });
   await audit(req, 'CREATE', 'Payment', invoice.id, { status: req.body.status || 'PENDING' });
+  if (confirmNow && createdPayment) await notify('PAYMENT_RECEIVED', { companyId: req.companyId, relatedType: 'Payment', relatedId: createdPayment.id });
   sendData(res, normalize(data), 201);
 }));
 
@@ -2130,6 +2504,7 @@ router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idPara
     return tx.payment.findFirst({ where: { id: payment.id, companyId: req.companyId }, include: { receipt: true } });
   });
   await audit(req, 'CONFIRM', 'Payment', payment.id);
+  await notify('PAYMENT_RECEIVED', { companyId: req.companyId, relatedType: 'Payment', relatedId: payment.id });
   sendData(res, normalize(data));
 }));
 
@@ -2213,6 +2588,7 @@ router.post('/schedule', requireRole(...adminRoles), validate(scheduleWriteSchem
   await requireWorker(req, req.body.workerId);
   const data = await scheduleJob(req, job, req.body);
   await audit(req, 'CREATE', 'ScheduleItem', data.schedule.id, { jobId: job.id });
+  await notify('JOB_SCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: data.job.id });
   sendData(res, normalize(data.schedule), 201);
 }));
 
@@ -2231,6 +2607,7 @@ router.patch('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'par
   const payload = { ...existing, ...req.body, workerId: req.body.workerId || existing.workerId, startsAt: req.body.startsAt || existing.startsAt, endsAt: req.body.endsAt || existing.endsAt };
   const data = await scheduleJob(req, job, payload, { excludeScheduleId: existing.id });
   await audit(req, 'UPDATE', 'ScheduleItem', data.schedule.id, { jobId: job.id });
+  await notify('JOB_RESCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: data.job.id, context: { oldStartsAt: existing.startsAt } });
   sendData(res, normalize(data.schedule));
 }));
 
@@ -2249,6 +2626,7 @@ router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 
   const job = await requireJob(req, req.params.id, { assignedOnly: false });
   const data = await scheduleJob(req, job, req.body);
   await audit(req, 'SCHEDULE', 'Job', job.id, { scheduleItemId: data.schedule.id });
+  await notify('JOB_SCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: data.job.id });
   sendData(res, normalize(data.schedule), 201);
 }));
 
@@ -2257,6 +2635,7 @@ router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam
   const existing = await prisma.scheduleItem.findFirst({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } } });
   const data = await scheduleJob(req, job, req.body, { forceNew: true, rescheduleExistingId: existing && existing.id, excludeScheduleId: existing && existing.id });
   await audit(req, 'RESCHEDULE', 'Job', job.id, { fromScheduleItemId: existing && existing.id, scheduleItemId: data.schedule.id });
+  await notify('JOB_RESCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: data.job.id, context: { oldStartsAt: existing && existing.startsAt } });
   sendData(res, normalize(data.schedule), 201);
 }));
 
@@ -2385,12 +2764,12 @@ router.get('/worker-location/latest', asyncHandler(async (req, res) => {
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
-const photoSchema = z.object({ url: z.string().url().or(z.string().regex(/^\/uploads\/jobs\/proof\/[a-zA-Z0-9._-]+$/)), caption: optionalText(500) });
+const photoSchema = z.object({ url: z.string().url().or(z.string().regex(/^\/uploads\/jobs\/proof\/[a-zA-Z0-9._-]+$/)), caption: optionalText(500), category: z.enum(proofCategoryValues).default('GENERAL') });
 router.post("/jobs/:id/photos", validate(idParam, "params"), validate(photoSchema), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === "WORKER" });
   const data = await prisma.$transaction(async (tx) => {
-    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: req.body.url, filename: path.basename(req.body.url), mimeType: "image/jpeg", sizeBytes: 0, caption: req.body.caption } });
-    await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", req.body.caption, { proofPhotoId: photo.id, legacyRoute: true });
+    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: req.body.url, filename: path.basename(req.body.url), mimeType: "image/jpeg", sizeBytes: 0, category: req.body.category, caption: req.body.caption } });
+    await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", req.body.caption, { proofPhotoId: photo.id, category: photo.category, legacyRoute: true });
     await addAuditLog(tx, req, "CREATE", "JobProofPhoto", photo.id, { jobId: job.id, legacyRoute: true });
     return photo;
   });
@@ -2403,5 +2782,3 @@ router.get("/jobs/:id/photos", validate(idParam, "params"), asyncHandler(async (
 }));
 
 module.exports = { apiRouter: router };
-
-

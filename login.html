@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In | FieldCore</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/auth.js"></script>
+  </head>
+  <body class="auth-page" data-auth-page="login">
+    <main class="public-booking auth-wrap">
+      <section class="public-booking-card auth-card">
+        <div class="brand public-booking-brand">
+          <span class="brand-mark">FC</span>
+          <span class="brand-name">FieldCore</span>
+        </div>
+        <div class="hero-copy">
+          <h2>Sign In</h2>
+          <p>Access your company dashboard, jobs, invoices, schedules, and field operations.</p>
+        </div>
+        <form class="form-grid" data-login-form>
+          <div class="field span-2">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" autocomplete="email" required value="owner@fieldcore.test">
+          </div>
+          <div class="field span-2">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required value="FieldCoreDemo2026!">
+          </div>
+          <div class="auth-demo span-2">
+            <strong>Demo accounts</strong>
+            <span>Owner: owner@fieldcore.test</span>
+            <span>Admin: admin@fieldcore.test</span>
+            <span>Worker: worker@fieldcore.test</span>
+          </div>
+          <div class="fc-form-actions span-2">
+            <a class="secondary-button" href="register.html">Create Account</a>
+            <button class="primary-button" type="submit">Sign In</button>
+          </div>
+          <p class="fc-form-error span-2" data-auth-message hidden></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

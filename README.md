@@ -60,12 +60,28 @@ Open `http://localhost:3000`.
 ## Environment Variables
 
 - `PORT`: HTTP port, defaults to `3000`.
+- `NODE_ENV`: use `production` in production. Production startup validates critical config.
 - `DATABASE_URL`: PostgreSQL connection string used by Prisma.
-- `JWT_SECRET`: long random secret for signing auth tokens.
+- `JWT_SECRET`: long random secret for signing auth tokens. Production refuses weak/default values.
 - `COOKIE_NAME`: auth cookie name, defaults to `fieldcore_token`.
 - `CLIENT_ORIGIN`: allowed browser origin for CORS, usually `http://localhost:3000` locally.
 - `DEMO_OWNER_EMAIL`: seed owner email, defaults to `owner@fieldcore.test`.
 - `DEMO_PASSWORD`: seed user password, defaults to `FieldCoreDemo2026!`.
+- `APP_BASE_URL`: public app URL used in notification text when available.
+- `NOTIFICATION_CHANNELS`: comma-separated channels, defaults to `EMAIL,WHATSAPP`.
+- `EMAIL_PROVIDER`: optional email provider key. Leave empty to safely skip sends; `console` logs email metadata locally; `webhook` POSTs to `EMAIL_API_URL`.
+- `EMAIL_API_URL` / `EMAIL_API_KEY`: optional webhook email endpoint and bearer token.
+- `EMAIL_FROM`: sender address required before email delivery is considered configured.
+- `WHATSAPP_PROVIDER`: optional WhatsApp provider. Use `disabled` or blank to skip safely, `console` for local metadata logging, `meta` for Meta Cloud API, or `360dialog`.
+- `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_API_KEY`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_FROM_NUMBER`: provider-specific WhatsApp configuration.
+- `WHATSAPP_DEFAULT_COUNTRY_CODE`: optional country code used to normalize local phone numbers.
+- `WHATSAPP_TEMPLATE_LANGUAGE`: WhatsApp template language code, defaults to `en`.
+- `WHATSAPP_TEMPLATE_*`: event-to-template mappings for approved WhatsApp business templates.
+- `RATE_LIMIT_*`: optional route-group limits for auth, public booking/tracking, and uploads.
+- `ALLOW_DEMO_RESET`: set to `true` only for intentional local/demo reset runs.
+- `SAAS_BILLING_PROVIDER`: SaaS subscription billing provider. Leave blank to disable checkout, or use `manual` for local/internal billing workflows.
+- `SAAS_BILLING_SUCCESS_URL` / `SAAS_BILLING_CANCEL_URL`: redirect targets for a future live checkout provider.
+- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET`: only required when `SAAS_BILLING_PROVIDER=stripe`; live Stripe checkout is not enabled until the provider implementation is completed.
 
 ## Scripts
 
@@ -74,7 +90,17 @@ Open `http://localhost:3000`.
 - `npm run build`: generate the Prisma client.
 - `npm run migrate`: run Prisma migrations against PostgreSQL.
 - `npm run seed`: create demo company, owner, admin, worker, customer, service, quote, job, schedule item, and invoice.
+- `npm run demo:reset -- --yes`: safely reseed local/demo data. Refuses `NODE_ENV=production`.
 - `npm test`: run Node test files with the built-in test runner.
+
+## Production Readiness
+
+- Backup plan: `docs/backup-plan.md`
+- Deployment checklist: `docs/deployment-checklist.md`
+- Security review: `docs/security-review.md`
+- SaaS billing operations: `docs/saas-billing.md`
+
+Health checks are available at `/healthz` and `/readyz`. Admins can review system status, audit logs, and notification logs from Settings.
 
 ## Demo Login
 
