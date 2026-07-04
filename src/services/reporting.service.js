@@ -62,6 +62,13 @@ function rangeFromQuery(query = {}) {
     end.setHours(23, 59, 59, 999);
     return { start, end, label: period };
   }
+  if (period === 'thisWeek') {
+    const start = new Date(now);
+    const day = start.getDay();
+    start.setDate(start.getDate() - (day === 0 ? 6 : day - 1));
+    start.setHours(0, 0, 0, 0);
+    return { start, end: now, label: period };
+  }
   if (period === 'thisMonth') {
     return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: now, label: period };
   }

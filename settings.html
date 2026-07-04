@@ -409,24 +409,47 @@
               <h2>Security</h2>
               <span class="badge blue">Protected</span>
             </div>
-            <form class="form-grid">
+            <form class="form-grid" data-admin-password-form>
+              <div class="field">
+                <label for="adminCurrentPassword">Current Password</label>
+                <input id="adminCurrentPassword" name="currentPassword" type="password" autocomplete="current-password" required>
+              </div>
+              <div class="field">
+                <label for="adminNewPassword">New Password</label>
+                <input id="adminNewPassword" name="newPassword" type="password" autocomplete="new-password" minlength="8" required>
+              </div>
+              <div class="field span-2">
+                <label for="adminConfirmPassword">Confirm New Password</label>
+                <input id="adminConfirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required>
+              </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="submit">Update Password</button>
+              </div>
+              <p class="fc-form-error span-2" data-admin-password-message hidden></p>
+            </form>
+            <form class="form-grid settings-subform" data-security-preferences-form>
               <div class="field">
                 <label for="sessionLength">Session Length</label>
-                <select id="sessionLength">
-                  <option>8 hours</option>
-                  <option>12 hours</option>
-                  <option>24 hours</option>
+                <select id="sessionLength" name="sessionLengthHours" data-security-field="sessionLengthHours">
+                  <option value="8">8 hours</option>
+                  <option value="12">12 hours</option>
+                  <option value="24">24 hours</option>
                 </select>
               </div>
               <div class="field">
                 <label for="passwordMinimum">Minimum Password Length</label>
-                <input id="passwordMinimum" type="number" min="8" value="8">
+                <input id="passwordMinimum" name="passwordMinimum" type="number" min="8" value="8" data-security-field="passwordMinimum">
               </div>
               <div class="settings-checks span-2">
-                <label><input type="checkbox" checked> Require secure HTTP-only auth cookies</label>
-                <label><input type="checkbox" checked> Lock users to their company workspace</label>
-                <label><input type="checkbox"> Require two-factor authentication</label>
+                <label><input type="checkbox" checked disabled> Require secure HTTP-only auth cookies</label>
+                <label><input type="checkbox" checked disabled> Lock users to their company workspace</label>
+                <label><input type="checkbox" name="twoFactorEnabled" data-security-field="twoFactorEnabled"> Enable two-factor policy</label>
+                <label><input type="checkbox" name="twoFactorRequired" data-security-field="twoFactorRequired"> Require two-factor policy for everyone</label>
               </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="submit">Save Security</button>
+              </div>
+              <p class="fc-form-error span-2" data-security-message hidden></p>
             </form>
           </div>
         </div>

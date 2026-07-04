@@ -22,16 +22,44 @@
       </div>
       <div class="toolbar">
         <div class="tabs">
-          <button class="tab" type="button">Day</button>
-          <button class="tab active" type="button">Week</button>
-          <button class="tab" type="button">Month</button>
+          <button class="tab" type="button" data-schedule-view="day">Day</button>
+          <button class="tab active" type="button" data-schedule-view="week">Week</button>
+          <button class="tab" type="button" data-schedule-view="month">Month</button>
         </div>
         <div class="toolbar-actions">
-          <button class="secondary-button">Today</button>
-          <button class="secondary-button">Filter</button>
+          <button class="icon-button" type="button" data-schedule-prev title="Previous period">&lt;</button>
+          <button class="secondary-button" type="button" data-schedule-today>Today</button>
+          <button class="icon-button" type="button" data-schedule-next title="Next period">&gt;</button>
+          <button class="secondary-button" type="button" data-schedule-filter>Filter</button>
         </div>
       </div>
+      <form class="panel form-grid schedule-filter-panel" data-schedule-filters hidden>
+        <div class="field">
+          <label for="scheduleWorkerFilter">Worker</label>
+          <select id="scheduleWorkerFilter" name="workerId" data-schedule-worker-filter>
+            <option value="">All workers</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="scheduleStatusFilter">Status</label>
+          <select id="scheduleStatusFilter" name="status" data-schedule-status-filter>
+            <option value="">All statuses</option>
+            <option value="SCHEDULED">Scheduled</option>
+            <option value="IN_PROGRESS">In Progress</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+        </div>
+        <div class="form-actions span-2">
+          <button class="primary-button" type="submit">Apply Filters</button>
+          <button class="secondary-button" type="button" data-schedule-clear-filters>Clear</button>
+        </div>
+      </form>
       <section class="table-card">
+        <div class="panel-head card schedule-range-head">
+          <h3 data-schedule-range>Schedule</h3>
+          <span class="badge gray" data-schedule-count>0 jobs</span>
+        </div>
         <div class="table-scroll">
           <div class="schedule-grid" data-schedule-grid></div>
         </div>

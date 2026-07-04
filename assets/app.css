@@ -576,6 +576,19 @@ tbody tr:last-child td{
   border-left:1px solid #e7edf6;
   border-top:1px solid #e7edf6
 }
+.schedule-grid[data-schedule-mode="month"] {
+  grid-auto-rows: minmax(132px, auto);
+}
+
+.schedule-filter-panel {
+  margin-top: 16px;
+}
+
+.schedule-range-head {
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+
 .schedule-head, .time-cell, .schedule-cell{
   border-right:1px solid #e7edf6;
   border-bottom:1px solid #e7edf6;
@@ -595,6 +608,18 @@ tbody tr:last-child td{
   font-size:13px;
   font-weight:620
 }
+.month-cell {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.month-day {
+  color: #182846;
+  font-size: 13px;
+  font-weight: 820;
+}
+
 .event{
   border-radius:7px;
   padding:9px 10px;
@@ -1284,6 +1309,192 @@ tbody tr:last-child td{
   margin-top: 24px;
   padding-top: 22px;
   border-top: 1px solid var(--line-soft);
+}
+
+.billing-main-head {
+  align-items: flex-start;
+}
+
+.billing-main-head p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.billing-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.billing-summary-item,
+.billing-plan-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.billing-summary-item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 15px;
+}
+
+.billing-summary-item span,
+.billing-plan-head span,
+.billing-plan-price span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.billing-summary-item > span {
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+
+.billing-summary-item strong {
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.15;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.billing-summary-item small {
+  color: #40516f;
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.billing-section {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 22px;
+  margin-top: 22px;
+}
+
+.billing-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.billing-section-head h3 {
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 820;
+}
+
+.billing-table {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.billing-table table {
+  min-width: 640px;
+}
+
+.billing-table tbody td {
+  height: 52px;
+}
+
+.billing-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.billing-plan-card {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 16px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.billing-plan-card.current {
+  border-color: rgba(18, 169, 109, .42);
+  background: linear-gradient(180deg, rgba(223, 248, 236, .42), #fff 58%);
+}
+
+.billing-plan-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.billing-plan-head div {
+  min-width: 0;
+}
+
+.billing-plan-head strong {
+  display: block;
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1.15;
+  font-weight: 840;
+}
+
+.billing-plan-head span {
+  display: block;
+  margin-top: 7px;
+  line-height: 1.35;
+}
+
+.billing-plan-price {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.billing-plan-price strong {
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 860;
+}
+
+.billing-plan-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.billing-plan-empty {
+  grid-column: 1 / -1;
+}
+
+.billing-message {
+  margin-top: 16px;
+}
+
+@media(max-width:980px) {
+  .billing-summary-grid,
+  .billing-plan-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media(max-width:640px) {
+  .billing-section-head,
+  .billing-plan-head,
+  .billing-plan-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .billing-plan-actions .secondary-button,
+  .billing-plan-actions .primary-button,
+  .billing-section-head .secondary-button {
+    width: 100%;
+  }
 }
 
 .schedule-cell .event {

@@ -183,6 +183,7 @@ model Company {
   clientAccounts       ClientAccount[]
   customerProperties   CustomerProperty[]
   notificationLogs     NotificationLog[]
+  securitySettings     CompanySecuritySettings?
   subscription         CompanySubscription?
   saasBillingEvents    SaaSBillingEvent[]
 }
@@ -988,5 +989,19 @@ model NotificationLog {
   @@index([companyId, createdAt])
   @@index([companyId, eventType, relatedType, relatedId])
   @@index([companyId, recipient])
+}
+
+model CompanySecuritySettings {
+  id                 String   @id @default(cuid())
+  companyId          String   @unique
+  sessionLengthHours Int      @default(8)
+  passwordMinimum    Int      @default(8)
+  twoFactorEnabled   Boolean  @default(false)
+  twoFactorRequired  Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
 }
 

@@ -734,6 +734,46 @@ const passwordPatchSchema = z.object({
   newPassword: z.string().min(8)
 });
 
+const companySecuritySettingsSchema = z.object({
+  sessionLengthHours: z.coerce.number().int().min(1).max(24).default(8),
+  passwordMinimum: z.coerce.number().int().min(8).max(128).default(8),
+  twoFactorEnabled: z.boolean().default(false),
+  twoFactorRequired: z.boolean().default(false)
+});
+
+const securityDefaults = () => ({
+  sessionLengthHours: 8,
+  passwordMinimum: 8,
+  twoFactorEnabled: false,
+  twoFactorRequired: false
+});
+
+async function ensureSecuritySettingsTable() {
+  await prisma.$executeRawUnsafe('CREATE TABLE IF NOT EXISTS "CompanySecuritySettings" ("id" TEXT NOT NULL PRIMARY KEY, "companyId" TEXT NOT NULL UNIQUE, "sessionLengthHours" INTEGER NOT NULL DEFAULT 8, "passwordMinimum" INTEGER NOT NULL DEFAULT 8, "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false, "twoFactorRequired" BOOLEAN NOT NULL DEFAULT false, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+}
+
+async function getCompanySecuritySettings(companyId) {
+  await ensureSecuritySettingsTable();
+  const rows = await prisma.$queryRaw`SELECT "sessionLengthHours", "passwordMinimum", "twoFactorEnabled", "twoFactorRequired" FROM "CompanySecuritySettings" WHERE "companyId" = ${companyId} LIMIT 1`;
+  return rows[0] || securityDefaults();
+}
+
+async function saveCompanySecuritySettings(companyId, input) {
+  await ensureSecuritySettingsTable();
+  const id = crypto.randomUUID();
+  const rows = await prisma.$queryRaw`
+    INSERT INTO "CompanySecuritySettings" ("id", "companyId", "sessionLengthHours", "passwordMinimum", "twoFactorEnabled", "twoFactorRequired", "createdAt", "updatedAt")
+    VALUES (${id}, ${companyId}, ${input.sessionLengthHours}, ${input.passwordMinimum}, ${input.twoFactorEnabled}, ${input.twoFactorRequired}, now(), now())
+    ON CONFLICT ("companyId") DO UPDATE SET
+      "sessionLengthHours" = EXCLUDED."sessionLengthHours",
+      "passwordMinimum" = EXCLUDED."passwordMinimum",
+      "twoFactorEnabled" = EXCLUDED."twoFactorEnabled",
+      "twoFactorRequired" = EXCLUDED."twoFactorRequired",
+      "updatedAt" = now()
+    RETURNING "sessionLengthHours", "passwordMinimum", "twoFactorEnabled", "twoFactorRequired"`;
+  return rows[0] || securityDefaults();
+}
+
 router.post('/auth/register', validate(registerSchema), asyncHandler(async (req, res) => {
   const user = await prisma.$transaction(async (tx) => {
     const company = await tx.company.create({ data: { name: req.body.companyName } });
@@ -800,6 +840,17 @@ router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), as
   setAuthCookie(res, data);
   await audit({ companyId: req.companyId, user: data }, 'UPDATE', 'User', data.id, { section: 'password' });
   sendData(res, { updated: true });
+}));
+
+router.get('/company/security-settings', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await getCompanySecuritySettings(req.companyId)));
+}));
+
+router.patch('/company/security-settings', requireAuth, requireRole(...adminRoles), validate(companySecuritySettingsSchema), asyncHandler(async (req, res) => {
+  const body = { ...req.body, twoFactorRequired: Boolean(req.body.twoFactorRequired), twoFactorEnabled: Boolean(req.body.twoFactorEnabled || req.body.twoFactorRequired) };
+  const data = await saveCompanySecuritySettings(req.companyId, body);
+  await audit(req, 'UPDATE', 'CompanySecuritySettings', req.companyId, { section: 'security' });
+  sendData(res, normalize(data));
 }));
 
 

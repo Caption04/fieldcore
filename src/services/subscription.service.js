@@ -85,11 +85,13 @@ function planToResponse(plan, { includeInactive = false } = {}) {
 }
 
 async function ensureDefaultPlans() {
+  if (!prisma.saaSPlan) return;
   const plans = DEFAULT_PLANS.concat(FREE_INTERNAL_PLAN);
   await Promise.all(plans.map((plan) => prisma.saaSPlan.upsert({ where: { id: plan.id }, update: plan, create: plan })));
 }
 
 async function listPlans({ includeInactive = false } = {}) {
+  if (!prisma.saaSPlan) return DEFAULT_PLANS.concat(includeInactive ? [FREE_INTERNAL_PLAN] : []).map((plan) => planToResponse(plan, { includeInactive })).filter(Boolean);
   const plans = await prisma.saaSPlan.findMany({ where: includeInactive ? {} : { isActive: true }, orderBy: { price: 'asc' } });
   return plans.map((plan) => planToResponse(plan, { includeInactive })).filter(Boolean);
 }
@@ -101,6 +103,22 @@ function fallbackPlan(id) {
 async function defaultTrialSubscription(companyId, planId = 'starter', days = 14) {
   const now = new Date();
   const trialEndsAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  if (!prisma.companySubscription) {
+    const plan = fallbackPlan(planId || 'starter');
+    return {
+      id: `fallback-subscription-${companyId}`,
+      companyId,
+      planId: plan.id,
+      status: companyId === 'demo-company' ? 'FREE_INTERNAL' : 'TRIALING',
+      trialStartedAt: now,
+      trialEndsAt,
+      currentPeriodStart: now,
+      currentPeriodEnd: trialEndsAt,
+      cancelAtPeriodEnd: false,
+      provider: process.env.SAAS_BILLING_PROVIDER || null,
+      plan
+    };
+  }
   return prisma.companySubscription.create({
     data: {
       companyId,
@@ -116,9 +134,10 @@ async function defaultTrialSubscription(companyId, planId = 'starter', days = 14
 }
 
 async function getSubscription(companyId) {
+  if (!prisma.companySubscription) return defaultTrialSubscription(companyId, companyId === 'demo-company' ? 'free-internal' : 'starter');
   let subscription = await prisma.companySubscription.findUnique({ where: { companyId }, include: { plan: true } });
   if (!subscription) {
-    const plan = await prisma.saaSPlan.findUnique({ where: { id: 'starter' } }).catch(() => null);
+    const plan = prisma.saaSPlan ? await prisma.saaSPlan.findUnique({ where: { id: 'starter' } }).catch(() => null) : null;
     subscription = await defaultTrialSubscription(companyId, plan ? plan.id : null);
     subscription.plan = plan || fallbackPlan('starter');
   }
@@ -163,7 +182,7 @@ async function billingSummary(companyId) {
     getSubscription(companyId),
     getUsage(companyId),
     listPlans(),
-    prisma.saaSBillingEvent.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' }, take: 20 })
+    prisma.saaSBillingEvent ? prisma.saaSBillingEvent.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' }, take: 20 }) : []
   ]);
   const plan = planToResponse(subscription.plan, { includeInactive: true });
   const limits = plan && plan.limits || {};
@@ -252,6 +271,7 @@ async function requirePlanLimit(companyId, limitKey, increment = 1) {
 }
 
 async function logBillingEvent(companyId, data) {
+  if (!prisma.saaSBillingEvent) return { id: `fallback-billing-event-${Date.now()}`, companyId, ...data, createdAt: new Date() };
   return prisma.saaSBillingEvent.create({ data: { companyId, ...data } });
 }
 

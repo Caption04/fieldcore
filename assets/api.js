@@ -3,7 +3,7 @@
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], availability: {}, notificationLogs: [], billing: null };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], billing: null };
 
   const tableConfigs = {
     customers: {
@@ -300,6 +300,59 @@
     return day === 0 ? 6 : day - 1;
   }
 
+  function startOfDay(date) {
+    const next = new Date(date);
+    next.setHours(0, 0, 0, 0);
+    return next;
+  }
+
+  function addDays(date, days) {
+    const next = new Date(date);
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  function startOfWeek(date) {
+    return addDays(startOfDay(date), -scheduleDayIndex(date));
+  }
+
+  function startOfMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+
+  function endOfMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+  }
+
+  function dateKey(value) {
+    const date = new Date(value);
+    const pad = (number) => String(number).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  function scheduleRange() {
+    if (state.scheduleView === 'day') {
+      const start = startOfDay(state.scheduleDate);
+      return { start, end: addDays(start, 1) };
+    }
+    if (state.scheduleView === 'month') {
+      const start = startOfMonth(state.scheduleDate);
+      return { start, end: addDays(endOfMonth(state.scheduleDate), 1) };
+    }
+    const start = startOfWeek(state.scheduleDate);
+    return { start, end: addDays(start, 7) };
+  }
+
+  function formatShortDate(date) {
+    return new Date(date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function scheduleRangeLabel(range) {
+    if (state.scheduleView === 'day') return new Date(range.start).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+    if (state.scheduleView === 'month') return new Date(range.start).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    return `${formatShortDate(range.start)} - ${formatShortDate(addDays(range.end, -1))}`;
+  }
+
   function hourLabel(hour) {
     const normalized = ((hour % 24) + 24) % 24;
     if (normalized === 0) return '12 AM';
@@ -329,12 +382,33 @@
     return hour - hours[0];
   }
 
-  function buildScheduleGrid(grid, settings) {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  function scheduleVisibleDays(range) {
+    if (state.scheduleView === 'day') return [startOfDay(state.scheduleDate)];
+    if (state.scheduleView === 'month') {
+      const first = startOfWeek(startOfMonth(state.scheduleDate));
+      return Array.from({ length: 42 }, (_, index) => addDays(first, index));
+    }
+    return Array.from({ length: 7 }, (_, index) => addDays(range.start, index));
+  }
+
+  function scheduleDayLabel(date) {
+    if (state.scheduleView === 'month') return String(new Date(date).getDate());
+    return new Date(date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+
+  function buildScheduleGrid(grid, settings, range) {
+    const visibleDays = scheduleVisibleDays(range);
     const hours = scheduleHours(settings);
-    grid.style.gridTemplateColumns = '92px repeat(7, minmax(0, 1fr))';
-    grid.innerHTML = '<div class="schedule-head">Time</div>' + days.map((day) => `<div class="schedule-head">${day}</div>`).join('') + hours.map((hour) => '<div class="time-cell">' + hourLabel(hour) + '</div>' + days.map(() => '<div class="schedule-cell"></div>').join('')).join('');
-    return hours;
+    const columns = visibleDays.length;
+    grid.dataset.scheduleMode = state.scheduleView;
+    grid.style.gridTemplateColumns = state.scheduleView === 'month' ? 'repeat(7, minmax(120px, 1fr))' : `92px repeat(${columns}, minmax(140px, 1fr))`;
+    if (state.scheduleView === 'month') {
+      const weekdayHeads = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => `<div class="schedule-head">${day}</div>`).join('');
+      grid.innerHTML = weekdayHeads + visibleDays.map((day) => `<div class="schedule-cell month-cell" data-date="${dateKey(day)}"><strong class="month-day">${scheduleDayLabel(day)}</strong></div>`).join('');
+      return { hours, visibleDays };
+    }
+    grid.innerHTML = '<div class="schedule-head">Time</div>' + visibleDays.map((day) => `<div class="schedule-head">${scheduleDayLabel(day)}</div>`).join('') + hours.map((hour) => '<div class="time-cell">' + hourLabel(hour) + '</div>' + visibleDays.map((day) => `<div class="schedule-cell" data-date="${dateKey(day)}" data-hour="${hour}"></div>`).join('')).join('');
+    return { hours, visibleDays };
   }
 
   function eventTone(item) {
@@ -344,19 +418,42 @@
     return '';
   }
 
+  function scheduleItemMatchesFilters(item) {
+    const filters = state.scheduleFilters || {};
+    if (filters.workerId && item.workerId !== filters.workerId) return false;
+    if (filters.status) {
+      const status = item.job && item.job.status || item.status;
+      if (status !== filters.status) return false;
+    }
+    return true;
+  }
+
   function renderSchedule(data, settings) {
     const card = document.querySelector('.table-card');
     const grid = document.querySelector('.schedule-grid');
     if (!card || !grid) return;
-    const hours = buildScheduleGrid(grid, settings);
+    const range = scheduleRange();
+    const scheduleData = (data || []).filter(scheduleItemMatchesFilters).filter((item) => {
+      const startsAt = item.startsAt && new Date(item.startsAt);
+      return startsAt && startsAt >= range.start && startsAt < range.end;
+    });
+    const built = buildScheduleGrid(grid, settings, range);
+    const hours = built.hours;
     const cells = Array.from(grid.querySelectorAll('.schedule-cell'));
     const empty = card.querySelector('.empty-state');
-    if (empty) empty.hidden = data.length > 0;
-    data.forEach((item) => {
+    const rangeHead = document.querySelector('[data-schedule-range]');
+    const count = document.querySelector('[data-schedule-count]');
+    if (rangeHead) rangeHead.textContent = scheduleRangeLabel(range);
+    if (count) count.textContent = `${scheduleData.length} ${scheduleData.length === 1 ? 'job' : 'jobs'}`;
+    document.querySelectorAll('[data-schedule-view]').forEach((tab) => tab.classList.toggle('active', tab.dataset.scheduleView === state.scheduleView));
+    if (empty) empty.hidden = scheduleData.length > 0;
+    scheduleData.forEach((item) => {
       if (!item.startsAt) return;
+      const key = dateKey(item.startsAt);
       const row = scheduleRowIndex(item.startsAt, hours);
-      const column = scheduleDayIndex(item.startsAt);
-      const cell = cells[row * 7 + column];
+      const cell = state.scheduleView === 'month'
+        ? grid.querySelector(`.schedule-cell[data-date="${key}"]`)
+        : grid.querySelector(`.schedule-cell[data-date="${key}"][data-hour="${hours[row]}"]`);
       if (!cell) return;
       const title = item.job && item.job.title || 'Scheduled job';
       const worker = item.worker && item.worker.user && item.worker.user.name || 'Unassigned';
@@ -369,6 +466,33 @@
     const footer = card.querySelector('.table-footer');
     if (footer) footer.remove();
   }
+
+  function itemMatchesListFilter(resource, item, filter) {
+    if (!filter || filter === 'all') return true;
+    if (resource === 'invoices' && filter === 'UNPAID') return !['PAID', 'VOID', 'DRAFT'].includes(String(item.status || '').toUpperCase());
+    if (resource === 'invoices' && filter === 'OVERDUE') {
+      const status = String(item.status || '').toUpperCase();
+      const due = item.dueDate && new Date(item.dueDate);
+      return status === 'OVERDUE' || (!['PAID', 'VOID', 'DRAFT'].includes(status) && due && due < new Date());
+    }
+    return String(item.status || '').toUpperCase() === filter;
+  }
+
+  function filteredListData(resource, data) {
+    return (data || []).filter((item) => itemMatchesListFilter(resource, item, state.listFilters[resource]));
+  }
+
+  function setupStatusTabs(resource, data) {
+    document.querySelectorAll('[data-status-filter]').forEach((tab) => {
+      tab.classList.toggle('active', (state.listFilters[resource] || 'all') === tab.dataset.statusFilter);
+      tab.onclick = () => {
+        state.listFilters[resource] = tab.dataset.statusFilter || 'all';
+        renderTable(resource, filteredListData(resource, data));
+        setupStatusTabs(resource, data);
+      };
+    });
+  }
+
   function renderTable(resource, data) {
     const config = tableConfigs[resource];
     const card = document.querySelector('.table-card');
@@ -379,6 +503,66 @@
     }
     const rows = data.map((item) => `<tr>${config.row(item).map((cell) => `<td>${String(cell).startsWith('<span') || String(cell).startsWith('<div') ? cell : escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
     card.innerHTML = `<div class="table-scroll"><table><thead><tr>${config.columns.map((name) => `<th>${escapeHtml(name)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div><footer class="table-footer"><span>Showing ${data.length} ${resource}</span><div class="pager"><span class="page-dot active">1</span></div></footer>`;
+  }
+
+  function setScheduleFilterOptions() {
+    const workerSelect = document.querySelector('[data-schedule-worker-filter]');
+    if (workerSelect) {
+      const previous = workerSelect.value || state.scheduleFilters.workerId || '';
+      workerSelect.innerHTML = optionList(state.workers || [], 'All workers');
+      workerSelect.value = previous;
+    }
+    const statusSelect = document.querySelector('[data-schedule-status-filter]');
+    if (statusSelect) statusSelect.value = state.scheduleFilters.status || '';
+  }
+
+  function rerenderSchedule() {
+    renderSchedule(state.schedule || [], state.scheduleSettings || { workingDayStart: '08:00', workingDayEnd: '17:00' });
+  }
+
+  function setupScheduleControls() {
+    if (page !== 'schedule') return;
+    setScheduleFilterOptions();
+    document.querySelectorAll('[data-schedule-view]').forEach((button) => {
+      button.onclick = () => {
+        state.scheduleView = button.dataset.scheduleView || 'week';
+        rerenderSchedule();
+      };
+    });
+    const today = document.querySelector('[data-schedule-today]');
+    if (today) today.onclick = () => {
+      state.scheduleDate = new Date();
+      rerenderSchedule();
+    };
+    const previous = document.querySelector('[data-schedule-prev]');
+    if (previous) previous.onclick = () => {
+      state.scheduleDate = state.scheduleView === 'month'
+        ? new Date(state.scheduleDate.getFullYear(), state.scheduleDate.getMonth() - 1, 1)
+        : addDays(state.scheduleDate, state.scheduleView === 'day' ? -1 : -7);
+      rerenderSchedule();
+    };
+    const next = document.querySelector('[data-schedule-next]');
+    if (next) next.onclick = () => {
+      state.scheduleDate = state.scheduleView === 'month'
+        ? new Date(state.scheduleDate.getFullYear(), state.scheduleDate.getMonth() + 1, 1)
+        : addDays(state.scheduleDate, state.scheduleView === 'day' ? 1 : 7);
+      rerenderSchedule();
+    };
+    const toggle = document.querySelector('[data-schedule-filter]');
+    const panel = document.querySelector('[data-schedule-filters]');
+    if (toggle && panel) toggle.onclick = () => { panel.hidden = !panel.hidden; };
+    const form = document.querySelector('[data-schedule-filters]');
+    if (form) form.onsubmit = (event) => {
+      event.preventDefault();
+      state.scheduleFilters = Object.fromEntries(new FormData(form).entries());
+      rerenderSchedule();
+    };
+    const clear = document.querySelector('[data-schedule-clear-filters]');
+    if (clear && form) clear.onclick = () => {
+      form.reset();
+      state.scheduleFilters = { workerId: '', status: '' };
+      rerenderSchedule();
+    };
   }
 
   function renderDashboard(data) {
@@ -438,7 +622,7 @@
     const customers = data.customers || {};
     const exportBase = '/api/reports/export?' + reportQueryFromForm().toString();
     root.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Business Performance</h2><p>Company-scoped analytics from ' + escapeHtml(formatDate(filters.startDate)) + ' to ' + escapeHtml(formatDate(filters.endDate)) + '.</p></div><span class="api-status" data-api-status>Connected</span></div>' +
-      '<form class="panel form-grid" data-report-filters><div class="field"><label for="reportPeriod">Period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option></select></div><div class="field"><label for="reportStart">Start</label><input id="reportStart" name="startDate" type="date"></div><div class="field"><label for="reportEnd">End</label><input id="reportEnd" name="endDate" type="date"></div><div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div><div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div><div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Apply Filters</button><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=revenue') + '">Export Revenue CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=invoices') + '">Export Invoices CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=jobs') + '">Export Jobs CSV</a></div><p class="fc-form-error span-2" data-report-message hidden></p></form>' +
+      '<form class="panel form-grid" data-report-filters><div class="field"><label for="reportPeriod">Period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisWeek">This week</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option><option value="custom">Custom</option></select></div><div class="field"><label for="reportStart">Start</label><input id="reportStart" name="startDate" type="date"></div><div class="field"><label for="reportEnd">End</label><input id="reportEnd" name="endDate" type="date"></div><div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div><div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div><div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Apply Filters</button><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=revenue') + '">Export Revenue CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=invoices') + '">Export Invoices CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=jobs') + '">Export Jobs CSV</a></div><p class="fc-form-error span-2" data-report-message hidden></p></form>' +
       '<section class="stats"><article class="card stat-card"><div class="stat-label">Paid Revenue</div><div class="stat-value">' + money.format(overview.totalRevenue || 0) + '</div><div class="trend">Confirmed payments</div></article><article class="card stat-card"><div class="stat-label">Unpaid Invoices</div><div class="stat-value">' + money.format(overview.unpaidInvoiceTotal || 0) + '</div><div class="trend">' + escapeHtml(invoices.unpaidCount || 0) + ' open invoices</div></article><article class="card stat-card"><div class="stat-label">Jobs Completed</div><div class="stat-value">' + escapeHtml(overview.completedJobs || 0) + '</div><div class="trend">' + escapeHtml(jobs.completionRate || 0) + '% completion rate</div></article><article class="card stat-card"><div class="stat-label">Quote Acceptance</div><div class="stat-value">' + escapeHtml(overview.quoteAcceptanceRate || 0) + '%</div><div class="trend">Sent quote outcomes</div></article></section>' +
       '<section class="split"><div class="panel"><div class="panel-head"><h2>Revenue</h2><span class="badge green">' + money.format(revenue.totalRevenue || 0) + '</span></div>' + reportTable([{ label: 'Date', value: (row) => row.date }, { label: 'Revenue', value: (row) => money.format(row.value) }], revenue.byPeriod || [], 'No confirmed payments in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Unpaid Invoices</h3><span class="badge gray">' + money.format(invoices.unpaidTotal || 0) + '</span></div>' + reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Count', value: (row) => row.count }, { label: 'Total', value: (row) => money.format(row.total) }], invoices.topUnpaidCustomers || [], 'No unpaid invoices.') + '</aside></section>' +
       '<section class="split"><div class="panel"><div class="panel-head"><h2>Jobs</h2><span class="badge blue">' + escapeHtml(jobs.completedCount || 0) + ' completed</span></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Jobs', value: (row) => row.count }], jobs.byService || [], 'No jobs in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Worker Performance</h3></div>' + reportTable([{ label: 'Worker', value: (row) => row.name }, { label: 'Assigned', value: (row) => row.assigned }, { label: 'Completed', value: (row) => row.completed }, { label: 'Rate', value: (row) => row.completionRate + '%' }], data.workers || [], 'No worker activity in this range.') + '</aside></section>' +
@@ -447,10 +631,16 @@
     const form = document.querySelector('[data-report-filters]');
     if (form) {
       form.elements.period.value = filters.period || 'last30days';
-      form.elements.startDate.value = filters.period === 'custom' ? String(filters.startDate || '').slice(0, 10) : '';
-      form.elements.endDate.value = filters.period === 'custom' ? String(filters.endDate || '').slice(0, 10) : '';
+      form.elements.startDate.value = String(filters.startDate || '').slice(0, 10);
+      form.elements.endDate.value = String(filters.endDate || '').slice(0, 10);
+      form.elements.period.addEventListener('change', () => {
+        if (form.elements.period.value === 'custom') return;
+        form.elements.startDate.value = '';
+        form.elements.endDate.value = '';
+      });
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
+        if (form.elements.startDate.value || form.elements.endDate.value) form.elements.period.value = 'custom';
         await loadReports();
       });
     }
@@ -1450,6 +1640,69 @@
     });
   }
 
+  function securityPayload(form) {
+    const body = Object.fromEntries(new FormData(form).entries());
+    body.sessionLengthHours = Number(body.sessionLengthHours || 8);
+    body.passwordMinimum = Number(body.passwordMinimum || 8);
+    body.twoFactorEnabled = Boolean(body.twoFactorEnabled);
+    body.twoFactorRequired = Boolean(body.twoFactorRequired);
+    return body;
+  }
+
+  async function loadSecuritySettings() {
+    const form = document.querySelector('[data-security-preferences-form]');
+    if (!form) return;
+    try {
+      const settings = await api('/company/security-settings');
+      document.querySelectorAll('[data-security-field]').forEach((field) => {
+        const value = settings[field.dataset.securityField];
+        if (field.type === 'checkbox') field.checked = Boolean(value);
+        else field.value = value == null ? '' : value;
+      });
+    } catch (error) {
+      setFormMessage('[data-security-message]', error.message, false);
+    }
+  }
+
+  function setupAdminSecurity() {
+    const passwordForm = document.querySelector('[data-admin-password-form]');
+    if (passwordForm) passwordForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const body = Object.fromEntries(new FormData(passwordForm).entries());
+      if (body.newPassword !== body.confirmPassword) return setFormMessage('[data-admin-password-message]', 'New passwords do not match.', false);
+      try {
+        await api('/auth/me/password', { method: 'PATCH', body: JSON.stringify({ currentPassword: body.currentPassword, newPassword: body.newPassword }) });
+        passwordForm.reset();
+        setFormMessage('[data-admin-password-message]', 'Password updated.', true);
+      } catch (error) {
+        setFormMessage('[data-admin-password-message]', error.message, false);
+      }
+    });
+
+    const securityForm = document.querySelector('[data-security-preferences-form]');
+    if (securityForm) {
+      securityForm.addEventListener('change', (event) => {
+        if (event.target.name === 'twoFactorRequired' && event.target.checked && securityForm.elements.twoFactorEnabled) {
+          securityForm.elements.twoFactorEnabled.checked = true;
+        }
+      });
+      securityForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          const settings = await api('/company/security-settings', { method: 'PATCH', body: JSON.stringify(securityPayload(securityForm)) });
+          document.querySelectorAll('[data-security-field]').forEach((field) => {
+            const value = settings[field.dataset.securityField];
+            if (field.type === 'checkbox') field.checked = Boolean(value);
+            else field.value = value == null ? '' : value;
+          });
+          setFormMessage('[data-security-message]', 'Security settings saved.', true);
+        } catch (error) {
+          setFormMessage('[data-security-message]', error.message, false);
+        }
+      });
+    }
+  }
+
   function settingsPayload(form) {
     const body = Object.fromEntries(new FormData(form).entries());
     form.querySelectorAll('input[type="checkbox"][name]').forEach((field) => { body[field.name] = field.checked; });
@@ -1572,10 +1825,16 @@
     const trial = subscription.trialDaysRemaining == null ? '-' : subscription.trialDaysRemaining + ' days';
     const period = [formatDate(subscription.currentPeriodStart), formatDate(subscription.currentPeriodEnd)].filter(Boolean).join(' - ') || '-';
     const providerText = provider.configured ? (provider.mode === 'manual' ? 'Manual/internal mode' : 'Configured') : 'Provider not configured';
-    const usageTable = usageRows.length ? '<div class="table-scroll"><table><thead><tr><th>Usage</th><th>Used</th><th>Limit</th></tr></thead><tbody>' + usageRows.map((row) => '<tr><td>' + escapeHtml(row.key.replace(/^max/, '').replace(/([A-Z])/g, ' $1')) + '</td><td>' + escapeHtml(row.used == null ? 'Unknown' : row.used) + '</td><td>' + escapeHtml(row.unlimited ? 'Unlimited' : row.limit) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No usage limits.</strong><span>This plan is currently unlimited.</span></div></div>';
-    const planCards = plans.map((item) => '<div class="metric-card"><span>' + escapeHtml(item.name) + '</span><strong>' + escapeHtml(item.currency || 'USD') + ' ' + escapeHtml(item.price) + '</strong><small>' + escapeHtml(item.description || item.interval || '') + '</small><div class="row-actions"><button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="secondary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button></div></div>').join('');
-    const eventsTable = events.length ? '<div class="table-scroll"><table><thead><tr><th>Event</th><th>Status</th><th>Provider</th><th>Time</th></tr></thead><tbody>' + events.slice(0, 8).map((event) => '<tr><td>' + escapeHtml(event.eventType || '-') + '</td><td>' + escapeHtml(event.status || '-') + '</td><td>' + escapeHtml(event.provider || '-') + '</td><td>' + escapeHtml(formatDateTime(event.createdAt)) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No billing events yet.</strong><span>Checkout and plan changes will appear here.</span></div></div>';
-    card.innerHTML = '<div class="panel-head"><h3>FieldCore Subscription</h3>' + statusBadge + '</div><div class="metrics-grid"><div class="metric-card"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(plan.interval || '') + '</small></div><div class="metric-card"><span>Trial Remaining</span><strong>' + escapeHtml(trial) + '</strong><small>Managed by FieldCore</small></div><div class="metric-card"><span>Billing Period</span><strong>' + escapeHtml(period) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Cancels at period end' : providerText) + '</small></div></div><div class="panel-head card"><h3>Usage</h3><span class="badge gray">Company scoped</span></div>' + usageTable + '<div class="panel-head card"><h3>Available Plans</h3><button class="secondary-button compact" type="button" data-billing-cancel>Cancel</button></div><div class="metrics-grid">' + planCards + '</div><div class="panel-head card"><h3>Billing Events</h3><span class="badge gray">No secrets</span></div>' + eventsTable + '<p class="fc-form-error" data-billing-message hidden></p>';
+    const limitLabel = (key) => String(key || '').replace(/^max/, '').replace(/([A-Z])/g, ' $1').trim() || '-';
+    const formatPlanPrice = (item) => escapeHtml(item.currency || 'USD') + ' ' + escapeHtml(item.price == null ? '-' : item.price);
+    const usageTable = usageRows.length ? '<div class="billing-table table-scroll"><table><thead><tr><th>Usage</th><th>Used</th><th>Limit</th></tr></thead><tbody>' + usageRows.map((row) => '<tr><td>' + escapeHtml(limitLabel(row.key)) + '</td><td>' + escapeHtml(row.used == null ? 'Unknown' : row.used) + '</td><td>' + escapeHtml(row.unlimited ? 'Unlimited' : row.limit) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No usage limits.</strong><span>This plan is currently unlimited.</span></div></div>';
+    const planCards = plans.length ? plans.map((item) => {
+      const isCurrent = item.id === subscription.planId;
+      return '<div class="billing-plan-card' + (isCurrent ? ' current' : '') + '"><div class="billing-plan-head"><div><strong>' + escapeHtml(item.name) + '</strong><span>' + escapeHtml(item.description || '') + '</span></div>' + (isCurrent ? '<span class="badge green">Current</span>' : '') + '</div><div class="billing-plan-price"><strong>' + formatPlanPrice(item) + '</strong><span>/' + escapeHtml(item.interval || 'month') + '</span></div><div class="billing-plan-actions"><button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="primary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button></div></div>';
+    }).join('') : '<div class="empty-state compact-empty billing-plan-empty"><div><strong>No available plans.</strong><span>Plan options will appear once billing is configured.</span></div></div>';
+    const eventsTable = events.length ? '<div class="billing-table table-scroll"><table><thead><tr><th>Event</th><th>Status</th><th>Provider</th><th>Time</th></tr></thead><tbody>' + events.slice(0, 8).map((event) => '<tr><td>' + escapeHtml(event.eventType || '-') + '</td><td>' + escapeHtml(event.status || '-') + '</td><td>' + escapeHtml(event.provider || '-') + '</td><td>' + escapeHtml(formatDateTime(event.createdAt)) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No billing events yet.</strong><span>Checkout and plan changes will appear here.</span></div></div>';
+    const cancelAction = subscription.id ? '<button class="secondary-button compact" type="button" data-billing-cancel>Cancel Plan</button>' : '';
+    card.innerHTML = '<div class="panel-head billing-main-head"><div><h3>FieldCore Subscription</h3><p>' + escapeHtml(providerText) + '</p></div>' + statusBadge + '</div><div class="billing-summary-grid"><div class="billing-summary-item"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(plan.interval ? 'Billed every ' + plan.interval : 'No billing interval') + '</small></div><div class="billing-summary-item"><span>Trial Remaining</span><strong>' + escapeHtml(trial) + '</strong><small>Managed by FieldCore</small></div><div class="billing-summary-item"><span>Billing Period</span><strong>' + escapeHtml(period) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Cancels at period end' : 'Active billing window') + '</small></div></div><div class="billing-section"><div class="billing-section-head"><h3>Usage</h3><span class="badge gray">Company scoped</span></div>' + usageTable + '</div><div class="billing-section"><div class="billing-section-head"><h3>Available Plans</h3>' + cancelAction + '</div><div class="billing-plan-grid">' + planCards + '</div></div><div class="billing-section"><div class="billing-section-head"><h3>Billing Events</h3><span class="badge gray">No secrets</span></div>' + eventsTable + '</div><p class="fc-form-error billing-message" data-billing-message hidden></p>';
     bindBillingActions();
   }
 
@@ -1656,6 +1915,7 @@
         if (target === 'billing') loadBilling();
         if (target === 'notifications') loadNotificationLogs();
         if (target === 'admin-tools') loadAdminTools();
+        if (target === 'security') loadSecuritySettings();
       });
     });
 
@@ -1701,6 +1961,8 @@
         await saveSettingsForm(schedulingForm, '[data-scheduling-message]', 'Scheduling saved.');
       });
     }
+
+    setupAdminSecurity();
 
     const availabilityForm = document.querySelector('[data-availability-form]');
     if (availabilityForm) {
@@ -1819,7 +2081,9 @@
         if (page === 'schedule') {
           const data = await api('/schedule');
           state.schedule = data;
-          renderSchedule(data, { workingDayStart: '08:00', workingDayEnd: '17:00' });
+          state.scheduleSettings = { workingDayStart: '08:00', workingDayEnd: '17:00' };
+          setupScheduleControls();
+          renderSchedule(data, state.scheduleSettings);
         }
         if (page === 'settings') renderWorkerSettings();
         setStatus(`Connected as ${state.user.name}`, true);
@@ -1831,12 +2095,16 @@
       if (page === 'schedule') {
         const [data, settings] = await Promise.all([api('/schedule'), api('/company/scheduling-settings').catch(() => ({ workingDayStart: '08:00', workingDayEnd: '17:00' }))]);
         state.schedule = data;
+        state.scheduleSettings = settings;
+        setupScheduleControls();
         renderSchedule(data, settings);
       }
       if (tableConfigs[page] && page !== 'schedule') {
         const data = await api(`/${page}`);
         state[page] = data;
-        renderTable(page, data);
+        if (!state.listFilters[page]) state.listFilters[page] = 'all';
+        renderTable(page, filteredListData(page, data));
+        setupStatusTabs(page, data);
         updateListStats(page, data);
       }
       setStatus(`Connected as ${state.user.name}`, true);
