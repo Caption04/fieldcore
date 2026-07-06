@@ -67,6 +67,8 @@ const optionalUrl = z
   }, 'Must be a valid URL or uploaded logo path')
   .transform((value) => value || undefined);
 const optionalColor = hexColor.optional().or(z.literal('')).transform((value) => value || undefined);
+const positiveQuantity = z.coerce.number().positive();
+const optionalQuantity = z.coerce.number().nonnegative().optional();
 const adminRoles = ['OWNER', 'ADMIN'];
 const ownerRoles = ['OWNER'];
 const jobStatusValues = ['NEW', 'SCHEDULED', 'DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
@@ -80,6 +82,11 @@ const serviceContractStatusValues = ['DRAFT', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 
 const billingIntervalValues = ['MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL', 'ON_DEMAND'];
 const slaStatusValues = ['NOT_APPLICABLE', 'ON_TRACK', 'AT_RISK', 'BREACHED', 'MET', 'WAIVED'];
 const recurrenceValues = ['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'];
+const stockLocationTypeValues = ['WAREHOUSE', 'BRANCH', 'VEHICLE', 'TECHNICIAN', 'OTHER'];
+const stockMovementTypeValues = ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'RESERVED', 'RESERVATION_RELEASED', 'JOB_USED', 'JOB_RETURNED', 'PURCHASE_RECEIVED', 'TRANSFER_IN', 'TRANSFER_OUT'];
+const jobPartStatusValues = ['PLANNED', 'RESERVED', 'USED', 'SHORT', 'RETURNED', 'CANCELLED'];
+const purchaseRequestStatusValues = ['DRAFT', 'REQUESTED', 'APPROVED', 'REJECTED', 'ORDERED', 'CLOSED'];
+const purchaseOrderStatusValues = ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -157,6 +164,115 @@ async function requireServiceContract(req, id) {
   const record = await prisma.serviceContract.findFirst({ where: { id, companyId: req.companyId } });
   if (!record) throw notFound('Service contract not found');
   return record;
+}
+
+async function requireSupplier(req, id) {
+  if (!id) return null;
+  const record = await prisma.supplier.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Supplier not found');
+  return record;
+}
+
+async function requireStockLocation(req, id) {
+  if (!id) return null;
+  const record = await prisma.stockLocation.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Stock location not found');
+  return record;
+}
+
+async function requireInventoryItem(req, id) {
+  const record = await prisma.inventoryItem.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Inventory item not found');
+  return record;
+}
+
+async function requireJobPart(req, jobId, partId) {
+  const record = await prisma.jobPartUsage.findFirst({ where: { id: partId, jobId, companyId: req.companyId } });
+  if (!record) throw notFound('Job part not found');
+  return record;
+}
+
+async function requirePurchaseRequest(req, id) {
+  const record = await prisma.purchaseRequest.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Purchase request not found');
+  return record;
+}
+
+async function requirePurchaseOrder(req, id) {
+  const record = await prisma.purchaseOrder.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Purchase order not found');
+  return record;
+}
+
+async function requireAssignedWorkerJob(req, id) {
+  if (!req.user.worker) throw notFound('Job not found');
+  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, workerId: req.user.worker.id } });
+  if (!record) throw notFound('Job not found');
+  return record;
+}
+
+function decimalNumber(value) {
+  return Number(value || 0);
+}
+
+async function getOrCreateStock(tx, req, itemId, locationId) {
+  let stock = await tx.inventoryStock.findFirst({ where: { companyId: req.companyId, itemId, locationId } });
+  if (!stock) {
+    stock = await tx.inventoryStock.create({ data: { companyId: req.companyId, itemId, locationId, quantityOnHand: 0, quantityReserved: 0 } });
+  }
+  return stock;
+}
+
+async function applyStockChange(tx, req, change) {
+  const stock = await getOrCreateStock(tx, req, change.itemId, change.locationId);
+  const onHand = decimalNumber(stock.quantityOnHand) + decimalNumber(change.onHandDelta);
+  const reserved = decimalNumber(stock.quantityReserved) + decimalNumber(change.reservedDelta);
+  if (onHand < 0) throw new AppError(400, 'Insufficient stock on hand');
+  if (reserved < 0) throw new AppError(400, 'Reserved stock cannot be negative');
+  if (reserved > onHand) throw new AppError(400, 'Reserved stock cannot exceed stock on hand');
+
+  const updated = await tx.inventoryStock.update({ where: { id: stock.id }, data: { quantityOnHand: onHand, quantityReserved: reserved } });
+  await tx.stockMovement.create({
+    data: {
+      companyId: req.companyId,
+      itemId: change.itemId,
+      locationId: change.locationId,
+      jobId: change.jobId,
+      purchaseOrderId: change.purchaseOrderId,
+      movementType: change.movementType,
+      quantity: change.quantity,
+      unitCost: change.unitCost,
+      reason: change.reason,
+      createdById: req.user && req.user.id
+    }
+  });
+  return updated;
+}
+
+function safeWorkerPart(part) {
+  return {
+    id: part.id,
+    jobId: part.jobId,
+    itemId: part.itemId,
+    locationId: part.locationId,
+    quantityPlanned: part.quantityPlanned,
+    quantityUsed: part.quantityUsed,
+    notes: part.notes,
+    status: part.status,
+    item: part.item ? {
+      id: part.item.id,
+      sku: part.item.sku,
+      name: part.item.name,
+      description: part.item.description,
+      category: part.item.category,
+      unitOfMeasure: part.item.unitOfMeasure
+    } : undefined,
+    location: part.location ? {
+      id: part.location.id,
+      name: part.location.name,
+      type: part.location.type
+    } : undefined
+  };
 }
 
 async function requireContractServiceLine(req, contractId, lineId) {
@@ -2423,6 +2539,429 @@ router.patch('/workers/:id', requireRole(...adminRoles), validate(idParam, 'para
   const data = await prisma.workerProfile.update({ where: { id: req.params.id }, data: body, include: SAFE_WORKER_INCLUDE });
   await audit(req, 'UPDATE', 'WorkerProfile', data.id);
   sendData(res, normalize({ ...data, user: publicUser(data.user) }));
+}));
+
+
+const supplierSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  email: optionalEmail,
+  phone: optionalText(40),
+  address: optionalText(500),
+  taxNumber: optionalText(80),
+  notes: optionalText(2000),
+  active: z.boolean().optional()
+});
+
+const stockLocationSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  type: z.enum(stockLocationTypeValues).default('WAREHOUSE'),
+  branchId: optionalText(80),
+  address: optionalText(500),
+  workerId: z.string().min(1).optional(),
+  active: z.boolean().optional()
+});
+
+const inventoryItemSchema = z.object({
+  sku: optionalText(80),
+  name: z.string().trim().min(2).max(160),
+  description: optionalText(2000),
+  category: optionalText(120),
+  unitOfMeasure: z.string().trim().min(1).max(40).default('each'),
+  unitCost: amount.optional(),
+  salePrice: amount.optional(),
+  reorderPoint: optionalQuantity,
+  active: z.boolean().optional()
+});
+
+const stockAdjustmentSchema = z.object({
+  itemId: z.string().min(1),
+  locationId: z.string().min(1),
+  movementType: z.enum(['ADJUSTMENT_IN', 'ADJUSTMENT_OUT']),
+  quantity: positiveQuantity,
+  unitCost: amount.optional(),
+  reason: z.string().trim().min(2).max(500)
+});
+
+const stockTransferSchema = z.object({
+  itemId: z.string().min(1),
+  fromLocationId: z.string().min(1),
+  toLocationId: z.string().min(1),
+  quantity: positiveQuantity,
+  reason: optionalText(500)
+});
+
+const jobPartParam = z.object({ id: z.string().min(1), partId: z.string().min(1) });
+const jobPartSchema = z.object({
+  itemId: z.string().min(1),
+  locationId: z.string().min(1).optional(),
+  workerId: z.string().min(1).optional(),
+  quantityPlanned: positiveQuantity.optional(),
+  quantityUsed: optionalQuantity,
+  unitCost: amount.optional(),
+  notes: optionalText(2000),
+  status: z.enum(jobPartStatusValues).optional()
+});
+const jobPartUpdateSchema = jobPartSchema.partial();
+const jobPartUseSchema = z.object({ quantity: positiveQuantity, locationId: z.string().min(1).optional(), notes: optionalText(2000) });
+const workerPartUsedSchema = z.object({ itemId: z.string().min(1), locationId: z.string().min(1), quantity: positiveQuantity, notes: optionalText(2000) });
+const workerPartShortageSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, notes: optionalText(2000) });
+
+const purchaseRequestSchema = z.object({
+  jobId: z.string().min(1).optional(),
+  status: z.enum(purchaseRequestStatusValues).optional(),
+  reason: optionalText(2000)
+});
+const purchaseRequestPatchSchema = z.object({ status: z.enum(purchaseRequestStatusValues).optional(), reason: optionalText(2000) });
+
+const purchaseOrderLineSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, unitCost: amount.optional() });
+const purchaseOrderSchema = z.object({
+  supplierId: z.string().min(1).optional(),
+  purchaseRequestId: z.string().min(1).optional(),
+  orderNumber: optionalText(80),
+  expectedAt: optionalDate,
+  notes: optionalText(2000),
+  lines: z.array(purchaseOrderLineSchema).min(1).default([])
+});
+const purchaseOrderPatchSchema = z.object({ supplierId: z.string().min(1).optional(), expectedAt: optionalDate, notes: optionalText(2000), status: z.enum(purchaseOrderStatusValues).optional() });
+const purchaseOrderReceiveSchema = z.object({
+  locationId: z.string().min(1),
+  lines: z.array(z.object({ lineId: z.string().min(1), receivedQuantity: positiveQuantity })).min(1)
+});
+
+const inventoryItemInclude = { stocks: { include: { location: true } } };
+const jobPartInclude = { item: true, location: true, worker: { include: SAFE_WORKER_INCLUDE } };
+const purchaseOrderInclude = { supplier: true, purchaseRequest: true, lines: { include: { item: true } } };
+
+router.get('/suppliers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.supplier, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/suppliers', requireRole(...adminRoles), validate(supplierSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.supplier.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
+  await audit(req, 'CREATE', 'Supplier', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/suppliers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(supplierSchema.partial()), asyncHandler(async (req, res) => {
+  await requireSupplier(req, req.params.id);
+  const data = await prisma.supplier.update({ where: { id: req.params.id }, data: req.body });
+  await audit(req, 'UPDATE', 'Supplier', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/stock-locations', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.stockLocation, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/stock-locations', requireRole(...adminRoles), validate(stockLocationSchema), asyncHandler(async (req, res) => {
+  if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  const data = await prisma.stockLocation.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
+  await audit(req, 'CREATE', 'StockLocation', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/stock-locations/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(stockLocationSchema.partial()), asyncHandler(async (req, res) => {
+  await requireStockLocation(req, req.params.id);
+  if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  const data = await prisma.stockLocation.update({ where: { id: req.params.id }, data: req.body });
+  await audit(req, 'UPDATE', 'StockLocation', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/inventory/items', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.inventoryItem, req, { where: { companyId: req.companyId }, include: inventoryItemInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/inventory/items', requireRole(...adminRoles), validate(inventoryItemSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.inventoryItem.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false }, include: inventoryItemInclude });
+  await audit(req, 'CREATE', 'InventoryItem', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.get('/inventory/low-stock', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const items = await prisma.inventoryItem.findMany({ where: { companyId: req.companyId, active: true }, include: inventoryItemInclude, orderBy: { createdAt: 'desc' } });
+  const data = items.filter((item) => item.reorderPoint !== null && item.reorderPoint !== undefined).map((item) => {
+    const onHand = (item.stocks || []).reduce((sum, stock) => sum + decimalNumber(stock.quantityOnHand), 0);
+    const reserved = (item.stocks || []).reduce((sum, stock) => sum + decimalNumber(stock.quantityReserved), 0);
+    return { ...item, availableQuantity: onHand - reserved };
+  }).filter((item) => item.availableQuantity <= decimalNumber(item.reorderPoint));
+  sendData(res, normalize(data));
+}));
+
+router.get('/inventory/items/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireInventoryItem(req, req.params.id);
+  const data = await prisma.inventoryItem.findUnique({ where: { id: req.params.id }, include: inventoryItemInclude });
+  sendData(res, normalize(data));
+}));
+
+router.patch('/inventory/items/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(inventoryItemSchema.partial()), asyncHandler(async (req, res) => {
+  await requireInventoryItem(req, req.params.id);
+  const data = await prisma.inventoryItem.update({ where: { id: req.params.id }, data: req.body, include: inventoryItemInclude });
+  await audit(req, 'UPDATE', 'InventoryItem', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/inventory/items/:id/stock', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireInventoryItem(req, req.params.id);
+  const data = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId, itemId: req.params.id }, include: { location: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/inventory/adjustments', requireRole(...adminRoles), validate(stockAdjustmentSchema), asyncHandler(async (req, res) => {
+  await requireInventoryItem(req, req.body.itemId);
+  await requireStockLocation(req, req.body.locationId);
+  const data = await prisma.$transaction(async (tx) => applyStockChange(tx, req, {
+    itemId: req.body.itemId,
+    locationId: req.body.locationId,
+    movementType: req.body.movementType,
+    quantity: req.body.quantity,
+    unitCost: req.body.unitCost,
+    reason: req.body.reason,
+    onHandDelta: req.body.movementType === 'ADJUSTMENT_IN' ? req.body.quantity : -req.body.quantity,
+    reservedDelta: 0
+  }));
+  await audit(req, 'STOCK_ADJUSTMENT', 'InventoryStock', data.id, { itemId: req.body.itemId, locationId: req.body.locationId, movementType: req.body.movementType, quantity: req.body.quantity });
+  sendData(res, normalize(data), 201);
+}));
+
+router.post('/inventory/transfers', requireRole(...adminRoles), validate(stockTransferSchema), asyncHandler(async (req, res) => {
+  if (req.body.fromLocationId === req.body.toLocationId) throw new AppError(400, 'Transfer locations must be different');
+  await requireInventoryItem(req, req.body.itemId);
+  await requireStockLocation(req, req.body.fromLocationId);
+  await requireStockLocation(req, req.body.toLocationId);
+  const data = await prisma.$transaction(async (tx) => {
+    const out = await applyStockChange(tx, req, { itemId: req.body.itemId, locationId: req.body.fromLocationId, movementType: 'TRANSFER_OUT', quantity: req.body.quantity, reason: req.body.reason || 'Stock transfer out', onHandDelta: -req.body.quantity, reservedDelta: 0 });
+    const into = await applyStockChange(tx, req, { itemId: req.body.itemId, locationId: req.body.toLocationId, movementType: 'TRANSFER_IN', quantity: req.body.quantity, reason: req.body.reason || 'Stock transfer in', onHandDelta: req.body.quantity, reservedDelta: 0 });
+    return { from: out, to: into };
+  });
+  await audit(req, 'STOCK_TRANSFER', 'InventoryItem', req.body.itemId, { fromLocationId: req.body.fromLocationId, toLocationId: req.body.toLocationId, quantity: req.body.quantity });
+  sendData(res, normalize(data), 201);
+}));
+
+router.get('/inventory/movements', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.itemId) where.itemId = String(req.query.itemId);
+  if (req.query.locationId) where.locationId = String(req.query.locationId);
+  if (req.query.movementType && stockMovementTypeValues.includes(String(req.query.movementType))) where.movementType = String(req.query.movementType);
+  const result = await paged(prisma.stockMovement, req, { where, include: { item: true, location: true, job: true, purchaseOrder: true, createdBy: { select: { id: true, name: true, email: true, role: true } } }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/jobs/:id/parts', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireJob(req, req.params.id, { assignedOnly: false });
+  const data = await prisma.jobPartUsage.findMany({ where: { companyId: req.companyId, jobId: req.params.id }, include: jobPartInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/parts', requireRole(...adminRoles), validate(idParam, 'params'), validate(jobPartSchema), asyncHandler(async (req, res) => {
+  await requireJob(req, req.params.id, { assignedOnly: false });
+  await requireInventoryItem(req, req.body.itemId);
+  if (req.body.locationId) await requireStockLocation(req, req.body.locationId);
+  if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  const data = await prisma.jobPartUsage.create({ data: { ...req.body, companyId: req.companyId, jobId: req.params.id, status: req.body.status || 'PLANNED' }, include: jobPartInclude });
+  await audit(req, 'CREATE', 'JobPartUsage', data.id, { jobId: req.params.id, itemId: req.body.itemId });
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/jobs/:id/parts/:partId', requireRole(...adminRoles), validate(jobPartParam, 'params'), validate(jobPartUpdateSchema), asyncHandler(async (req, res) => {
+  await requireJobPart(req, req.params.id, req.params.partId);
+  if (req.body.itemId) await requireInventoryItem(req, req.body.itemId);
+  if (req.body.locationId) await requireStockLocation(req, req.body.locationId);
+  if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  const data = await prisma.jobPartUsage.update({ where: { id: req.params.partId }, data: req.body, include: jobPartInclude });
+  await audit(req, 'UPDATE', 'JobPartUsage', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.delete('/jobs/:id/parts/:partId', requireRole(...adminRoles), validate(jobPartParam, 'params'), asyncHandler(async (req, res) => {
+  await requireJobPart(req, req.params.id, req.params.partId);
+  const data = await prisma.jobPartUsage.update({ where: { id: req.params.partId }, data: { status: 'CANCELLED' }, include: jobPartInclude });
+  await audit(req, 'CANCEL', 'JobPartUsage', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/parts/:partId/reserve', requireRole(...adminRoles), validate(jobPartParam, 'params'), asyncHandler(async (req, res) => {
+  const part = await requireJobPart(req, req.params.id, req.params.partId);
+  const locationId = part.locationId;
+  if (!locationId) throw new AppError(400, 'Location is required before reserving stock');
+  const quantity = decimalNumber(part.quantityPlanned) || 1;
+  const data = await prisma.$transaction(async (tx) => {
+    await applyStockChange(tx, req, { itemId: part.itemId, locationId, jobId: part.jobId, movementType: 'RESERVED', quantity, reason: 'Reserved for job', onHandDelta: 0, reservedDelta: quantity });
+    return tx.jobPartUsage.update({ where: { id: part.id }, data: { status: 'RESERVED' }, include: jobPartInclude });
+  });
+  await audit(req, 'RESERVE', 'JobPartUsage', data.id, { quantity });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/parts/:partId/use', requireRole(...adminRoles), validate(jobPartParam, 'params'), validate(jobPartUseSchema), asyncHandler(async (req, res) => {
+  const part = await requireJobPart(req, req.params.id, req.params.partId);
+  const locationId = req.body.locationId || part.locationId;
+  if (!locationId) throw new AppError(400, 'Location is required to use stock');
+  await requireStockLocation(req, locationId);
+  const quantity = req.body.quantity;
+  const data = await prisma.$transaction(async (tx) => {
+    const reservedDelta = part.status === 'RESERVED' ? -Math.min(quantity, decimalNumber(part.quantityPlanned) || quantity) : 0;
+    await applyStockChange(tx, req, { itemId: part.itemId, locationId, jobId: part.jobId, movementType: 'JOB_USED', quantity, unitCost: part.unitCost, reason: req.body.notes || 'Used on job', onHandDelta: -quantity, reservedDelta });
+    return tx.jobPartUsage.update({ where: { id: part.id }, data: { quantityUsed: decimalNumber(part.quantityUsed) + quantity, locationId, status: 'USED', notes: req.body.notes || part.notes }, include: jobPartInclude });
+  });
+  await audit(req, 'USE', 'JobPartUsage', data.id, { quantity });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/parts/:partId/return', requireRole(...adminRoles), validate(jobPartParam, 'params'), validate(jobPartUseSchema), asyncHandler(async (req, res) => {
+  const part = await requireJobPart(req, req.params.id, req.params.partId);
+  const locationId = req.body.locationId || part.locationId;
+  if (!locationId) throw new AppError(400, 'Location is required to return stock');
+  await requireStockLocation(req, locationId);
+  const quantity = req.body.quantity;
+  const data = await prisma.$transaction(async (tx) => {
+    await applyStockChange(tx, req, { itemId: part.itemId, locationId, jobId: part.jobId, movementType: 'JOB_RETURNED', quantity, unitCost: part.unitCost, reason: req.body.notes || 'Returned from job', onHandDelta: quantity, reservedDelta: 0 });
+    return tx.jobPartUsage.update({ where: { id: part.id }, data: { quantityUsed: Math.max(0, decimalNumber(part.quantityUsed) - quantity), locationId, status: 'RETURNED', notes: req.body.notes || part.notes }, include: jobPartInclude });
+  });
+  await audit(req, 'RETURN', 'JobPartUsage', data.id, { quantity });
+  sendData(res, normalize(data));
+}));
+
+router.get('/purchase-requests', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.purchaseRequest, req, { where: { companyId: req.companyId }, include: { job: true, requestedBy: { select: { id: true, name: true, email: true, role: true } }, purchaseOrders: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/purchase-requests', requireRole(...adminRoles), validate(purchaseRequestSchema), asyncHandler(async (req, res) => {
+  if (req.body.jobId) await requireJob(req, req.body.jobId, { assignedOnly: false });
+  const data = await prisma.purchaseRequest.create({ data: { companyId: req.companyId, requestedById: req.user.id, jobId: req.body.jobId, status: req.body.status || 'REQUESTED', reason: req.body.reason } });
+  await audit(req, 'CREATE', 'PurchaseRequest', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/purchase-requests/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(purchaseRequestPatchSchema), asyncHandler(async (req, res) => {
+  await requirePurchaseRequest(req, req.params.id);
+  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: req.body });
+  await audit(req, 'UPDATE', 'PurchaseRequest', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/purchase-requests/:id/approve', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePurchaseRequest(req, req.params.id);
+  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: { status: 'APPROVED' } });
+  await audit(req, 'APPROVE', 'PurchaseRequest', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/purchase-requests/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ reason: optionalText(2000) })), asyncHandler(async (req, res) => {
+  await requirePurchaseRequest(req, req.params.id);
+  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: { status: 'REJECTED', reason: req.body.reason } });
+  await audit(req, 'REJECT', 'PurchaseRequest', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/purchase-orders', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.purchaseOrder, req, { where: { companyId: req.companyId }, include: purchaseOrderInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/purchase-orders', requireRole(...adminRoles), validate(purchaseOrderSchema), asyncHandler(async (req, res) => {
+  if (req.body.supplierId) await requireSupplier(req, req.body.supplierId);
+  if (req.body.purchaseRequestId) await requirePurchaseRequest(req, req.body.purchaseRequestId);
+  for (const line of req.body.lines) await requireInventoryItem(req, line.itemId);
+  const data = await prisma.purchaseOrder.create({
+    data: {
+      companyId: req.companyId,
+      supplierId: req.body.supplierId,
+      purchaseRequestId: req.body.purchaseRequestId,
+      orderNumber: req.body.orderNumber || `PO-${Date.now()}`,
+      expectedAt: req.body.expectedAt,
+      notes: req.body.notes,
+      status: 'DRAFT',
+      lines: { create: req.body.lines.map((line) => ({ companyId: req.companyId, itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost, receivedQuantity: 0 })) }
+    },
+    include: purchaseOrderInclude
+  });
+  await audit(req, 'CREATE', 'PurchaseOrder', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.get('/purchase-orders/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePurchaseOrder(req, req.params.id);
+  const data = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id }, include: purchaseOrderInclude });
+  sendData(res, normalize(data));
+}));
+
+router.patch('/purchase-orders/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(purchaseOrderPatchSchema), asyncHandler(async (req, res) => {
+  await requirePurchaseOrder(req, req.params.id);
+  if (req.body.supplierId) await requireSupplier(req, req.body.supplierId);
+  const data = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: req.body, include: purchaseOrderInclude });
+  await audit(req, 'UPDATE', 'PurchaseOrder', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/purchase-orders/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePurchaseOrder(req, req.params.id);
+  const data = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: { status: 'SENT' }, include: purchaseOrderInclude });
+  await audit(req, 'SEND', 'PurchaseOrder', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/purchase-orders/:id/cancel', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePurchaseOrder(req, req.params.id);
+  const data = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: { status: 'CANCELLED' }, include: purchaseOrderInclude });
+  await audit(req, 'CANCEL', 'PurchaseOrder', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/purchase-orders/:id/receive', requireRole(...adminRoles), validate(idParam, 'params'), validate(purchaseOrderReceiveSchema), asyncHandler(async (req, res) => {
+  const po = await requirePurchaseOrder(req, req.params.id);
+  if (po.status === 'CANCELLED') throw new AppError(400, 'Cancelled purchase orders cannot be received');
+  await requireStockLocation(req, req.body.locationId);
+  const data = await prisma.$transaction(async (tx) => {
+    for (const received of req.body.lines) {
+      const line = await tx.purchaseOrderLine.findFirst({ where: { id: received.lineId, companyId: req.companyId, purchaseOrderId: po.id } });
+      if (!line) throw notFound('Purchase order line not found');
+      const newReceived = decimalNumber(line.receivedQuantity) + received.receivedQuantity;
+      if (newReceived > decimalNumber(line.quantity)) throw new AppError(400, 'Received quantity cannot exceed ordered quantity');
+      await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQuantity: newReceived } });
+      await applyStockChange(tx, req, { itemId: line.itemId, locationId: req.body.locationId, purchaseOrderId: po.id, movementType: 'PURCHASE_RECEIVED', quantity: received.receivedQuantity, unitCost: line.unitCost, reason: `Received ${po.orderNumber}`, onHandDelta: received.receivedQuantity, reservedDelta: 0 });
+    }
+    const lines = await tx.purchaseOrderLine.findMany({ where: { companyId: req.companyId, purchaseOrderId: po.id } });
+    const allReceived = lines.every((line) => decimalNumber(line.receivedQuantity) >= decimalNumber(line.quantity));
+    const anyReceived = lines.some((line) => decimalNumber(line.receivedQuantity) > 0);
+    return tx.purchaseOrder.update({ where: { id: po.id }, data: { status: allReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : po.status, receivedAt: allReceived ? new Date() : po.receivedAt }, include: purchaseOrderInclude });
+  });
+  await audit(req, 'RECEIVE', 'PurchaseOrder', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/worker/jobs/:id/parts', requireRole('WORKER'), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireAssignedWorkerJob(req, req.params.id);
+  const data = await prisma.jobPartUsage.findMany({ where: { companyId: req.companyId, jobId: req.params.id }, include: { item: true, location: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data.map(safeWorkerPart)));
+}));
+
+router.post('/worker/jobs/:id/parts-used', requireRole('WORKER'), validate(idParam, 'params'), validate(workerPartUsedSchema), asyncHandler(async (req, res) => {
+  const job = await requireAssignedWorkerJob(req, req.params.id);
+  await requireInventoryItem(req, req.body.itemId);
+  await requireStockLocation(req, req.body.locationId);
+  const data = await prisma.$transaction(async (tx) => {
+    await applyStockChange(tx, req, { itemId: req.body.itemId, locationId: req.body.locationId, jobId: job.id, movementType: 'JOB_USED', quantity: req.body.quantity, reason: req.body.notes || 'Worker recorded parts used', onHandDelta: -req.body.quantity, reservedDelta: 0 });
+    return tx.jobPartUsage.create({ data: { companyId: req.companyId, jobId: job.id, itemId: req.body.itemId, locationId: req.body.locationId, workerId: req.user.worker.id, quantityUsed: req.body.quantity, notes: req.body.notes, status: 'USED' }, include: { item: true, location: true } });
+  });
+  await audit(req, 'USE', 'JobPartUsage', data.id, { workerId: req.user.worker.id });
+  sendData(res, normalize(safeWorkerPart(data)), 201);
+}));
+
+router.post('/worker/jobs/:id/part-shortage', requireRole('WORKER'), validate(idParam, 'params'), validate(workerPartShortageSchema), asyncHandler(async (req, res) => {
+  const job = await requireAssignedWorkerJob(req, req.params.id);
+  await requireInventoryItem(req, req.body.itemId);
+  const data = await prisma.$transaction(async (tx) => {
+    const part = await tx.jobPartUsage.create({ data: { companyId: req.companyId, jobId: job.id, itemId: req.body.itemId, workerId: req.user.worker.id, quantityPlanned: req.body.quantity, notes: req.body.notes, status: 'SHORT' }, include: { item: true } });
+    const request = await tx.purchaseRequest.create({ data: { companyId: req.companyId, requestedById: req.user.id, jobId: job.id, status: 'REQUESTED', reason: req.body.notes || `Shortage reported for ${req.body.quantity} item(s)` } });
+    return { part, purchaseRequest: request };
+  });
+  await audit(req, 'SHORTAGE', 'JobPartUsage', data.part.id, { workerId: req.user.worker.id, purchaseRequestId: data.purchaseRequest.id });
+  sendData(res, normalize({ ...safeWorkerPart(data.part), purchaseRequest: data.purchaseRequest }), 201);
 }));
 
 const serviceSchema = z.object({ name: z.string().min(2), description: z.string().optional(), price: amount.optional(), active: z.boolean().optional() });

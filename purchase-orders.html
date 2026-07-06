@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Purchase Orders</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+  </head>
+  <body data-page="purchase-orders" data-title="Purchase Orders">
+    <section class="page">
+      <div class="hero-row"><div class="hero-copy"><h2>Purchase Orders</h2><p>Create orders and receive stock into inventory.</p></div></div>
+      <div class="toolbar"><span class="api-status" id="status">Loading...</span></div>
+      <section class="grid two-column">
+        <article class="card">
+          <h3>Supplier</h3>
+          <form id="supplierForm"><label>Name <input name="name" required></label><label>Email <input name="email"></label><label>Phone <input name="phone"></label><button class="primary-button" type="submit">Save Supplier</button></form>
+        </article>
+        <article class="card">
+          <h3>Create Purchase Order</h3>
+          <form id="poForm">
+            <label>Supplier <select name="supplierId"></select></label>
+            <label>Item <select name="itemId" required></select></label>
+            <label>Quantity <input name="quantity" type="number" step="0.001" min="0.001" required></label>
+            <label>Unit Cost <input name="unitCost" type="number" step="0.01" min="0"></label>
+            <button class="primary-button" type="submit">Create PO</button>
+          </form>
+        </article>
+      </section>
+      <section class="table-card"><h3>Purchase Orders</h3><div id="orders"></div></section>
+    </section>
+    <script>
+      const API = '/api';
+      const status = document.getElementById('status');
+      async function api(path, options = {}) { const res = await fetch(API + path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...options }); const body = await res.json().catch(() => ({})); if (!res.ok) throw new Error(body?.error?.message || 'Request failed'); return body.data; }
+      function formData(form) { return Object.fromEntries(Array.from(new FormData(form)).filter(([, v]) => v !== '')); }
+      async function sendPo(id) { await api(`/purchase-orders/${id}/send`, { method: 'POST', body: '{}' }); await load(); }
+      async function cancelPo(id) { await api(`/purchase-orders/${id}/cancel`, { method: 'POST', body: '{}' }); await load(); }
+      async function load() {
+        const [suppliers, items, orders] = await Promise.all([api('/suppliers'), api('/inventory/items'), api('/purchase-orders')]);
+        poForm.supplierId.innerHTML = '<option value="">No supplier</option>' + suppliers.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+        poForm.itemId.innerHTML = items.map(i => `<option value="${i.id}">${i.name}</option>`).join('');
+        document.getElementById('orders').innerHTML = orders.length ? `<table><thead><tr><th>Number</th><th>Status</th><th>Supplier</th><th>Lines</th><th>Actions</th></tr></thead><tbody>${orders.map(o => `<tr><td>${o.orderNumber}</td><td>${o.status}</td><td>${o.supplier?.name || ''}</td><td>${(o.lines || []).map(l => `${l.item?.name || l.itemId}: ${l.receivedQuantity}/${l.quantity}`).join('<br>')}</td><td><button onclick="sendPo('${o.id}')">Send</button> <button onclick="cancelPo('${o.id}')">Cancel</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state"><strong>No purchase orders yet</strong></div>';
+        status.textContent = 'Connected';
+      }
+      supplierForm.addEventListener('submit', async (e) => { e.preventDefault(); await api('/suppliers', { method: 'POST', body: JSON.stringify(formData(e.target)) }); e.target.reset(); await load(); });
+      poForm.addEventListener('submit', async (e) => { e.preventDefault(); const raw = formData(e.target); await api('/purchase-orders', { method: 'POST', body: JSON.stringify({ supplierId: raw.supplierId || undefined, lines: [{ itemId: raw.itemId, quantity: raw.quantity, unitCost: raw.unitCost || undefined }] }) }); e.target.reset(); await load(); });
+      load().catch(err => { status.textContent = err.message; });
+    </script>
+  </body>
+</html>

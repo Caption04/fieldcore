@@ -91,6 +91,11 @@ function createMockPrisma(seed) {
   function jobById(jobId) { return db.jobs.find((item) => item.id === jobId); }
   function assetById(assetId) { return db.assets.find((item) => item.id === assetId); }
   function contractById(contractId) { return db.serviceContracts.find((item) => item.id === contractId); }
+  function inventoryItemById(itemId) { return db.inventoryItems.find((item) => item.id === itemId); }
+  function stockLocationById(locationId) { return db.stockLocations.find((item) => item.id === locationId); }
+  function supplierById(supplierId) { return db.suppliers.find((item) => item.id === supplierId); }
+  function purchaseRequestById(requestId) { return db.purchaseRequests.find((item) => item.id === requestId); }
+  function purchaseOrderById(orderId) { return db.purchaseOrders.find((item) => item.id === orderId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
   function quoteLineItems(quoteId) { return db.quoteLineItems.filter((item) => item.quoteId === quoteId); }
   function invoiceLineItems(invoiceId) { return db.invoiceLineItems.filter((item) => item.invoiceId === invoiceId); }
@@ -182,6 +187,67 @@ function createMockPrisma(seed) {
     if (!line) return null;
     const result = { ...line };
     if (include && include.service) result.service = clone(serviceById(line.serviceId)) || null;
+    return result;
+  }
+
+
+  function enrichInventoryItem(item, include) {
+    if (!item) return null;
+    const result = { ...item };
+    if (include && include.stocks) result.stocks = db.inventoryStocks.filter((stock) => stock.itemId === item.id).map((stock) => enrichInventoryStock(stock, include.stocks.include));
+    return result;
+  }
+
+  function enrichInventoryStock(stock, include) {
+    if (!stock) return null;
+    const result = { ...stock };
+    if (include && include.item) result.item = clone(inventoryItemById(stock.itemId));
+    if (include && include.location) result.location = clone(stockLocationById(stock.locationId));
+    return result;
+  }
+
+  function enrichStockMovement(movement, include) {
+    if (!movement) return null;
+    const result = { ...movement };
+    if (include && include.item) result.item = clone(inventoryItemById(movement.itemId));
+    if (include && include.location) result.location = clone(stockLocationById(movement.locationId));
+    if (include && include.job) result.job = clone(jobById(movement.jobId));
+    if (include && include.purchaseOrder) result.purchaseOrder = clone(purchaseOrderById(movement.purchaseOrderId));
+    if (include && include.createdBy) result.createdBy = include.createdBy.select ? applySelect(userById(movement.createdById), include.createdBy.select) : clone(userById(movement.createdById));
+    return result;
+  }
+
+  function enrichJobPartUsage(part, include) {
+    if (!part) return null;
+    const result = { ...part };
+    if (include && include.item) result.item = clone(inventoryItemById(part.itemId));
+    if (include && include.location) result.location = clone(stockLocationById(part.locationId));
+    if (include && include.worker) result.worker = enrichWorker(workerById(part.workerId), include.worker.include);
+    return result;
+  }
+
+  function enrichPurchaseRequest(request, include) {
+    if (!request) return null;
+    const result = { ...request };
+    if (include && include.job) result.job = clone(jobById(request.jobId));
+    if (include && include.requestedBy) result.requestedBy = include.requestedBy.select ? applySelect(userById(request.requestedById), include.requestedBy.select) : clone(userById(request.requestedById));
+    if (include && include.purchaseOrders) result.purchaseOrders = db.purchaseOrders.filter((order) => order.purchaseRequestId === request.id).map((order) => enrichPurchaseOrder(order, include.purchaseOrders.include));
+    return result;
+  }
+
+  function enrichPurchaseOrder(order, include) {
+    if (!order) return null;
+    const result = { ...order };
+    if (include && include.supplier) result.supplier = clone(supplierById(order.supplierId));
+    if (include && include.purchaseRequest) result.purchaseRequest = clone(purchaseRequestById(order.purchaseRequestId));
+    if (include && include.lines) result.lines = db.purchaseOrderLines.filter((line) => line.purchaseOrderId === order.id).map((line) => enrichPurchaseOrderLine(line, include.lines.include));
+    return result;
+  }
+
+  function enrichPurchaseOrderLine(line, include) {
+    if (!line) return null;
+    const result = { ...line };
+    if (include && include.item) result.item = clone(inventoryItemById(line.itemId));
     return result;
   }
 
@@ -350,6 +416,24 @@ function createMockPrisma(seed) {
     customer: makeModel('customers'),
     workerProfile: makeModel('workerProfiles', enrichWorker),
     service: makeModel('services'),
+    supplier: makeModel('suppliers'),
+    stockLocation: makeModel('stockLocations'),
+    inventoryItem: makeModel('inventoryItems', enrichInventoryItem),
+    inventoryStock: makeModel('inventoryStocks', enrichInventoryStock),
+    stockMovement: makeModel('stockMovements', enrichStockMovement),
+    jobPartUsage: makeModel('jobPartUsages', enrichJobPartUsage),
+    purchaseRequest: makeModel('purchaseRequests', enrichPurchaseRequest),
+    purchaseOrder: {
+      ...makeModel('purchaseOrders', enrichPurchaseOrder),
+      create: async (args) => {
+        const lineCreate = args.data.lines && args.data.lines.create || [];
+        const record = { id: args.data.id || id('purchaseOrder'), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...stripUndefined({ ...args.data, lines: undefined }) };
+        db.purchaseOrders.push(record);
+        for (const line of lineCreate) db.purchaseOrderLines.push({ id: id('purchaseOrderLine'), purchaseOrderId: record.id, createdAt: record.createdAt, updatedAt: record.updatedAt, ...stripUndefined(line) });
+        return clone(enrichPurchaseOrder(record, args.include));
+      }
+    },
+    purchaseOrderLine: makeModel('purchaseOrderLines', enrichPurchaseOrderLine),
     job: makeModel('jobs', enrichJob),
     quote: {
       ...makeModel('quotes', enrichQuote),
@@ -525,6 +609,15 @@ async function buildApp() {
     serviceContracts: [],
     serviceContractAssets: [],
     contractServiceLines: [],
+    suppliers: [],
+    stockLocations: [],
+    inventoryItems: [],
+    inventoryStocks: [],
+    stockMovements: [],
+    jobPartUsages: [],
+    purchaseRequests: [],
+    purchaseOrders: [],
+    purchaseOrderLines: [],
     notificationLogs: [],
     integrationConnections: [],
     integrationSecrets: [],
@@ -2532,4 +2625,90 @@ test('production env requires a valid integration encryption master key', () => 
   assert.equal(invalid.errors.some((item) => item.includes('32 bytes')), true);
   const valid = validateEnv({ ...base, INTEGRATION_SECRET_MASTER_KEY_BASE64: Buffer.alloc(32, 7).toString('base64') });
   assert.equal(valid.ok, true);
+});
+
+
+test('task2 admin can manage inventory and stock movements safely', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const otherAdmin = await login(app, 'admin-b@test.local');
+
+  const item = await admin.post('/api/inventory/items').send({ name: 'Contactor', sku: 'CNT-001', unitOfMeasure: 'each', reorderPoint: 2 });
+  assert.equal(item.status, 201);
+  assert.equal(item.body.data.companyId, 'company-a');
+
+  const location = await admin.post('/api/stock-locations').send({ name: 'Main Warehouse', type: 'WAREHOUSE' });
+  assert.equal(location.status, 201);
+
+  const adjustment = await admin.post('/api/inventory/adjustments').send({ itemId: item.body.data.id, locationId: location.body.data.id, movementType: 'ADJUSTMENT_IN', quantity: 5, reason: 'Opening stock' });
+  assert.equal(adjustment.status, 201);
+  assert.equal(Number(adjustment.body.data.quantityOnHand), 5);
+
+  const movements = await admin.get('/api/inventory/movements');
+  assert.equal(movements.status, 200);
+  assert.equal(movements.body.data.length, 1);
+  assert.equal(movements.body.data[0].movementType, 'ADJUSTMENT_IN');
+
+  const isolated = await otherAdmin.get('/api/inventory/movements');
+  assert.equal(isolated.status, 200);
+  assert.equal(isolated.body.data.length, 0);
+});
+
+test('task2 job parts reserve and use stock', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const item = await admin.post('/api/inventory/items').send({ name: 'Cable', sku: 'CBL-001', unitOfMeasure: 'm' });
+  const location = await admin.post('/api/stock-locations').send({ name: 'Vehicle A', type: 'VEHICLE' });
+  await admin.post('/api/inventory/adjustments').send({ itemId: item.body.data.id, locationId: location.body.data.id, movementType: 'ADJUSTMENT_IN', quantity: 10, reason: 'Load vehicle' });
+
+  const planned = await admin.post('/api/jobs/job-a/parts').send({ itemId: item.body.data.id, locationId: location.body.data.id, quantityPlanned: 3 });
+  assert.equal(planned.status, 201);
+
+  const reserved = await admin.post(`/api/jobs/job-a/parts/${planned.body.data.id}/reserve`).send({});
+  assert.equal(reserved.status, 200);
+  assert.equal(reserved.body.data.status, 'RESERVED');
+
+  const used = await admin.post(`/api/jobs/job-a/parts/${planned.body.data.id}/use`).send({ quantity: 2 });
+  assert.equal(used.status, 200);
+  assert.equal(used.body.data.status, 'USED');
+
+  const stock = await admin.get(`/api/inventory/items/${item.body.data.id}/stock`);
+  assert.equal(Number(stock.body.data[0].quantityOnHand), 8);
+});
+
+test('task2 worker can only record shortage for assigned job', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const workerB = await login(app, 'worker-b@test.local');
+
+  const item = await admin.post('/api/inventory/items').send({ name: 'Fuse', sku: 'FUSE-001', unitOfMeasure: 'each' });
+
+  const shortage = await worker.post('/api/worker/jobs/job-a/part-shortage').send({ itemId: item.body.data.id, quantity: 4, notes: 'Need fuses' });
+  assert.equal(shortage.status, 201);
+  assert.equal(shortage.body.data.status, 'SHORT');
+  assert.ok(shortage.body.data.purchaseRequest.id);
+
+  const forbidden = await workerB.post('/api/worker/jobs/job-a/part-shortage').send({ itemId: item.body.data.id, quantity: 1, notes: 'Wrong worker' });
+  assert.equal(forbidden.status, 404);
+});
+
+test('task2 purchase order receiving increases stock', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const supplier = await admin.post('/api/suppliers').send({ name: 'Parts Supplier' });
+  const item = await admin.post('/api/inventory/items').send({ name: 'Breaker', sku: 'BRK-001', unitOfMeasure: 'each' });
+  const location = await admin.post('/api/stock-locations').send({ name: 'Receiving Store', type: 'WAREHOUSE' });
+  const po = await admin.post('/api/purchase-orders').send({ supplierId: supplier.body.data.id, lines: [{ itemId: item.body.data.id, quantity: 6, unitCost: 3.5 }] });
+  assert.equal(po.status, 201);
+  assert.equal(po.body.data.lines.length, 1);
+
+  const received = await admin.post(`/api/purchase-orders/${po.body.data.id}/receive`).send({ locationId: location.body.data.id, lines: [{ lineId: po.body.data.lines[0].id, receivedQuantity: 6 }] });
+  assert.equal(received.status, 200);
+  assert.equal(received.body.data.status, 'RECEIVED');
+
+  const stock = await admin.get(`/api/inventory/items/${item.body.data.id}/stock`);
+  assert.equal(Number(stock.body.data[0].quantityOnHand), 6);
 });

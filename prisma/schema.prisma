@@ -206,6 +206,53 @@ enum JobSlaStatus {
   WAIVED
 }
 
+
+enum StockLocationType {
+  WAREHOUSE
+  BRANCH
+  VEHICLE
+  TECHNICIAN
+  OTHER
+}
+
+enum StockMovementType {
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RESERVED
+  RESERVATION_RELEASED
+  JOB_USED
+  JOB_RETURNED
+  PURCHASE_RECEIVED
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+enum JobPartStatus {
+  PLANNED
+  RESERVED
+  USED
+  SHORT
+  RETURNED
+  CANCELLED
+}
+
+enum PurchaseRequestStatus {
+  DRAFT
+  REQUESTED
+  APPROVED
+  REJECTED
+  ORDERED
+  CLOSED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
 model Company {
   id                     String                     @id @default(cuid())
   name                   String
@@ -265,6 +312,15 @@ model Company {
   serviceContracts       ServiceContract[]
   serviceContractAssets  ServiceContractAsset[]
   contractServiceLines   ContractServiceLine[]
+  suppliers              Supplier[]
+  stockLocations         StockLocation[]
+  inventoryItems         InventoryItem[]
+  inventoryStocks        InventoryStock[]
+  stockMovements         StockMovement[]
+  jobPartUsages          JobPartUsage[]
+  purchaseRequests       PurchaseRequest[]
+  purchaseOrders         PurchaseOrder[]
+  purchaseOrderLines     PurchaseOrderLine[]
 }
 
 model SaaSPlan {
@@ -369,6 +425,8 @@ model User {
   jobsCompleted               Job[]                   @relation("JobCompletedBy")
   completionLocationsCaptured JobCompletionLocation[]
   storageObjectsUploaded      StorageObject[]
+  stockMovementsCreated       StockMovement[]         @relation("StockMovementCreatedBy")
+  purchaseRequestsCreated     PurchaseRequest[]       @relation("PurchaseRequestRequestedBy")
 
   @@index([companyId])
 }
@@ -482,6 +540,8 @@ model WorkerProfile {
   timeOff         WorkerTimeOff[]
   conflicts       ScheduleConflict[]
   recurringRules  RecurringJobRule[]
+  stockLocations  StockLocation[]
+  jobPartUsages   JobPartUsage[]
 
   @@index([companyId])
   @@index([companyId, roleId])
@@ -567,6 +627,9 @@ model Job {
   messageLogs          MessageLog[]
   storageObjects       StorageObject[]
   jobAssets            JobAsset[]
+  stockMovements       StockMovement[]
+  jobPartUsages        JobPartUsage[]
+  purchaseRequests     PurchaseRequest[]
 
   @@index([companyId])
   @@index([companyId, customerId])
@@ -695,6 +758,201 @@ model ContractServiceLine {
 
   @@index([companyId, contractId])
   @@index([companyId, nextDueAt])
+}
+
+
+model Supplier {
+  id             String          @id @default(cuid())
+  companyId      String
+  name           String
+  email          String?
+  phone          String?
+  address        String?
+  taxNumber      String?
+  notes          String?
+  active         Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  purchaseOrders PurchaseOrder[]
+
+  @@unique([companyId, name])
+  @@index([companyId, active])
+}
+
+model StockLocation {
+  id              String            @id @default(cuid())
+  companyId       String
+  branchId        String?
+  name            String
+  type            StockLocationType @default(WAREHOUSE)
+  address         String?
+  workerId        String?
+  active          Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker          WorkerProfile?    @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  stocks          InventoryStock[]
+  stockMovements  StockMovement[]
+  jobPartUsages   JobPartUsage[]
+
+  @@unique([companyId, name])
+  @@index([companyId, active])
+  @@index([companyId, workerId])
+}
+
+model InventoryItem {
+  id               String              @id @default(cuid())
+  companyId        String
+  sku              String?
+  name             String
+  description      String?
+  category         String?
+  unitOfMeasure    String              @default("each")
+  unitCost         Decimal?            @db.Decimal(12, 2)
+  salePrice        Decimal?            @db.Decimal(12, 2)
+  reorderPoint     Decimal?            @db.Decimal(12, 3)
+  active           Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  company          Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  stocks           InventoryStock[]
+  stockMovements   StockMovement[]
+  jobPartUsages    JobPartUsage[]
+  purchaseOrderLines PurchaseOrderLine[]
+
+  @@unique([companyId, sku])
+  @@index([companyId, active])
+  @@index([companyId, category])
+}
+
+model InventoryStock {
+  id               String         @id @default(cuid())
+  companyId        String
+  itemId           String
+  locationId       String
+  quantityOnHand   Decimal        @default(0) @db.Decimal(12, 3)
+  quantityReserved Decimal        @default(0) @db.Decimal(12, 3)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  item             InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  location         StockLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, itemId, locationId])
+  @@index([companyId, itemId])
+  @@index([companyId, locationId])
+}
+
+model StockMovement {
+  id              String            @id @default(cuid())
+  companyId       String
+  itemId          String
+  locationId      String
+  jobId           String?
+  purchaseOrderId String?
+  movementType    StockMovementType
+  quantity        Decimal           @db.Decimal(12, 3)
+  unitCost        Decimal?          @db.Decimal(12, 2)
+  reason          String?
+  createdById     String?
+  createdAt       DateTime          @default(now())
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  item            InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location        StockLocation     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  job             Job?              @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  purchaseOrder   PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  createdBy       User?             @relation("StockMovementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, itemId, createdAt])
+  @@index([companyId, locationId, createdAt])
+  @@index([companyId, jobId])
+  @@index([companyId, movementType])
+}
+
+model JobPartUsage {
+  id              String        @id @default(cuid())
+  companyId       String
+  jobId           String
+  itemId          String
+  locationId      String?
+  workerId        String?
+  quantityPlanned Decimal?      @db.Decimal(12, 3)
+  quantityUsed    Decimal?      @db.Decimal(12, 3)
+  unitCost        Decimal?      @db.Decimal(12, 2)
+  notes           String?
+  status          JobPartStatus @default(PLANNED)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  company         Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job             Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  item            InventoryItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location        StockLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  worker          WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, jobId])
+  @@index([companyId, itemId])
+  @@index([companyId, status])
+}
+
+model PurchaseRequest {
+  id            String                @id @default(cuid())
+  companyId     String
+  requestedById String?
+  jobId         String?
+  status        PurchaseRequestStatus @default(REQUESTED)
+  reason        String?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  company       Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  requestedBy   User?                 @relation("PurchaseRequestRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  job           Job?                  @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  purchaseOrders PurchaseOrder[]
+
+  @@index([companyId, status])
+  @@index([companyId, jobId])
+}
+
+model PurchaseOrder {
+  id                String              @id @default(cuid())
+  companyId         String
+  supplierId        String?
+  purchaseRequestId String?
+  status            PurchaseOrderStatus @default(DRAFT)
+  orderNumber       String
+  expectedAt        DateTime?
+  receivedAt        DateTime?
+  notes             String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  company           Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier          Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseRequest   PurchaseRequest?    @relation(fields: [purchaseRequestId], references: [id], onDelete: SetNull)
+  lines             PurchaseOrderLine[]
+  stockMovements    StockMovement[]
+
+  @@unique([companyId, orderNumber])
+  @@index([companyId, status])
+  @@index([companyId, supplierId])
+}
+
+model PurchaseOrderLine {
+  id              String         @id @default(cuid())
+  companyId       String
+  purchaseOrderId String
+  itemId          String
+  quantity        Decimal        @db.Decimal(12, 3)
+  unitCost        Decimal?       @db.Decimal(12, 2)
+  receivedQuantity Decimal       @default(0) @db.Decimal(12, 3)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  company         Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  purchaseOrder   PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  item            InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, purchaseOrderId])
+  @@index([companyId, itemId])
 }
 
 model JobActivity {

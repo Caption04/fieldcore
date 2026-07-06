@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Purchase Requests</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+  </head>
+  <body data-page="purchase-requests" data-title="Purchase Requests">
+    <section class="page">
+      <div class="hero-row"><div class="hero-copy"><h2>Purchase Requests</h2><p>Review shortages and approve or reject purchase requests.</p></div></div>
+      <div class="toolbar"><span class="api-status" id="status">Loading...</span></div>
+      <section class="card">
+        <h3>Create Request</h3>
+        <form id="requestForm" class="inline-form">
+          <input name="jobId" placeholder="Optional job ID">
+          <input name="reason" placeholder="Reason" required>
+          <button class="primary-button" type="submit">Create</button>
+        </form>
+      </section>
+      <section class="table-card"><div id="requests"></div></section>
+    </section>
+    <script>
+      const API = '/api';
+      const status = document.getElementById('status');
+      async function api(path, options = {}) { const res = await fetch(API + path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...options }); const body = await res.json().catch(() => ({})); if (!res.ok) throw new Error(body?.error?.message || 'Request failed'); return body.data; }
+      function formData(form) { return Object.fromEntries(Array.from(new FormData(form)).filter(([, v]) => v !== '')); }
+      async function action(id, name) { await api(`/purchase-requests/${id}/${name}`, { method: 'POST', body: JSON.stringify({}) }); await load(); }
+      async function load() {
+        const items = await api('/purchase-requests');
+        document.getElementById('requests').innerHTML = items.length ? `<table><thead><tr><th>Status</th><th>Reason</th><th>Job</th><th>Actions</th></tr></thead><tbody>${items.map(r => `<tr><td>${r.status}</td><td>${r.reason || ''}</td><td>${r.jobId || ''}</td><td><button onclick="action('${r.id}','approve')">Approve</button> <button onclick="action('${r.id}','reject')">Reject</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state"><strong>No purchase requests yet</strong></div>';
+        status.textContent = 'Connected';
+      }
+      requestForm.addEventListener('submit', async (e) => { e.preventDefault(); await api('/purchase-requests', { method: 'POST', body: JSON.stringify(formData(e.target)) }); e.target.reset(); await load(); });
+      load().catch(err => { status.textContent = err.message; });
+    </script>
+  </body>
+</html>
