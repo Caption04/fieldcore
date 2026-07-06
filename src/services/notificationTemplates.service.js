@@ -1,11 +1,17 @@
-function money(value) {
+function money(value, context = {}) {
   const number = Number(value || 0);
-  return number.toLocaleString('en-US', { style: 'currency', currency: process.env.DEFAULT_CURRENCY || 'USD' });
+  const settings = context.localization || context.financeSettings || {};
+  return number.toLocaleString(settings.numberFormat || 'en-US', { style: 'currency', currency: settings.defaultCurrency || process.env.DEFAULT_CURRENCY || 'USD' });
 }
 
-function date(value) {
+function date(value, context = {}) {
   if (!value) return 'Not set';
-  return new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  const settings = context.localization || context.financeSettings || {};
+  try {
+    return new Date(value).toLocaleString(settings.numberFormat || 'en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: settings.timezone || undefined });
+  } catch {
+    return new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  }
 }
 
 function textTemplate(subject, lines) {
@@ -93,9 +99,49 @@ function buildNotificationTemplate(eventType, context = {}) {
     'A job was completed.',
     'Job: ' + record.title,
     'Service: ' + serviceName,
-    'Completed: ' + date(record.completedAt || new Date()),
+    'Completed: ' + date(record.completedAt || new Date(), context),
     record.proofCompletedAt || record.signatureCompletedAt ? 'Proof of work is available in FieldCore.' : null
   ]);
+
+
+  if (eventType === 'CONTRACT_ACTIVATED') return textTemplate(prefix + ': contract activated', [
+    'A service contract is now active.',
+    'Contract: ' + (record.contractNumber || record.name || record.id || 'Contract'),
+    'Customer: ' + (customer.name || record.customerName || 'Unknown'),
+    record.startDate ? 'Starts: ' + date(record.startDate, context) : null
+  ]);
+
+  if (eventType === 'MAINTENANCE_VISIT_DUE') return textTemplate(prefix + ': maintenance visit due', [
+    'A planned maintenance visit is due.',
+    'Asset/job: ' + (record.title || record.assetName || record.id || 'Maintenance'),
+    record.nextDueAt || record.scheduledStart ? 'Due: ' + date(record.nextDueAt || record.scheduledStart, context) : null
+  ]);
+
+  if (eventType === 'SLA_AT_RISK' || eventType === 'SLA_BREACHED') return textTemplate(prefix + ': ' + eventType.replace(/_/g, ' ').toLowerCase(), [
+    eventType === 'SLA_BREACHED' ? 'An SLA has been breached.' : 'An SLA is at risk.',
+    'Job: ' + (record.title || record.id || 'Job'),
+    record.completionDueAt ? 'Completion due: ' + date(record.completionDueAt, context) : null
+  ]);
+
+  if (eventType === 'JOB_PROOF_READY') return textTemplate(prefix + ': job proof ready', [
+    'Proof of work is ready for review.',
+    'Job: ' + (record.title || record.id || 'Job'),
+    'Open FieldCore to view photos, signatures, and completion details.'
+  ]);
+
+  if (eventType === 'INVOICE_OVERDUE') return textTemplate(prefix + ': invoice overdue', [
+    'An invoice is overdue.',
+    'Invoice: ' + (record.number || record.id || 'Invoice'),
+    'Amount due: ' + money(record.balanceDue || record.total || record.amount, context),
+    record.dueDate ? 'Due date: ' + date(record.dueDate, context) : null
+  ]);
+
+  if (eventType === 'PURCHASE_SHORTAGE_BLOCKING_JOB') return textTemplate(prefix + ': stock shortage blocking job', [
+    'A parts shortage may block a job.',
+    'Job: ' + (record.job && record.job.title || record.title || record.jobId || 'Job'),
+    'Item: ' + (record.item && record.item.name || record.itemName || record.inventoryItemId || 'Inventory item')
+  ]);
+
 
   return textTemplate(prefix + ': notification', ['A FieldCore notification was generated.']);
 }
@@ -115,7 +161,14 @@ function buildWhatsAppTemplate(eventType, context = {}) {
     JOB_SCHEDULED: ['Job scheduled', record.title, date(record.scheduledStart), customer.address || record.address],
     JOB_RESCHEDULED: ['Job rescheduled', record.title, date(record.scheduledStart), customer.address || record.address],
     WORKER_ASSIGNED: ['Worker assigned', record.title, date(record.scheduledStart), customer.address || record.address],
-    JOB_COMPLETED: ['Job completed', record.title, date(record.completedAt || new Date())]
+    JOB_COMPLETED: ['Job completed', record.title, date(record.completedAt || new Date(), context)],
+    CONTRACT_ACTIVATED: ['Contract activated', record.contractNumber || record.name || reference, customer.name || record.customerName],
+    MAINTENANCE_VISIT_DUE: ['Maintenance visit due', record.title || record.assetName || reference, record.nextDueAt ? date(record.nextDueAt, context) : null],
+    SLA_AT_RISK: ['SLA at risk', record.title || reference, record.completionDueAt ? date(record.completionDueAt, context) : null],
+    SLA_BREACHED: ['SLA breached', record.title || reference, record.completionDueAt ? date(record.completionDueAt, context) : null],
+    JOB_PROOF_READY: ['Job proof ready', record.title || reference, 'Proof is available in FieldCore'],
+    INVOICE_OVERDUE: ['Invoice overdue', record.number || reference, money(record.balanceDue || record.total || record.amount, context)],
+    PURCHASE_SHORTAGE_BLOCKING_JOB: ['Stock shortage blocking job', record.job && record.job.title || record.title || reference]
   }[eventType] || ['FieldCore notification', reference];
   return { label: String(lines[0] || eventType).slice(0, 120), text: lines.filter(Boolean).join(' - ').slice(0, 900) };
 }

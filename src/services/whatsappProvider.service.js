@@ -10,7 +10,14 @@ const defaultTemplateNames = {
   JOB_SCHEDULED: 'job_scheduled',
   JOB_RESCHEDULED: 'job_rescheduled',
   WORKER_ASSIGNED: 'worker_assigned',
-  JOB_COMPLETED: 'job_completed'
+  JOB_COMPLETED: 'job_completed',
+  CONTRACT_ACTIVATED: 'contract_activated',
+  MAINTENANCE_VISIT_DUE: 'maintenance_visit_due',
+  SLA_AT_RISK: 'sla_at_risk',
+  SLA_BREACHED: 'sla_breached',
+  JOB_PROOF_READY: 'job_proof_ready',
+  INVOICE_OVERDUE: 'invoice_overdue',
+  PURCHASE_SHORTAGE_BLOCKING_JOB: 'purchase_shortage_blocking_job'
 };
 
 let overrideProvider = null;

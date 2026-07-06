@@ -72,8 +72,15 @@ enum PaymentMethod {
   CASH
   BANK_TRANSFER
   PAYNOW
+  PAYFAST
+  YOCO
+  OZOW
+  SNAPSCAN
   CARD
+  MANUAL_CARD
+  EXTERNAL_PAYMENT_LINK
   MANUAL_ADJUSTMENT
+  CUSTOM_MANUAL
   OTHER
 }
 
@@ -1715,20 +1722,28 @@ model JobSignature {
 }
 
 model CompanyFinanceSettings {
-  id                   String   @id @default(cuid())
-  companyId            String   @unique
-  defaultCurrency      String   @default("USD")
-  allowedCurrencies    Json?
-  taxName              String   @default("Tax")
-  taxRate              Decimal  @default(0) @db.Decimal(7, 4)
-  pricesIncludeTax     Boolean  @default(false)
-  invoicePrefix        String?
-  receiptPrefix        String?
-  fiscalYearStartMonth Int?
-  invoiceFooter        String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-  company              Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                    String   @id @default(cuid())
+  companyId             String   @unique
+  country               String   @default("ZW")
+  timezone              String   @default("Africa/Harare")
+  defaultCurrency       String   @default("USD")
+  allowedCurrencies     Json?
+  taxName               String   @default("Tax")
+  taxRate               Decimal  @default(0) @db.Decimal(7, 4)
+  pricesIncludeTax      Boolean  @default(false)
+  dateFormat            String   @default("yyyy-MM-dd")
+  numberFormat          String   @default("en-ZW")
+  invoicePrefix         String?
+  receiptPrefix         String?
+  quoteExpiryDays       Int      @default(14)
+  paymentTermsDays      Int      @default(14)
+  fiscalYearStartMonth  Int?
+  invoiceFooter         String?
+  allowedPaymentMethods Json?
+  paymentInstructions   String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
 }

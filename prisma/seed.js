@@ -133,6 +133,47 @@ async function main() {
     }
   });
 
+
+
+  await prisma.companyFinanceSettings.upsert({
+    where: { companyId: company.id },
+    update: {
+      country: 'ZW',
+      timezone: 'Africa/Harare',
+      defaultCurrency: 'USD',
+      allowedCurrencies: ['USD', 'ZAR'],
+      taxName: 'VAT',
+      taxRate: 15,
+      pricesIncludeTax: false,
+      dateFormat: 'yyyy-MM-dd',
+      numberFormat: 'en-ZW',
+      invoicePrefix: 'INV',
+      receiptPrefix: 'RCT',
+      quoteExpiryDays: 14,
+      paymentTermsDays: 14,
+      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'CUSTOM_MANUAL'],
+      paymentInstructions: 'Demo bank transfer, Paynow, or manual external payment reference.'
+    },
+    create: {
+      companyId: company.id,
+      country: 'ZW',
+      timezone: 'Africa/Harare',
+      defaultCurrency: 'USD',
+      allowedCurrencies: ['USD', 'ZAR'],
+      taxName: 'VAT',
+      taxRate: 15,
+      pricesIncludeTax: false,
+      dateFormat: 'yyyy-MM-dd',
+      numberFormat: 'en-ZW',
+      invoicePrefix: 'INV',
+      receiptPrefix: 'RCT',
+      quoteExpiryDays: 14,
+      paymentTermsDays: 14,
+      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'CUSTOM_MANUAL'],
+      paymentInstructions: 'Demo bank transfer, Paynow, or manual external payment reference.'
+    }
+  });
+
   const owner = await prisma.user.upsert({
     where: { email: process.env.DEMO_OWNER_EMAIL || 'owner@fieldcore.test' },
     update: { passwordHash: hash, role: 'OWNER', companyId: company.id },
@@ -163,6 +204,14 @@ async function main() {
     create: { companyId: company.id, userId: workerUser.id, roleId: fieldTechnicianRole.id, title: 'Field Technician', phone: '+1 555 0104', active: true }
   });
 
+
+
+  const branch = await prisma.branch.upsert({
+    where: { companyId_code: { companyId: company.id, code: 'HARARE' } },
+    update: { name: 'Harare Operations', country: 'ZW', city: 'Harare', timezone: 'Africa/Harare', active: true },
+    create: { companyId: company.id, name: 'Harare Operations', code: 'HARARE', country: 'ZW', city: 'Harare', timezone: 'Africa/Harare', active: true }
+  });
+
   const customer = await prisma.customer.upsert({
     where: { id: 'demo-customer' },
     update: {},
@@ -182,8 +231,8 @@ async function main() {
 
   const job = await prisma.job.upsert({
     where: { id: 'demo-job' },
-    update: { scheduledStart, scheduledEnd },
-    create: { id: 'demo-job', companyId: company.id, customerId: customer.id, serviceId: service.id, workerId: worker.id, title: 'Rooftop unit inspection', description: 'Inspect rooftop HVAC units and capture service notes.', status: 'SCHEDULED', scheduledStart, scheduledEnd, total: 450 }
+    update: { scheduledStart, scheduledEnd, branchId: branch.id },
+    create: { id: 'demo-job', companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, workerId: worker.id, title: 'Rooftop unit inspection', description: 'Inspect rooftop HVAC units and capture service notes.', status: 'SCHEDULED', scheduledStart, scheduledEnd, total: 450 }
   });
 
   await prisma.scheduleItem.upsert({
@@ -195,7 +244,7 @@ async function main() {
   const quote = await prisma.quote.upsert({
     where: { id: 'demo-quote' },
     update: { subtotal: 450, total: 450, amount: 450 },
-    create: { id: 'demo-quote', companyId: company.id, customerId: customer.id, serviceId: service.id, jobId: job.id, title: 'Quarterly HVAC maintenance', status: 'SENT', sentAt: new Date(), amount: 450, subtotal: 450, total: 450 }
+    create: { id: 'demo-quote', companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, jobId: job.id, title: 'Quarterly HVAC maintenance', status: 'SENT', sentAt: new Date(), amount: 450, subtotal: 450, total: 450 }
   });
 
   await prisma.quoteLineItem.upsert({
@@ -213,13 +262,116 @@ async function main() {
   const invoice = await prisma.invoice.upsert({
     where: { companyId_number: { companyId: company.id, number: 'INV-0001' } },
     update: { subtotal: 450, total: 450, amount: 450, balanceDue: 450 },
-    create: { companyId: company.id, customerId: customer.id, serviceId: service.id, jobId: job.id, quoteId: quote.id, number: 'INV-0001', status: 'SENT', amount: 450, subtotal: 450, total: 450, balanceDue: 450, dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }
+    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, jobId: job.id, quoteId: quote.id, number: 'INV-0001', status: 'SENT', amount: 450, subtotal: 450, total: 450, balanceDue: 450, dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }
   });
 
   await prisma.invoiceLineItem.upsert({
     where: { id: 'demo-invoice-line' },
     update: { unitPrice: 450, lineTotal: 450 },
     create: { id: 'demo-invoice-line', companyId: company.id, invoiceId: invoice.id, serviceId: service.id, description: 'Quarterly HVAC maintenance', quantity: 1, unitPrice: 450, lineTotal: 450 }
+  });
+
+
+
+  const asset = await prisma.asset.upsert({
+    where: { companyId_assetTag: { companyId: company.id, assetTag: 'HVAC-RTU-001' } },
+    update: { branchId: branch.id, customerId: customer.id, serviceId: service.id, status: 'ACTIVE' },
+    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, name: 'Rooftop HVAC Unit 1', assetType: 'HVAC', assetTag: 'HVAC-RTU-001', locationLabel: 'Roof Block A', status: 'ACTIVE' }
+  });
+
+  const assetTwo = await prisma.asset.upsert({
+    where: { companyId_assetTag: { companyId: company.id, assetTag: 'HVAC-RTU-002' } },
+    update: { branchId: branch.id, customerId: customer.id, serviceId: service.id, status: 'ACTIVE' },
+    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, name: 'Rooftop HVAC Unit 2', assetType: 'HVAC', assetTag: 'HVAC-RTU-002', locationLabel: 'Roof Block B', status: 'ACTIVE' }
+  });
+
+  const contract = await prisma.serviceContract.upsert({
+    where: { companyId_contractNumber: { companyId: company.id, contractNumber: 'DEMO-SLA-001' } },
+    update: { branchId: branch.id, status: 'ACTIVE', currency: 'USD', contractValue: 5400 },
+    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, contractNumber: 'DEMO-SLA-001', name: 'North Ridge HVAC SLA', status: 'ACTIVE', startDate: new Date(), currency: 'USD', contractValue: 5400, billingInterval: 'QUARTERLY', responseSlaHours: 8, completionSlaHours: 48, includedVisits: 4 }
+  });
+
+  await prisma.serviceContractAsset.upsert({
+    where: { companyId_contractId_assetId: { companyId: company.id, contractId: contract.id, assetId: asset.id } },
+    update: {},
+    create: { companyId: company.id, contractId: contract.id, assetId: asset.id }
+  });
+
+  await prisma.contractServiceLine.upsert({
+    where: { id: 'demo-contract-service-line' },
+    update: { nextDueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
+    create: { id: 'demo-contract-service-line', companyId: company.id, contractId: contract.id, serviceId: service.id, title: 'Quarterly HVAC visit', frequency: 'QUARTERLY', nextDueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), defaultDurationMinutes: 120, requiresProofPhotos: true, requiresSignature: true }
+  });
+
+  await prisma.job.update({ where: { id: job.id }, data: { branchId: branch.id, contractId: contract.id } });
+  await prisma.jobAsset.upsert({
+    where: { companyId_jobId_assetId: { companyId: company.id, jobId: job.id, assetId: asset.id } },
+    update: { primaryAsset: true },
+    create: { companyId: company.id, jobId: job.id, assetId: asset.id, primaryAsset: true }
+  });
+
+  const supplier = await prisma.supplier.upsert({
+    where: { companyId_name: { companyId: company.id, name: 'Demo Parts Supplier' } },
+    update: { active: true },
+    create: { companyId: company.id, name: 'Demo Parts Supplier', email: 'parts@supplier.test', phone: '+263 000 000 101', active: true }
+  });
+
+  const warehouse = await prisma.stockLocation.upsert({
+    where: { companyId_name: { companyId: company.id, name: 'Harare Warehouse' } },
+    update: { branchId: branch.id, active: true },
+    create: { companyId: company.id, branchId: branch.id, name: 'Harare Warehouse', type: 'WAREHOUSE', active: true }
+  });
+
+  const demoItems = [
+    ['FILTER-A', 'Filter Set A', 25, 5],
+    ['BELT-13', 'Drive Belt 13mm', 8, 10],
+    ['FUSE-10A', '10A Fuse', 2, 20],
+    ['CLEANER', 'Coil Cleaner', 12, 6],
+    ['LOW-STOCK', 'Low Stock Control Board', 120, 1]
+  ];
+  const itemRecords = [];
+  for (const [sku, name, unitCost, reorderPoint] of demoItems) {
+    const item = await prisma.inventoryItem.upsert({
+      where: { companyId_sku: { companyId: company.id, sku } },
+      update: { name, unitCost, reorderPoint, active: true },
+      create: { companyId: company.id, sku, name, unitCost, reorderPoint, unitOfMeasure: 'each', active: true }
+    });
+    itemRecords.push(item);
+  }
+
+  await prisma.inventoryStock.upsert({
+    where: { companyId_itemId_locationId: { companyId: company.id, itemId: itemRecords[0].id, locationId: warehouse.id } },
+    update: { quantityOnHand: 20 },
+    create: { companyId: company.id, itemId: itemRecords[0].id, locationId: warehouse.id, quantityOnHand: 20 }
+  });
+  await prisma.inventoryStock.upsert({
+    where: { companyId_itemId_locationId: { companyId: company.id, itemId: itemRecords[4].id, locationId: warehouse.id } },
+    update: { quantityOnHand: 1 },
+    create: { companyId: company.id, itemId: itemRecords[4].id, locationId: warehouse.id, quantityOnHand: 1 }
+  });
+
+  const purchaseRequest = await prisma.purchaseRequest.upsert({
+    where: { id: 'demo-purchase-request' },
+    update: { status: 'REQUESTED', branchId: branch.id },
+    create: { id: 'demo-purchase-request', companyId: company.id, branchId: branch.id, requestedById: owner.id, jobId: job.id, status: 'REQUESTED', reason: 'Low stock demo item' }
+  });
+
+  const purchaseOrder = await prisma.purchaseOrder.upsert({
+    where: { companyId_orderNumber: { companyId: company.id, orderNumber: 'PO-0001' } },
+    update: { branchId: branch.id, supplierId: supplier.id, purchaseRequestId: purchaseRequest.id, status: 'SENT' },
+    create: { companyId: company.id, branchId: branch.id, supplierId: supplier.id, purchaseRequestId: purchaseRequest.id, orderNumber: 'PO-0001', status: 'SENT' }
+  });
+
+  await prisma.purchaseOrderLine.upsert({
+    where: { id: 'demo-po-line' },
+    update: { quantity: 2, unitCost: 120 },
+    create: { id: 'demo-po-line', companyId: company.id, purchaseOrderId: purchaseOrder.id, itemId: itemRecords[4].id, quantity: 2, unitCost: 120 }
+  });
+
+  await prisma.workerDevice.upsert({
+    where: { companyId_deviceId: { companyId: company.id, deviceId: 'demo-worker-device' } },
+    update: { lastSeenAt: new Date(), active: true },
+    create: { companyId: company.id, workerId: worker.id, userId: workerUser.id, platform: 'ANDROID', deviceName: 'Demo Technician Phone', deviceId: 'demo-worker-device', lastSeenAt: new Date(), active: true }
   });
 
   await prisma.auditLog.create({ data: { companyId: company.id, userId: owner.id, action: 'SEED', entity: 'Company', entityId: company.id, metadata: { invoiceId: invoice.id } } });

@@ -91,6 +91,7 @@ const financeProviderValues = ['MANUAL_CSV', 'XERO', 'QUICKBOOKS', 'SAGE', 'ZOHO
 const financeIntegrationStatusValues = ['DISCONNECTED', 'CONFIGURED', 'ACTIVE', 'ERROR', 'DISABLED'];
 const financeExportTypeValues = ['INVOICES', 'PAYMENTS', 'RECEIPTS', 'CUSTOMERS'];
 const financeExportStatusValues = ['COMPLETED', 'FAILED'];
+const paymentMethodValues = ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'CARD', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'MANUAL_ADJUSTMENT', 'CUSTOM_MANUAL', 'OTHER'];
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
 const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED'];
 const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'PART_USED', 'PART_SHORTAGE'];
@@ -359,18 +360,68 @@ function financeSettingsDefaults(companyId) {
   return {
     id: null,
     companyId,
+    country: 'ZW',
+    timezone: 'Africa/Harare',
     defaultCurrency: 'USD',
     allowedCurrencies: ['USD', 'ZAR'],
     taxName: 'Tax',
     taxRate: 0,
     pricesIncludeTax: false,
+    dateFormat: 'yyyy-MM-dd',
+    numberFormat: 'en-ZW',
     invoicePrefix: 'INV',
     receiptPrefix: 'RCT',
+    quoteExpiryDays: 14,
+    paymentTermsDays: 14,
     fiscalYearStartMonth: 1,
     invoiceFooter: null,
+    allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'CARD', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'MANUAL_ADJUSTMENT', 'CUSTOM_MANUAL', 'OTHER'],
+    paymentInstructions: null,
     createdAt: null,
     updatedAt: null
   };
+}
+
+function financeLocalization(settings) {
+  const merged = { ...financeSettingsDefaults(settings && settings.companyId || null), ...(settings || {}) };
+  return {
+    country: merged.country,
+    timezone: merged.timezone,
+    defaultCurrency: merged.defaultCurrency,
+    allowedCurrencies: Array.isArray(merged.allowedCurrencies) ? merged.allowedCurrencies : ['USD'],
+    taxName: merged.taxName,
+    taxRate: Number(merged.taxRate || 0),
+    pricesIncludeTax: Boolean(merged.pricesIncludeTax),
+    dateFormat: merged.dateFormat,
+    numberFormat: merged.numberFormat,
+    invoicePrefix: merged.invoicePrefix || 'INV',
+    receiptPrefix: merged.receiptPrefix || 'RCT',
+    quoteExpiryDays: Number(merged.quoteExpiryDays || 14),
+    paymentTermsDays: Number(merged.paymentTermsDays || 14),
+    allowedPaymentMethods: Array.isArray(merged.allowedPaymentMethods) ? merged.allowedPaymentMethods : financeSettingsDefaults().allowedPaymentMethods,
+    paymentInstructions: merged.paymentInstructions || null
+  };
+}
+
+function addDaysFromNow(days) {
+  const date = new Date();
+  date.setDate(date.getDate() + Number(days || 0));
+  return date;
+}
+
+async function paymentMethodsForCompany(companyId, tx = prisma) {
+  const settings = financeLocalization(await getCompanyFinanceSettings(companyId, tx));
+  return settings.allowedPaymentMethods.filter((method) => paymentMethodValues.includes(method));
+}
+
+async function assertPaymentMethodAllowed(companyId, method, tx = prisma) {
+  const allowed = await paymentMethodsForCompany(companyId, tx);
+  if (!allowed.includes(method)) throw new AppError(400, 'Payment method is not enabled for this company');
+}
+
+function attachLocalization(record, settings) {
+  if (!record) return record;
+  return { ...record, localization: financeLocalization(settings) };
 }
 
 async function getCompanyFinanceSettings(companyId, tx = prisma) {
@@ -510,16 +561,29 @@ const messageLogQuerySchema = z.object({
 });
 
 const currencyCode = z.string().trim().transform((value) => value.toUpperCase()).refine((value) => /^[A-Z]{3}$/.test(value), 'Currency must be a 3-letter ISO code');
+const countryCode = z.string().trim().transform((value) => value.toUpperCase()).refine((value) => /^[A-Z]{2}$/.test(value), 'Country must be a 2-letter ISO code');
 const financeSettingsSchema = z.object({
+  country: countryCode.optional(),
+  timezone: z.string().trim().min(1).max(80).optional(),
   defaultCurrency: currencyCode.optional(),
   allowedCurrencies: z.array(currencyCode).max(20).optional(),
   taxName: optionalText(40),
   taxRate: z.coerce.number().min(0).max(100).optional(),
   pricesIncludeTax: z.boolean().optional(),
+  dateFormat: z.string().trim().min(2).max(40).optional(),
+  numberFormat: z.string().trim().min(2).max(40).optional(),
   invoicePrefix: optionalText(20),
   receiptPrefix: optionalText(20),
+  quoteExpiryDays: z.coerce.number().int().min(1).max(365).optional(),
+  paymentTermsDays: z.coerce.number().int().min(0).max(365).optional(),
   fiscalYearStartMonth: z.coerce.number().int().min(1).max(12).optional(),
-  invoiceFooter: optionalText(1000)
+  invoiceFooter: optionalText(1000),
+  allowedPaymentMethods: z.array(z.enum(paymentMethodValues)).max(20).optional(),
+  paymentInstructions: optionalText(1000)
+}).superRefine((value, ctx) => {
+  if (value.defaultCurrency && value.allowedCurrencies && !value.allowedCurrencies.includes(value.defaultCurrency)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['allowedCurrencies'], message: 'Allowed currencies must include the default currency' });
+  }
 });
 const financeIntegrationConfigSchema = z.record(z.union([z.string().trim().max(500), z.boolean(), z.number()])).default({});
 const financeIntegrationCreateSchema = z.object({
@@ -1506,9 +1570,9 @@ async function publicBookingCompany() {
   return company;
 }
 
-function publicCompanySummary(company) {
+function publicCompanySummary(company, financeSettings) {
   const branding = publicBranding(company);
-  return { brandName: branding.brandName, logoUrl: branding.logoUrl, primaryColor: branding.primaryColor, secondaryColor: branding.secondaryColor, accentColor: branding.accentColor, supportEmail: branding.supportEmail, supportPhone: branding.supportPhone };
+  return { brandName: branding.brandName, logoUrl: branding.logoUrl, primaryColor: branding.primaryColor, secondaryColor: branding.secondaryColor, accentColor: branding.accentColor, supportEmail: branding.supportEmail, supportPhone: branding.supportPhone, localization: financeLocalization(financeSettings || financeSettingsDefaults(company && company.id)) };
 }
 
 function contactKey(value) {
@@ -1584,13 +1648,15 @@ async function createPublicReference(tx, companyId) {
 }
 
 router.get('/public/company', asyncHandler(async (req, res) => {
-  sendData(res, normalize(publicCompanySummary(await publicBookingCompany())));
+  const company = await publicBookingCompany();
+  sendData(res, normalize(publicCompanySummary(company, await getCompanyFinanceSettings(company.id))));
 }));
 
 router.get('/public/services', asyncHandler(async (req, res) => {
   const company = await publicBookingCompany();
+  const finance = financeLocalization(await getCompanyFinanceSettings(company.id));
   const services = await prisma.service.findMany({ where: { companyId: company.id, active: true }, orderBy: { name: 'asc' }, select: { id: true, name: true, description: true, price: true } });
-  sendData(res, normalize(services.map((service) => ({ id: service.id, name: service.name, description: service.description || null, basePrice: service.price }))));
+  sendData(res, normalize(services.map((service) => ({ id: service.id, name: service.name, description: service.description || null, basePrice: service.price, currency: finance.defaultCurrency, taxName: finance.taxName }))));
 }));
 
 router.post('/public/booking-requests', bookingPhotoUploadMiddleware, validate(publicBookingRequestSchema), asyncHandler(async (req, res) => {
@@ -2122,7 +2188,17 @@ router.get('/company/profile', asyncHandler(async (req, res) => {
 
 
 router.get('/company/finance-settings', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  sendData(res, normalize(await getCompanyFinanceSettings(req.companyId)));
+  sendData(res, normalize(financeLocalization(await getCompanyFinanceSettings(req.companyId))));
+}));
+
+router.get('/company/localization', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const [finance, scheduling] = await Promise.all([getCompanyFinanceSettings(req.companyId), getSchedulingSettings(req.companyId).catch(() => null)]);
+  sendData(res, normalize({ ...financeLocalization(finance), schedulingTimezone: scheduling && scheduling.timezone || finance.timezone || 'Africa/Harare' }));
+}));
+
+router.get('/company/payment-methods', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const settings = financeLocalization(await getCompanyFinanceSettings(req.companyId));
+  sendData(res, normalize({ methods: settings.allowedPaymentMethods, instructions: settings.paymentInstructions || null }));
 }));
 
 router.patch('/company/finance-settings', requireRole(...adminRoles), validate(financeSettingsSchema), asyncHandler(async (req, res) => {
@@ -2132,8 +2208,11 @@ router.patch('/company/finance-settings', requireRole(...adminRoles), validate(f
     update,
     create: { ...financeSettingsDefaults(req.companyId), ...update, id: undefined, createdAt: undefined, updatedAt: undefined }
   });
-  await audit(req, 'UPDATE', 'CompanyFinanceSettings', data.id, { section: 'finance' });
-  sendData(res, normalize(data));
+  if (update.timezone) {
+    await prisma.companySchedulingSettings.upsert({ where: { companyId: req.companyId }, update: { timezone: update.timezone }, create: { ...schedulingDefaults(), companyId: req.companyId, timezone: update.timezone } });
+  }
+  await audit(req, 'UPDATE', 'CompanyFinanceSettings', data.id, { section: 'finance-localization' });
+  sendData(res, normalize(financeLocalization(data)));
 }));
 
 router.get('/finance/integrations', requireRole(...adminRoles), asyncHandler(async (req, res) => {
@@ -4202,14 +4281,17 @@ router.get('/quotes', requireRole(...adminRoles), asyncHandler(async (req, res) 
     getCompanyWithBranding(req.companyId),
     paged(prisma.quote, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req), ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
   ]);
-  sendData(res, normalize(result.data.map((item) => ({ ...item, branding: publicBranding(company) }))), 200, result.meta);
+  const finance = await getCompanyFinanceSettings(req.companyId);
+  sendData(res, normalize(result.data.map((item) => attachLocalization({ ...item, branding: publicBranding(company) }, finance))), 200, result.meta);
 }));
 
 router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncHandler(async (req, res) => {
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateQuoteRelations(req, req.body);
+  const finance = await getCompanyFinanceSettings(req.companyId);
   const data = await prisma.$transaction(async (tx) => {
     const { lineItems, amount: ignoredAmount, ...quoteData } = req.body;
+    if (!quoteData.validUntil) quoteData.validUntil = addDaysFromNow(financeLocalization(finance).quoteExpiryDays);
     const quote = await tx.quote.create({
   data: {
     ...quoteData,
@@ -4227,13 +4309,13 @@ router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncH
     return recalcQuote(tx, req.companyId, quote.id);
   });
   await audit(req, 'CREATE', 'Quote', data.id);
-  sendData(res, normalize(data), 201);
+  sendData(res, normalize(attachLocalization(data, finance)), 201);
 }));
 
 router.get('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireQuote(req, req.params.id);
   const data = await prisma.quote.findFirst({ where: { id: req.params.id, companyId: req.companyId, deletedAt: null }, include: quoteInclude });
-  sendData(res, normalize(data));
+  sendData(res, normalize(attachLocalization(data, await getCompanyFinanceSettings(req.companyId))));
 }));
 
 router.patch('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(quoteSchema.partial()), asyncHandler(async (req, res) => {
@@ -4400,15 +4482,18 @@ router.get('/invoices', requireRole(...adminRoles), asyncHandler(async (req, res
     getCompanyWithBranding(req.companyId),
     paged(prisma.invoice, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
   ]);
-  sendData(res, normalize(result.data.map((item) => ({ ...item, branding: publicBranding(company) }))), 200, result.meta);
+  const finance = await getCompanyFinanceSettings(req.companyId);
+  sendData(res, normalize(result.data.map((item) => attachLocalization({ ...item, branding: publicBranding(company) }, finance))), 200, result.meta);
 }));
 
 router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), asyncHandler(async (req, res) => {
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateInvoiceRelations(req, req.body);
   if (req.body.quoteId) await requireQuote(req, req.body.quoteId);
+  const finance = await getCompanyFinanceSettings(req.companyId);
   const data = await prisma.$transaction(async (tx) => {
     const { lineItems, amount: ignoredAmount, ...invoiceData } = req.body;
+    if (!invoiceData.dueDate) invoiceData.dueDate = addDaysFromNow(financeLocalization(finance).paymentTermsDays);
     const number = invoiceData.number || await nextInvoiceNumber(tx, req.companyId);
     const invoice = await tx.invoice.create({ data: { ...invoiceData, number, companyId: req.companyId, status: 'DRAFT' } });
     for (const [index, item] of fallbackInvoiceLines(req.body).entries()) {
@@ -4419,13 +4504,13 @@ router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), as
     return recalcInvoice(tx, req.companyId, invoice.id);
   });
   await audit(req, 'CREATE', 'Invoice', data.id);
-  sendData(res, normalize(data), 201);
+  sendData(res, normalize(attachLocalization(data, finance)), 201);
 }));
 
 router.get('/invoices/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireInvoice(req, req.params.id);
   const data = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: invoiceInclude });
-  sendData(res, normalize(data));
+  sendData(res, normalize(attachLocalization(data, await getCompanyFinanceSettings(req.companyId))));
 }));
 
 router.patch('/invoices/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(invoiceSchema.partial()), asyncHandler(async (req, res) => {
@@ -4457,7 +4542,8 @@ router.post('/jobs/:id/create-invoice', requireRole(...adminRoles), validate(idP
   const quote = await prisma.quote.findFirst({ where: { companyId: req.companyId, jobId: job.id, deletedAt: null }, include: { lineItems: true } });
   const data = await prisma.$transaction(async (tx) => {
     const number = await nextInvoiceNumber(tx, req.companyId);
-    const invoice = await tx.invoice.create({ data: { companyId: req.companyId, customerId: job.customerId, serviceId: job.serviceId, jobId: job.id, quoteId: quote && quote.id, number, status: 'DRAFT' } });
+    const finance = await getCompanyFinanceSettings(req.companyId, tx);
+    const invoice = await tx.invoice.create({ data: { companyId: req.companyId, branchId: job.branchId || null, customerId: job.customerId, serviceId: job.serviceId, jobId: job.id, quoteId: quote && quote.id, number, status: 'DRAFT', dueDate: addDaysFromNow(financeLocalization(finance).paymentTermsDays) } });
     const sourceLines = quote && quote.lineItems && quote.lineItems.length ? quote.lineItems : [{ serviceId: job.serviceId, description: job.title, quantity: 1, unitPrice: job.total || 0, sortOrder: 0 }];
     for (const [index, item] of sourceLines.entries()) {
       await tx.invoiceLineItem.create({ data: { serviceId: item.serviceId, description: item.description || job.title, quantity: item.quantity || 1, unitPrice: item.unitPrice || item.lineTotal || job.total || 0, discountAmount: item.discountAmount || 0, taxAmount: item.taxAmount || 0, ...moneyLine(item), companyId: req.companyId, invoiceId: invoice.id, sortOrder: item.sortOrder ?? index } });
@@ -4544,7 +4630,7 @@ router.delete('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles)
   sendData(res, normalize(data));
 }));
 
-const paymentSchema = z.object({ amount: amount, method: z.enum(['CASH', 'BANK_TRANSFER', 'PAYNOW', 'CARD', 'MANUAL_ADJUSTMENT', 'OTHER']).default('OTHER'), status: z.enum(['PENDING', 'CONFIRMED']).optional(), reference: z.string().optional(), receivedAt: optionalDate, notes: z.string().optional() });
+const paymentSchema = z.object({ amount: amount, method: z.enum(paymentMethodValues).default('OTHER'), status: z.enum(['PENDING', 'CONFIRMED']).optional(), reference: z.string().trim().max(200).optional(), receivedAt: optionalDate, notes: z.string().trim().max(1000).optional() });
 
 router.get('/invoices/:id/payments', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireInvoice(req, req.params.id);
@@ -4555,6 +4641,7 @@ router.get('/invoices/:id/payments', requireRole(...adminRoles), validate(idPara
 router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentSchema), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID') throw new AppError(409, 'Invoice is already paid');
+  await assertPaymentMethodAllowed(req.companyId, req.body.method);
   const confirmNow = req.body.status === 'CONFIRMED';
   const balance = toDecimal(invoice.balanceDue || invoice.total || invoice.amount);
   if (confirmNow && toDecimal(req.body.amount).greaterThan(balance)) throw new AppError(400, 'Payment exceeds invoice balance');

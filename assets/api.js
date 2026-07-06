@@ -1,8 +1,8 @@
 (function(){
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
   const page = document.body.dataset.page || 'dashboard';
-  const money = { format(value) { const currency = state.financeSettings && state.financeSettings.defaultCurrency || 'USD'; return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(value || 0)); } };
-  const receiptMoney = { format(value) { const currency = state.financeSettings && state.financeSettings.defaultCurrency || 'USD'; return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0)); } };
+  const money = { format(value) { const settings = state.financeSettings || {}; const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(value || 0)); } };
+  const receiptMoney = { format(value) { const settings = state.financeSettings || {}; const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0)); } };
   const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], assets: [], serviceContracts: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, financeSettings: null, financeIntegrations: [], financeExportLogs: [], reports: null, activeReportTab: 'overview' };
 
   const tableConfigs = {
@@ -2671,23 +2671,32 @@
   function financePayload(form) {
     const data = Object.fromEntries(new FormData(form).entries());
     const allowedRaw = String(data.allowedCurrencies || '').trim();
+    const paymentRaw = String(data.allowedPaymentMethods || '').trim();
     return {
+      country: data.country ? String(data.country).toUpperCase() : undefined,
+      timezone: data.timezone || undefined,
       defaultCurrency: data.defaultCurrency ? String(data.defaultCurrency).toUpperCase() : undefined,
       allowedCurrencies: allowedRaw ? allowedRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
       taxName: data.taxName || undefined,
       taxRate: data.taxRate === '' ? undefined : Number(data.taxRate),
       pricesIncludeTax: Boolean(form.querySelector('[name="pricesIncludeTax"]') && form.querySelector('[name="pricesIncludeTax"]').checked),
+      dateFormat: data.dateFormat || undefined,
+      numberFormat: data.numberFormat || undefined,
       invoicePrefix: data.invoicePrefix || undefined,
       receiptPrefix: data.receiptPrefix || undefined,
+      quoteExpiryDays: data.quoteExpiryDays === '' ? undefined : Number(data.quoteExpiryDays),
+      paymentTermsDays: data.paymentTermsDays === '' ? undefined : Number(data.paymentTermsDays),
       fiscalYearStartMonth: data.fiscalYearStartMonth === '' ? undefined : Number(data.fiscalYearStartMonth),
-      invoiceFooter: data.invoiceFooter || undefined
+      invoiceFooter: data.invoiceFooter || undefined,
+      allowedPaymentMethods: paymentRaw ? paymentRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
+      paymentInstructions: data.paymentInstructions || undefined
     };
   }
 
   function fillFinanceForm(settings) {
     document.querySelectorAll('[data-finance-field]').forEach((field) => {
       const value = settings && settings[field.dataset.financeField];
-      if (field.name === 'allowedCurrencies') field.value = Array.isArray(value) ? value.join(',') : '';
+      if (field.name === 'allowedCurrencies' || field.name === 'allowedPaymentMethods') field.value = Array.isArray(value) ? value.join(',') : '';
       else if (field.type === 'checkbox') field.checked = Boolean(value);
       else field.value = value == null ? '' : value;
     });

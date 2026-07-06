@@ -1682,7 +1682,7 @@ test('public booking request validation and public services are safe', async () 
   assert.equal(inactive.status, 404);
   const services = await request(app).get('/api/public/services');
   assert.equal(services.status, 200);
-  assert.deepEqual(Object.keys(services.body.data[0]).sort(), ['basePrice', 'description', 'id', 'name']);
+  assert.deepEqual(Object.keys(services.body.data[0]).sort(), ['basePrice', 'currency', 'description', 'id', 'name', 'taxName']);
   assert.equal(services.body.data.some((service) => service.id === 'service-inactive'), false);
   assertNoPasswordHash(services.body);
 });
@@ -3018,4 +3018,97 @@ test('task5 deeper reports are admin-only and branch aware', async () => {
   }
 
   assert.equal((await worker.get('/api/reports/branch-performance')).status, 403);
+});
+
+test('task6 localization settings control defaults and payment methods safely', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  assert.equal((await worker.get('/api/company/localization')).status, 403);
+
+  const saved = await admin.patch('/api/company/finance-settings').send({
+    country: 'za',
+    timezone: 'Africa/Johannesburg',
+    defaultCurrency: 'zar',
+    allowedCurrencies: ['ZAR', 'USD'],
+    taxName: 'VAT',
+    taxRate: 15,
+    dateFormat: 'dd/MM/yyyy',
+    numberFormat: 'en-ZA',
+    quoteExpiryDays: 7,
+    paymentTermsDays: 21,
+    allowedPaymentMethods: ['BANK_TRANSFER', 'YOCO', 'EXTERNAL_PAYMENT_LINK'],
+    paymentInstructions: 'Use bank EFT or Yoco link.'
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.data.country, 'ZA');
+  assert.equal(saved.body.data.defaultCurrency, 'ZAR');
+  assert.deepEqual(saved.body.data.allowedPaymentMethods, ['BANK_TRANSFER', 'YOCO', 'EXTERNAL_PAYMENT_LINK']);
+
+  const localization = await admin.get('/api/company/localization');
+  assert.equal(localization.status, 200);
+  assert.equal(localization.body.data.timezone, 'Africa/Johannesburg');
+  assert.equal(localization.body.data.schedulingTimezone, 'Africa/Johannesburg');
+
+  const methods = await admin.get('/api/company/payment-methods');
+  assert.equal(methods.status, 200);
+  assert.equal(methods.body.data.methods.includes('YOCO'), true);
+  assert.equal(methods.body.data.instructions, 'Use bank EFT or Yoco link.');
+
+  const quote = await admin.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'Localized Quote', amount: 100 });
+  assert.equal(quote.status, 201);
+  assert.equal(quote.body.data.localization.defaultCurrency, 'ZAR');
+  assert.ok(quote.body.data.validUntil);
+
+  const invoice = await admin.post('/api/invoices').send({ customerId: 'customer-a', serviceId: 'service-a', amount: 100 });
+  assert.equal(invoice.status, 201);
+  assert.equal(invoice.body.data.localization.taxName, 'VAT');
+  assert.ok(invoice.body.data.dueDate);
+
+  const disallowed = await admin.post('/api/invoices/' + invoice.body.data.id + '/payments').send({ amount: 100, method: 'CASH', status: 'CONFIRMED' });
+  assert.equal(disallowed.status, 400);
+
+  const paid = await admin.post('/api/invoices/' + invoice.body.data.id + '/payments').send({ amount: 100, method: 'BANK_TRANSFER', status: 'CONFIRMED', reference: 'EFT-123' });
+  assert.equal(paid.status, 201);
+  assert.equal(app.locals.testDb.payments.some((payment) => payment.method === 'BANK_TRANSFER' && payment.reference === 'EFT-123'), true);
+});
+
+test('task6 public localization and notification templates are available', async () => {
+  const app = await buildApp();
+  app.locals.testDb.companyFinanceSettings.push({
+    id: 'finance-public-a',
+    companyId: 'company-a',
+    country: 'ZW',
+    timezone: 'Africa/Harare',
+    defaultCurrency: 'USD',
+    allowedCurrencies: ['USD', 'ZAR'],
+    taxName: 'VAT',
+    taxRate: 15,
+    numberFormat: 'en-ZW',
+    dateFormat: 'yyyy-MM-dd',
+    quoteExpiryDays: 14,
+    paymentTermsDays: 14,
+    allowedPaymentMethods: ['CASH', 'PAYNOW']
+  });
+
+  const publicCompany = await request(app).get('/api/public/company');
+  assert.equal(publicCompany.status, 200);
+  assert.equal(publicCompany.body.data.localization.defaultCurrency, 'USD');
+  assert.equal(publicCompany.body.data.localization.taxName, 'VAT');
+
+  const services = await request(app).get('/api/public/services');
+  assert.equal(services.status, 200);
+  assert.equal(services.body.data[0].currency, 'USD');
+  assert.equal(services.body.data[0].taxName, 'VAT');
+
+  const { buildNotificationTemplate, buildWhatsAppTemplate } = require('../src/services/notificationTemplates.service');
+  for (const eventType of ['CONTRACT_ACTIVATED', 'MAINTENANCE_VISIT_DUE', 'SLA_AT_RISK', 'SLA_BREACHED', 'JOB_PROOF_READY', 'INVOICE_OVERDUE', 'PURCHASE_SHORTAGE_BLOCKING_JOB']) {
+    const email = buildNotificationTemplate(eventType, { company: { name: 'Company A' }, record: { id: 'record-1', title: 'Task 1', number: 'INV-1', total: 100 }, localization: { defaultCurrency: 'ZAR', numberFormat: 'en-ZA', timezone: 'Africa/Johannesburg' } });
+    const whatsapp = buildWhatsAppTemplate(eventType, { record: { id: 'record-1', title: 'Task 1', number: 'INV-1', total: 100 }, localization: { defaultCurrency: 'ZAR', numberFormat: 'en-ZA' } });
+    assert.equal(Boolean(email.subject), true);
+    assert.equal(Boolean(email.text), true);
+    assert.equal(Boolean(whatsapp.label), true);
+    assert.equal(Boolean(whatsapp.text), true);
+  }
 });

@@ -67,6 +67,10 @@ async function loadRecord(eventType, companyId, relatedId, fallback) {
     const invoice = await prisma.invoice.findFirst({ where: { id: payment.invoiceId, companyId }, include: { customer: true, service: true, job: true } });
     return { ...payment, invoice };
   }
+  if (eventType === 'CONTRACT_ACTIVATED') return prisma.serviceContract.findFirst({ where: { id: relatedId, companyId }, include: { customer: true } }).catch(() => null);
+  if (eventType === 'INVOICE_OVERDUE') return prisma.invoice.findFirst({ where: { id: relatedId, companyId }, include: { customer: true, service: true, job: true } });
+  if (['SLA_AT_RISK', 'SLA_BREACHED', 'JOB_PROOF_READY', 'MAINTENANCE_VISIT_DUE'].includes(eventType)) return prisma.job.findFirst({ where: { id: relatedId, companyId }, include: { customer: true, service: true, worker: { include: { user: { select: { id: true, email: true, name: true, role: true } } } }, proofPhotos: true, signature: true } });
+  if (eventType === 'PURCHASE_SHORTAGE_BLOCKING_JOB') return prisma.jobPartUsage.findFirst({ where: { id: relatedId, companyId }, include: { job: true, item: true } }).catch(() => null);
   if (eventType.startsWith('JOB_') || eventType === 'WORKER_ASSIGNED') return prisma.job.findFirst({ where: { id: relatedId, companyId }, include: { customer: true, service: true, worker: { include: { user: { select: { id: true, email: true, name: true, role: true } } } }, proofPhotos: true, signature: true } });
   return null;
 }
@@ -77,6 +81,11 @@ async function recipientsFor(eventType, companyId, record, tenant) {
   if (['QUOTE_ACCEPTED', 'QUOTE_REJECTED'].includes(eventType)) return adminRecipients(companyId, tenant);
   if (['QUOTE_SENT', 'INVOICE_SENT'].includes(eventType)) return clientRecipient(companyId, record.customer, record);
   if (eventType === 'PAYMENT_RECEIVED') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.invoice && record.invoice.customer, record.invoice));
+  if (eventType === 'CONTRACT_ACTIVATED') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.customer, record));
+  if (['MAINTENANCE_VISIT_DUE', 'SLA_AT_RISK', 'SLA_BREACHED'].includes(eventType)) return (await adminRecipients(companyId, tenant)).concat(await workerRecipient(companyId, record.workerId));
+  if (eventType === 'JOB_PROOF_READY') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.customer, record));
+  if (eventType === 'INVOICE_OVERDUE') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.customer, record));
+  if (eventType === 'PURCHASE_SHORTAGE_BLOCKING_JOB') return adminRecipients(companyId, tenant);
   if (['JOB_SCHEDULED', 'JOB_RESCHEDULED'].includes(eventType)) return (await clientRecipient(companyId, record.customer, record)).concat(await workerRecipient(companyId, record.workerId));
   if (eventType === 'WORKER_ASSIGNED') return workerRecipient(companyId, record.workerId);
   if (eventType === 'JOB_COMPLETED') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.customer, record));
