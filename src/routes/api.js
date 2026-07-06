@@ -92,6 +92,8 @@ const financeIntegrationStatusValues = ['DISCONNECTED', 'CONFIGURED', 'ACTIVE', 
 const financeExportTypeValues = ['INVOICES', 'PAYMENTS', 'RECEIPTS', 'CUSTOMERS'];
 const financeExportStatusValues = ['COMPLETED', 'FAILED'];
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
+const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED'];
+const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'PART_USED', 'PART_SHORTAGE'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -516,6 +518,32 @@ const financeMarkExportedSchema = z.object({
   exportedAt: optionalDate
 });
 
+const workerDeviceRegisterSchema = z.object({
+  platform: z.string().trim().min(2).max(40).transform((value) => value.toUpperCase()),
+  deviceName: optionalText(120),
+  deviceId: z.string().trim().min(4).max(180)
+});
+const workerSyncBootstrapSchema = z.object({
+  deviceId: z.string().trim().min(4).max(180).optional()
+});
+const workerSyncPullQuerySchema = z.object({
+  since: optionalDate,
+  page: z.string().optional(),
+  limit: z.string().optional()
+});
+const offlinePayloadSchema = z.record(z.any()).default({});
+const offlineActionSchema = z.object({
+  idempotencyKey: z.string().trim().min(6).max(180),
+  actionType: z.enum(offlineActionTypeValues),
+  payload: offlinePayloadSchema
+});
+const workerSyncPushSchema = z.object({
+  deviceId: z.string().trim().min(4).max(180).optional(),
+  actions: z.array(offlineActionSchema).min(1).max(100)
+});
+const workerSyncStatusParam = z.object({ idempotencyKey: z.string().trim().min(1).max(180) });
+
+
 function lifecycleWorkerId(req, job) {
   return req.user.role === 'WORKER' && req.user.worker ? req.user.worker.id : job.workerId;
 }
@@ -585,12 +613,215 @@ function proofSummary(job, clientSafe = false) {
   };
 }
 
-function createActivityData(req, job, type, note, metadata) {
-  return { companyId: req.companyId, jobId: job.id, workerId: lifecycleWorkerId(req, job), userId: req.user.id, type, note, metadata };
+function createActivityData(req, job, type, note, metadata, syncMeta = {}) {
+  return {
+    companyId: req.companyId,
+    jobId: job.id,
+    workerId: lifecycleWorkerId(req, job),
+    userId: req.user.id,
+    type,
+    note,
+    metadata,
+    capturedAt: syncMeta.capturedAt,
+    offlineCreatedAt: syncMeta.offlineCreatedAt,
+    deviceId: syncMeta.deviceId,
+    syncId: syncMeta.syncId
+  };
 }
 
-async function addJobActivity(tx, req, job, type, note, metadata) {
-  return tx.jobActivity.create({ data: createActivityData(req, job, type, note, metadata), include: jobActivityInclude });
+async function addJobActivity(tx, req, job, type, note, metadata, syncMeta = {}) {
+  return tx.jobActivity.create({ data: createActivityData(req, job, type, note, metadata, syncMeta), include: jobActivityInclude });
+}
+
+function workerRequired(req) {
+  if (!req.user.worker) throw new AppError(403, 'Worker profile is required');
+  return req.user.worker;
+}
+
+function dateFromPayload(value) {
+  return value ? new Date(String(value)) : undefined;
+}
+
+function safeSyncMeta(payload = {}, deviceId, idempotencyKey) {
+  return {
+    capturedAt: dateFromPayload(payload.capturedAt),
+    offlineCreatedAt: dateFromPayload(payload.offlineCreatedAt),
+    deviceId: payload.deviceId || deviceId,
+    syncId: idempotencyKey
+  };
+}
+
+function offlineJob(job) {
+  if (!job) return job;
+  return normalize({
+    id: job.id,
+    title: job.title,
+    description: job.description,
+    status: job.status,
+    customerId: job.customerId,
+    serviceId: job.serviceId,
+    workerId: job.workerId,
+    scheduledStart: job.scheduledStart,
+    scheduledEnd: job.scheduledEnd,
+    arrivedAt: job.arrivedAt,
+    startedAt: job.startedAt,
+    pausedAt: job.pausedAt,
+    resumedAt: job.resumedAt,
+    completedAt: job.completedAt,
+    completionNotes: job.completionNotes,
+    requiresProofPhotos: job.requiresProofPhotos,
+    requiresBeforePhotos: job.requiresBeforePhotos,
+    requiresAfterPhotos: job.requiresAfterPhotos,
+    requiresSignature: job.requiresSignature,
+    requiresLocation: job.requiresLocation,
+    updatedAt: job.updatedAt,
+    customer: job.customer && { id: job.customer.id, name: job.customer.name, phone: job.customer.phone, address: job.customer.address },
+    service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description },
+    assets: (job.jobAssets || []).map((link) => link.asset && { id: link.asset.id, name: link.asset.name, assetType: link.asset.assetType, assetTag: link.asset.assetTag, locationLabel: link.asset.locationLabel }).filter(Boolean),
+    parts: (job.jobPartUsages || []).map(safeWorkerPart),
+    proofPhotos: job.proofPhotos || [],
+    signature: job.signature || null,
+    completionLocation: job.completionLocation || null
+  });
+}
+
+const offlineJobInclude = {
+  customer: true,
+  service: true,
+  jobAssets: { include: { asset: true } },
+  jobPartUsages: { include: { item: true, location: true } },
+  proofPhotos: { orderBy: { createdAt: 'desc' } },
+  signature: true,
+  completionLocation: true
+};
+
+async function registerOrTouchWorkerDevice(req, body, tx = prisma) {
+  const worker = workerRequired(req);
+  const now = new Date();
+  const existing = await tx.workerDevice.findFirst({ where: { companyId: req.companyId, deviceId: body.deviceId } });
+  const data = {
+    companyId: req.companyId,
+    workerId: worker.id,
+    userId: req.user.id,
+    platform: body.platform,
+    deviceName: body.deviceName,
+    deviceId: body.deviceId,
+    active: true,
+    lastSeenAt: now
+  };
+  if (existing) return tx.workerDevice.update({ where: { id: existing.id }, data });
+  return tx.workerDevice.create({ data });
+}
+
+async function resolveWorkerDevice(req, deviceId) {
+  if (!deviceId) return null;
+  const worker = workerRequired(req);
+  const device = await prisma.workerDevice.findFirst({ where: { companyId: req.companyId, workerId: worker.id, deviceId, active: true } });
+  if (!device) throw notFound('Worker device not found');
+  return device;
+}
+
+async function processOfflineAction(tx, req, queue, action, device) {
+  const payload = action.payload || {};
+  const meta = safeSyncMeta(payload, device && device.deviceId, action.idempotencyKey);
+  const jobId = payload.jobId;
+  if (!jobId) throw new AppError(400, 'payload.jobId is required');
+  const job = await tx.job.findFirst({ where: { id: jobId, companyId: req.companyId, workerId: req.user.worker.id } });
+  if (!job) throw notFound('Job not found');
+  const now = meta.capturedAt || new Date();
+
+  if (action.actionType === 'JOB_ARRIVE') {
+    await tx.job.update({ where: { id: job.id }, data: { status: 'ARRIVED', arrivedAt: now } });
+    await addJobActivity(tx, req, job, 'ARRIVED', payload.note, { offline: true }, meta);
+    return { jobId: job.id };
+  }
+  if (action.actionType === 'JOB_START') {
+    await tx.job.update({ where: { id: job.id }, data: { status: 'IN_PROGRESS', startedAt: now } });
+    await addJobActivity(tx, req, job, 'STARTED', payload.note, { offline: true }, meta);
+    return { jobId: job.id };
+  }
+  if (action.actionType === 'JOB_PAUSE') {
+    await tx.job.update({ where: { id: job.id }, data: { status: 'PAUSED', pausedAt: now } });
+    await addJobActivity(tx, req, job, 'PAUSED', payload.note, { offline: true }, meta);
+    return { jobId: job.id };
+  }
+  if (action.actionType === 'JOB_RESUME') {
+    await tx.job.update({ where: { id: job.id }, data: { status: 'IN_PROGRESS', resumedAt: now } });
+    await addJobActivity(tx, req, job, 'RESUMED', payload.note, { offline: true }, meta);
+    return { jobId: job.id };
+  }
+  if (action.actionType === 'JOB_COMPLETE') {
+    await tx.job.update({ where: { id: job.id }, data: { status: 'COMPLETED', completedAt: now, completedById: req.user.id, completionNotes: payload.completionNotes || payload.note || job.completionNotes } });
+    await addJobActivity(tx, req, job, 'COMPLETED', payload.completionNotes || payload.note, { offline: true }, meta);
+    return { jobId: job.id };
+  }
+  if (action.actionType === 'JOB_NOTE') {
+    const activity = await addJobActivity(tx, req, job, 'STATUS_CHANGED', payload.note || 'Offline note', { offline: true, noteType: 'WORKER_NOTE' }, meta);
+    return { jobId: job.id, activityId: activity.id };
+  }
+  if (action.actionType === 'LOCATION_CAPTURED') {
+    if (payload.latitude == null || payload.longitude == null) throw new AppError(400, 'latitude and longitude are required');
+    const location = await tx.jobCompletionLocation.upsert({
+      where: { jobId: job.id },
+      update: { capturedById: req.user.id, latitude: Number(payload.latitude), longitude: Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), source: payload.source || 'OFFLINE_SYNC', capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, syncId: meta.syncId },
+      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude: Number(payload.latitude), longitude: Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), source: payload.source || 'OFFLINE_SYNC', capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, syncId: meta.syncId }
+    });
+    await addJobActivity(tx, req, job, 'COMPLETION_LOCATION_CAPTURED', null, { offline: true, locationId: location.id }, meta);
+    return { jobId: job.id, locationId: location.id };
+  }
+  if (action.actionType === 'PROOF_PHOTO_UPLOADED') {
+    if (!payload.url) throw new AppError(400, 'proof photo url is required');
+    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: req.user.worker.id, uploadedById: req.user.id, url: payload.url, filename: payload.filename || 'offline-proof.jpg', mimeType: payload.mimeType || 'image/jpeg', sizeBytes: Number(payload.sizeBytes || 0), category: payload.category || 'GENERAL', caption: payload.caption, capturedAt: meta.capturedAt, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, latitude: payload.latitude == null ? undefined : Number(payload.latitude), longitude: payload.longitude == null ? undefined : Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), syncId: meta.syncId } });
+    await addJobActivity(tx, req, job, 'PROOF_PHOTO_ADDED', payload.caption, { offline: true, proofPhotoId: photo.id, category: photo.category }, meta);
+    return { jobId: job.id, proofPhotoId: photo.id };
+  }
+  if (action.actionType === 'SIGNATURE_CAPTURED') {
+    if (!payload.signatureUrl) throw new AppError(400, 'signatureUrl is required');
+    const signature = await tx.jobSignature.upsert({
+      where: { jobId: job.id },
+      update: { capturedById: req.user.id, signerName: payload.signerName, signatureUrl: payload.signatureUrl, mimeType: payload.mimeType || 'image/png', sizeBytes: Number(payload.sizeBytes || 0), capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, latitude: payload.latitude == null ? undefined : Number(payload.latitude), longitude: payload.longitude == null ? undefined : Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), syncId: meta.syncId },
+      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, signerName: payload.signerName, signatureUrl: payload.signatureUrl, mimeType: payload.mimeType || 'image/png', sizeBytes: Number(payload.sizeBytes || 0), capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, latitude: payload.latitude == null ? undefined : Number(payload.latitude), longitude: payload.longitude == null ? undefined : Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), syncId: meta.syncId }
+    });
+    await addJobActivity(tx, req, job, 'SIGNATURE_ADDED', payload.signerName, { offline: true, signatureId: signature.id }, meta);
+    return { jobId: job.id, signatureId: signature.id };
+  }
+  if (action.actionType === 'PART_USED') {
+    if (!payload.itemId || !payload.locationId || !payload.quantity) throw new AppError(400, 'itemId, locationId and quantity are required');
+    await requireInventoryItem(req, payload.itemId);
+    await requireStockLocation(req, payload.locationId);
+    await applyStockChange(tx, req, { itemId: payload.itemId, locationId: payload.locationId, jobId: job.id, movementType: 'JOB_USED', quantity: Number(payload.quantity), reason: payload.notes || 'Offline parts used', onHandDelta: -Number(payload.quantity), reservedDelta: 0 });
+    const part = await tx.jobPartUsage.create({ data: { companyId: req.companyId, jobId: job.id, itemId: payload.itemId, locationId: payload.locationId, workerId: req.user.worker.id, quantityUsed: Number(payload.quantity), notes: payload.notes, status: 'USED' } });
+    return { jobId: job.id, partId: part.id };
+  }
+  if (action.actionType === 'PART_SHORTAGE') {
+    if (!payload.itemId || !payload.quantity) throw new AppError(400, 'itemId and quantity are required');
+    await requireInventoryItem(req, payload.itemId);
+    const part = await tx.jobPartUsage.create({ data: { companyId: req.companyId, jobId: job.id, itemId: payload.itemId, workerId: req.user.worker.id, quantityPlanned: Number(payload.quantity), notes: payload.notes, status: 'SHORT' } });
+    const request = await tx.purchaseRequest.create({ data: { companyId: req.companyId, jobId: job.id, requestedById: req.user.id, reason: payload.notes || 'Offline part shortage' } });
+    return { jobId: job.id, partId: part.id, purchaseRequestId: request.id };
+  }
+  throw new AppError(400, 'Unsupported offline action type');
+}
+
+async function processQueuedOfflineAction(req, action, device) {
+  const worker = workerRequired(req);
+  const duplicate = await prisma.offlineActionQueue.findFirst({ where: { companyId: req.companyId, idempotencyKey: action.idempotencyKey } });
+  if (duplicate) return { id: duplicate.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, status: 'DUPLICATE', originalStatus: duplicate.status, processedAt: duplicate.processedAt, error: duplicate.error || null };
+
+  const queue = await prisma.offlineActionQueue.create({ data: { companyId: req.companyId, workerId: worker.id, userId: req.user.id, workerDeviceId: device && device.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, payload: action.payload, status: 'RECEIVED' } });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const outcome = await processOfflineAction(tx, req, queue, action, device);
+      const updated = await tx.offlineActionQueue.update({ where: { id: queue.id }, data: { status: 'PROCESSED', processedAt: new Date(), error: null } });
+      await addAuditLog(tx, req, 'SYNC_PROCESSED', 'OfflineActionQueue', queue.id, { actionType: action.actionType, idempotencyKey: action.idempotencyKey });
+      return { updated, outcome };
+    });
+    return { id: result.updated.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, status: result.updated.status, processedAt: result.updated.processedAt, result: result.outcome };
+  } catch (error) {
+    const status = error && (error.status === 403 || error.status === 404) ? 'REJECTED' : 'FAILED';
+    const updated = await prisma.offlineActionQueue.update({ where: { id: queue.id }, data: { status, processedAt: new Date(), error: error.message || 'Sync action failed' } });
+    return { id: updated.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, status: updated.status, processedAt: updated.processedAt, error: updated.error };
+  }
 }
 
 async function addAuditLog(tx, req, action, entity, entityId, metadata) {
@@ -1783,6 +2014,48 @@ router.use((req, res, next) => {
 });
 
 router.use(requireAuth);
+
+router.post('/worker/devices/register', requireRole('WORKER'), validate(workerDeviceRegisterSchema), asyncHandler(async (req, res) => {
+  const device = await registerOrTouchWorkerDevice(req, req.body);
+  await audit(req, 'REGISTER_DEVICE', 'WorkerDevice', device.id, { platform: device.platform, deviceId: device.deviceId });
+  sendData(res, normalize(device), 201);
+}));
+
+router.post('/worker/sync/bootstrap', requireRole('WORKER'), validate(workerSyncBootstrapSchema), asyncHandler(async (req, res) => {
+  const worker = workerRequired(req);
+  let device = null;
+  if (req.body.deviceId) {
+    device = await registerOrTouchWorkerDevice(req, { deviceId: req.body.deviceId, platform: 'UNKNOWN' });
+  }
+  const jobs = await prisma.job.findMany({ where: { companyId: req.companyId, workerId: worker.id }, include: offlineJobInclude, orderBy: { scheduledStart: 'asc' } });
+  sendData(res, normalize({ serverTime: new Date().toISOString(), device, jobs: jobs.map(offlineJob) }));
+}));
+
+router.get('/worker/sync/pull', requireRole('WORKER'), validate(workerSyncPullQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  const worker = workerRequired(req);
+  const where = { companyId: req.companyId, workerId: worker.id };
+  if (req.query.since) where.updatedAt = { gte: req.query.since };
+  const jobs = await prisma.job.findMany({ where, include: offlineJobInclude, orderBy: { scheduledStart: 'asc' } });
+  const recentActions = await prisma.offlineActionQueue.findMany({ where: { companyId: req.companyId, workerId: worker.id, ...(req.query.since ? { updatedAt: { gte: req.query.since } } : {}) }, orderBy: { receivedAt: 'desc' }, take: 100 });
+  sendData(res, normalize({ serverTime: new Date().toISOString(), jobs: jobs.map(offlineJob), syncActions: recentActions }));
+}));
+
+router.post('/worker/sync/push', requireRole('WORKER'), validate(workerSyncPushSchema), asyncHandler(async (req, res) => {
+  workerRequired(req);
+  const device = req.body.deviceId ? await resolveWorkerDevice(req, req.body.deviceId) : null;
+  const results = [];
+  for (const action of req.body.actions) {
+    results.push(await processQueuedOfflineAction(req, action, device));
+  }
+  sendData(res, normalize({ serverTime: new Date().toISOString(), results }));
+}));
+
+router.get('/worker/sync/status/:idempotencyKey', requireRole('WORKER'), validate(workerSyncStatusParam, 'params'), asyncHandler(async (req, res) => {
+  const worker = workerRequired(req);
+  const action = await prisma.offlineActionQueue.findFirst({ where: { companyId: req.companyId, workerId: worker.id, idempotencyKey: req.params.idempotencyKey } });
+  if (!action) throw notFound('Sync action not found');
+  sendData(res, normalize(action));
+}));
 
 router.get('/storage/objects/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   return sendStorageObject(res, req.companyId, req.params.id);
@@ -3398,7 +3671,10 @@ const completionLocationSchema = z.object({
   longitude: z.coerce.number().min(-180).max(180),
   accuracy: z.coerce.number().min(0).max(100000).optional(),
   capturedAt: optionalDate,
-  source: z.enum(['WORKER_BROWSER', 'WORKER_DEVICE', 'MANUAL_NOT_AVAILABLE']).optional()
+  offlineCreatedAt: optionalDate,
+  deviceId: optionalText(180),
+  syncId: optionalText(180),
+  source: z.enum(['WORKER_BROWSER', 'WORKER_DEVICE', 'MANUAL_NOT_AVAILABLE', 'OFFLINE_SYNC']).optional()
 });
 const completeJobSchema = z.object({ completionNotes: z.string().trim().min(1).max(2000).optional(), adminOverride: z.boolean().optional(), customerSignatureUrl: z.string().url().optional(), proofPhotoIds: z.array(z.string().min(1)).optional(), location: completionLocationSchema.optional() });
 
@@ -3486,8 +3762,27 @@ router.post("/jobs/:id/complete", validate(idParam, "params"), validate(complete
   sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 
-const proofPhotoBodySchema = z.object({ caption: optionalText(500), category: z.enum(proofCategoryValues).default('GENERAL') });
-const signatureBodySchema = z.object({ signerName: optionalText(160) });
+const proofPhotoBodySchema = z.object({
+  caption: optionalText(500),
+  category: z.enum(proofCategoryValues).default('GENERAL'),
+  capturedAt: optionalDate,
+  offlineCreatedAt: optionalDate,
+  deviceId: optionalText(180),
+  latitude: z.coerce.number().min(-90).max(90).optional(),
+  longitude: z.coerce.number().min(-180).max(180).optional(),
+  accuracy: z.coerce.number().min(0).max(100000).optional(),
+  syncId: optionalText(180)
+});
+const signatureBodySchema = z.object({
+  signerName: optionalText(160),
+  capturedAt: optionalDate,
+  offlineCreatedAt: optionalDate,
+  deviceId: optionalText(180),
+  latitude: z.coerce.number().min(-90).max(90).optional(),
+  longitude: z.coerce.number().min(-180).max(180).optional(),
+  accuracy: z.coerce.number().min(0).max(100000).optional(),
+  syncId: optionalText(180)
+});
 const proofPhotoParam = z.object({ id: z.string().min(1), photoId: z.string().min(1) });
 
 async function loadEvidenceJob(req, res, next) {
@@ -3525,8 +3820,8 @@ router.post("/jobs/:id/completion-location", validate(idParam, "params"), valida
   const data = await prisma.$transaction(async (tx) => {
     const captured = await tx.jobCompletionLocation.upsert({
       where: { jobId: job.id },
-      update: { capturedById: req.user.id, latitude: req.body.latitude, longitude: req.body.longitude, accuracy: req.body.accuracy, source: req.body.source || 'WORKER_BROWSER', capturedAt: req.body.capturedAt || new Date() },
-      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude: req.body.latitude, longitude: req.body.longitude, accuracy: req.body.accuracy, source: req.body.source || 'WORKER_BROWSER', capturedAt: req.body.capturedAt || new Date() }
+      update: { capturedById: req.user.id, latitude: req.body.latitude, longitude: req.body.longitude, accuracy: req.body.accuracy, source: req.body.source || 'WORKER_BROWSER', capturedAt: req.body.capturedAt || new Date(), offlineCreatedAt: req.body.offlineCreatedAt, deviceId: req.body.deviceId, syncId: req.body.syncId },
+      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude: req.body.latitude, longitude: req.body.longitude, accuracy: req.body.accuracy, source: req.body.source || 'WORKER_BROWSER', capturedAt: req.body.capturedAt || new Date(), offlineCreatedAt: req.body.offlineCreatedAt, deviceId: req.body.deviceId, syncId: req.body.syncId }
     });
     await addJobActivity(tx, req, job, "COMPLETION_LOCATION_CAPTURED", null, { source: captured.source, accuracy: captured.accuracy });
     await addAuditLog(tx, req, "CAPTURE_LOCATION", "Job", job.id, { locationId: captured.id });
@@ -3542,7 +3837,7 @@ router.post("/jobs/:id/proof-photos", validate(idParam, "params"), loadEvidenceJ
   const job = req.evidenceJob;
   const stored = await storeUploadedFile({ companyId: req.companyId, file: req.file, scope: 'jobs', relatedId: job.id, localSubdir: 'jobs/proof', filenamePrefix: req.companyId + '-proof', jobId: job.id, customerId: job.customerId, uploadedById: req.user.id });
   const data = await prisma.$transaction(async (tx) => {
-    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: stored.url, filename: stored.filename, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes, category: parsed.data.category, caption: parsed.data.caption } });
+    const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: evidenceWorkerId(req, job), uploadedById: req.user.id, url: stored.url, filename: stored.filename, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes, category: parsed.data.category, caption: parsed.data.caption, capturedAt: parsed.data.capturedAt, offlineCreatedAt: parsed.data.offlineCreatedAt, deviceId: parsed.data.deviceId, latitude: parsed.data.latitude, longitude: parsed.data.longitude, accuracy: parsed.data.accuracy, syncId: parsed.data.syncId } });
     await addJobActivity(tx, req, job, "PROOF_PHOTO_ADDED", parsed.data.caption, { proofPhotoId: photo.id, category: photo.category });
     await addAuditLog(tx, req, "CREATE", "JobProofPhoto", photo.id, { jobId: job.id, category: photo.category });
     return photo;
@@ -3577,7 +3872,7 @@ router.post("/jobs/:id/signature", validate(idParam, "params"), loadEvidenceJob,
   const job = req.evidenceJob;
   const stored = await storeUploadedFile({ companyId: req.companyId, file: req.file, scope: 'jobs', relatedId: job.id, localSubdir: 'jobs/signatures', filenamePrefix: req.companyId + '-signature', jobId: job.id, customerId: job.customerId, uploadedById: req.user.id });
   const data = await prisma.$transaction(async (tx) => {
-    const signature = await tx.jobSignature.upsert({ where: { jobId: job.id }, update: { capturedById: req.user.id, signerName: parsed.data.signerName, signatureUrl: stored.url, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes }, create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, signerName: parsed.data.signerName, signatureUrl: stored.url, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes } });
+    const signature = await tx.jobSignature.upsert({ where: { jobId: job.id }, update: { capturedById: req.user.id, signerName: parsed.data.signerName, signatureUrl: stored.url, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes, capturedAt: parsed.data.capturedAt, offlineCreatedAt: parsed.data.offlineCreatedAt, deviceId: parsed.data.deviceId, latitude: parsed.data.latitude, longitude: parsed.data.longitude, accuracy: parsed.data.accuracy, syncId: parsed.data.syncId }, create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, signerName: parsed.data.signerName, signatureUrl: stored.url, mimeType: stored.mimeType, sizeBytes: stored.sizeBytes, capturedAt: parsed.data.capturedAt, offlineCreatedAt: parsed.data.offlineCreatedAt, deviceId: parsed.data.deviceId, latitude: parsed.data.latitude, longitude: parsed.data.longitude, accuracy: parsed.data.accuracy, syncId: parsed.data.syncId } });
     await addJobActivity(tx, req, job, "SIGNATURE_ADDED", parsed.data.signerName, { signatureId: signature.id });
     await addAuditLog(tx, req, "UPSERT", "JobSignature", signature.id, { jobId: job.id });
     return signature;

@@ -1283,3 +1283,14 @@ Do not treat manual QA as optional. Automated tests prove code paths; this simul
 8. Create a Xero/Sage/QuickBooks placeholder and press Test.
 9. Confirm the test result says it is configured only and live sync is not implemented.
 10. Log in as a worker and confirm finance settings/export endpoints are blocked.
+
+## TASK4 Manual QA - Offline Worker Sync
+
+1. Log in as a worker.
+2. Register a device with `POST /api/worker/devices/register`.
+3. Run `POST /api/worker/sync/bootstrap` and confirm only that worker's assigned jobs are returned.
+4. Push a `JOB_NOTE` action with a unique idempotency key.
+5. Push the same action again and confirm the response is `DUPLICATE`.
+6. Try pushing an action for another worker's job and confirm it is `REJECTED`.
+7. Push a proof-photo metadata action and confirm the record stores `capturedAt`, `offlineCreatedAt`, `deviceId`, GPS fields, and `syncId`.
+8. Confirm admin/user tests still pass and no worker can access company-wide financial or management data through sync.

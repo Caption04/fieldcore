@@ -291,6 +291,28 @@ enum ExternalLocalType {
   JOB
 }
 
+enum OfflineActionStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  DUPLICATE
+  REJECTED
+}
+
+enum OfflineActionType {
+  JOB_ARRIVE
+  JOB_START
+  JOB_PAUSE
+  JOB_RESUME
+  JOB_COMPLETE
+  JOB_NOTE
+  PROOF_PHOTO_UPLOADED
+  SIGNATURE_CAPTURED
+  LOCATION_CAPTURED
+  PART_USED
+  PART_SHORTAGE
+}
+
 model Company {
   id                     String                     @id @default(cuid())
   name                   String
@@ -363,6 +385,8 @@ model Company {
   financeIntegrations    FinanceIntegration[]
   externalRecordLinks    ExternalRecordLink[]
   financeExportLogs      FinanceExportLog[]
+  workerDevices          WorkerDevice[]
+  offlineActionQueues    OfflineActionQueue[]
 }
 
 model SaaSPlan {
@@ -470,6 +494,8 @@ model User {
   stockMovementsCreated       StockMovement[]         @relation("StockMovementCreatedBy")
   purchaseRequestsCreated     PurchaseRequest[]       @relation("PurchaseRequestRequestedBy")
   financeExportLogsCreated    FinanceExportLog[]      @relation("FinanceExportLogCreatedBy")
+  workerDevices               WorkerDevice[]
+  offlineActionQueues         OfflineActionQueue[]
 
   @@index([companyId])
 }
@@ -585,6 +611,8 @@ model WorkerProfile {
   recurringRules  RecurringJobRule[]
   stockLocations  StockLocation[]
   jobPartUsages   JobPartUsage[]
+  workerDevices   WorkerDevice[]
+  offlineActions  OfflineActionQueue[]
 
   @@index([companyId])
   @@index([companyId, roleId])
@@ -998,6 +1026,54 @@ model PurchaseOrderLine {
   @@index([companyId, itemId])
 }
 
+model WorkerDevice {
+  id         String    @id @default(cuid())
+  companyId  String
+  workerId   String
+  userId     String
+  platform   String
+  deviceName String?
+  deviceId   String
+  lastSeenAt DateTime?
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker     WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actions    OfflineActionQueue[]
+
+  @@unique([companyId, deviceId])
+  @@index([companyId, workerId])
+  @@index([companyId, userId])
+}
+
+model OfflineActionQueue {
+  id             String              @id @default(cuid())
+  companyId      String
+  workerId       String
+  userId         String
+  workerDeviceId String?
+  idempotencyKey String
+  actionType     OfflineActionType
+  payload        Json
+  status         OfflineActionStatus @default(RECEIVED)
+  receivedAt     DateTime            @default(now())
+  processedAt    DateTime?
+  error          String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker         WorkerProfile       @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workerDevice   WorkerDevice?       @relation(fields: [workerDeviceId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, workerId, receivedAt])
+  @@index([companyId, status])
+  @@index([companyId, actionType])
+}
+
 model JobActivity {
   id        String          @id @default(cuid())
   companyId String
@@ -1005,9 +1081,13 @@ model JobActivity {
   workerId  String?
   userId    String?
   type      JobActivityType
-  note      String?
-  metadata  Json?
-  createdAt DateTime        @default(now())
+  note             String?
+  metadata         Json?
+  capturedAt       DateTime?
+  offlineCreatedAt DateTime?
+  deviceId         String?
+  syncId           String?
+  createdAt        DateTime        @default(now())
   company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   job       Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
   worker    WorkerProfile?  @relation(fields: [workerId], references: [id], onDelete: SetNull)
@@ -1435,9 +1515,16 @@ model JobProofPhoto {
   filename     String
   mimeType     String
   sizeBytes    Int
-  category     ProofPhotoCategory @default(GENERAL)
-  caption      String?
-  createdAt    DateTime           @default(now())
+  category         ProofPhotoCategory @default(GENERAL)
+  caption          String?
+  capturedAt       DateTime?
+  offlineCreatedAt DateTime?
+  deviceId         String?
+  latitude         Float?
+  longitude        Float?
+  accuracy         Float?
+  syncId           String?
+  createdAt        DateTime           @default(now())
   company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   job          Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
   worker       WorkerProfile?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
@@ -1456,9 +1543,12 @@ model JobCompletionLocation {
   latitude     Float
   longitude    Float
   accuracy     Float?
-  source       String?
-  capturedAt   DateTime @default(now())
-  createdAt    DateTime @default(now())
+  source           String?
+  capturedAt       DateTime @default(now())
+  offlineCreatedAt DateTime?
+  deviceId         String?
+  syncId           String?
+  createdAt        DateTime @default(now())
   company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
   capturedBy   User?    @relation(fields: [capturedById], references: [id], onDelete: SetNull)
@@ -1473,10 +1563,17 @@ model JobSignature {
   jobId        String   @unique
   capturedById String?
   signerName   String?
-  signatureUrl String
-  mimeType     String
-  sizeBytes    Int
-  createdAt    DateTime @default(now())
+  signatureUrl     String
+  mimeType         String
+  sizeBytes        Int
+  capturedAt       DateTime?
+  offlineCreatedAt DateTime?
+  deviceId         String?
+  latitude         Float?
+  longitude        Float?
+  accuracy         Float?
+  syncId           String?
+  createdAt        DateTime @default(now())
   company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
   capturedBy   User?    @relation("JobSignatureCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)

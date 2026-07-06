@@ -489,6 +489,8 @@ function createMockPrisma(seed) {
     },
     messageLog: makeModel('messageLogs'),
     storageObject: makeModel('storageObjects'),
+    workerDevice: makeModel('workerDevices'),
+    offlineActionQueue: makeModel('offlineActionQueues'),
     storageUsageMonthly: {
       ...makeModel('storageUsageMonthly'),
       upsert: async (args) => {
@@ -632,6 +634,8 @@ async function buildApp() {
     messageLogs: [],
     storageObjects: [],
     storageUsageMonthly: [],
+    workerDevices: [],
+    offlineActionQueues: [],
     jobActivities: [],
     auditLogs: []
   };
@@ -2806,4 +2810,101 @@ test('task3 finance integrations are placeholders and export links are scoped', 
 
   const blocked = await adminB.post('/api/finance/export/mark-exported').send({ provider: 'XERO', localType: 'INVOICE', ids: ['invoice-a'] });
   assert.equal(blocked.status, 404);
+});
+
+test('task4 worker device registration bootstrap and duplicate offline sync are safe', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+
+  const registered = await worker.post('/api/worker/devices/register').send({ platform: 'android', deviceName: 'Galaxy A22', deviceId: 'device-worker-a' });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.data.workerId, 'wp-a');
+  assert.equal(registered.body.data.userId, 'worker-a');
+
+  const bootstrap = await worker.post('/api/worker/sync/bootstrap').send({ deviceId: 'device-worker-a' });
+  assert.equal(bootstrap.status, 200);
+  assert.equal(bootstrap.body.data.jobs.length, 1);
+  assert.equal(bootstrap.body.data.jobs[0].id, 'job-a');
+
+  const pushed = await worker.post('/api/worker/sync/push').send({
+    deviceId: 'device-worker-a',
+    actions: [
+      {
+        idempotencyKey: 'offline-note-001',
+        actionType: 'JOB_NOTE',
+        payload: {
+          jobId: 'job-a',
+          note: 'Offline note from device',
+          capturedAt: '2026-01-05T09:00:00.000Z',
+          offlineCreatedAt: '2026-01-05T08:58:00.000Z'
+        }
+      }
+    ]
+  });
+  assert.equal(pushed.status, 200);
+  assert.equal(pushed.body.data.results[0].status, 'PROCESSED');
+
+  const duplicate = await worker.post('/api/worker/sync/push').send({
+    deviceId: 'device-worker-a',
+    actions: [
+      { idempotencyKey: 'offline-note-001', actionType: 'JOB_NOTE', payload: { jobId: 'job-a', note: 'Should not duplicate' } }
+    ]
+  });
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.data.results[0].status, 'DUPLICATE');
+
+  const status = await worker.get('/api/worker/sync/status/offline-note-001');
+  assert.equal(status.status, 200);
+  assert.equal(status.body.data.status, 'PROCESSED');
+
+  const activities = app.locals.testDb.jobActivities.filter((activity) => activity.jobId === 'job-a' && activity.syncId === 'offline-note-001');
+  assert.equal(activities.length, 1);
+  assert.equal(activities[0].deviceId, 'device-worker-a');
+});
+
+test('task4 offline sync rejects another worker job and stores proof metadata', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+
+  assert.equal((await worker.post('/api/worker/devices/register').send({ platform: 'ios', deviceName: 'iPhone', deviceId: 'device-proof-a' })).status, 201);
+
+  const proof = await worker.post('/api/worker/sync/push').send({
+    deviceId: 'device-proof-a',
+    actions: [
+      {
+        idempotencyKey: 'offline-proof-001',
+        actionType: 'PROOF_PHOTO_UPLOADED',
+        payload: {
+          jobId: 'job-a',
+          url: '/uploads/jobs/proof/offline-proof.jpg',
+          filename: 'offline-proof.jpg',
+          mimeType: 'image/jpeg',
+          sizeBytes: 1234,
+          category: 'AFTER',
+          caption: 'Offline after photo',
+          latitude: -17.8292,
+          longitude: 31.0522,
+          accuracy: 12,
+          capturedAt: '2026-01-05T10:00:00.000Z',
+          offlineCreatedAt: '2026-01-05T09:59:00.000Z'
+        }
+      }
+    ]
+  });
+  assert.equal(proof.status, 200);
+  assert.equal(proof.body.data.results[0].status, 'PROCESSED');
+  const photo = app.locals.testDb.jobProofPhotos.find((item) => item.syncId === 'offline-proof-001');
+  assert.equal(photo.jobId, 'job-a');
+  assert.equal(photo.deviceId, 'device-proof-a');
+  assert.equal(photo.category, 'AFTER');
+
+  const rejected = await worker.post('/api/worker/sync/push').send({
+    deviceId: 'device-proof-a',
+    actions: [
+      { idempotencyKey: 'offline-other-worker-001', actionType: 'JOB_NOTE', payload: { jobId: 'job-other-worker', note: 'Should be rejected' } }
+    ]
+  });
+  assert.equal(rejected.status, 200);
+  assert.equal(rejected.body.data.results[0].status, 'REJECTED');
+  assert.equal(app.locals.testDb.jobActivities.some((activity) => activity.syncId === 'offline-other-worker-001'), false);
 });

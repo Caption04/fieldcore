@@ -36,3 +36,44 @@ npm test
 ```
 
 See `README.md` for environment variables and demo credentials.
+
+## TASK4 Offline Worker Sync Contract
+
+FieldCore now exposes a backend foundation for future Android/iOS technician apps that need to work with weak connectivity.
+
+Worker-only endpoints:
+
+```text
+POST /api/worker/devices/register
+POST /api/worker/sync/bootstrap
+GET  /api/worker/sync/pull?since=
+POST /api/worker/sync/push
+GET  /api/worker/sync/status/:idempotencyKey
+```
+
+Key rules:
+
+- Workers can only register and sync against their own worker profile.
+- Bootstrap/pull returns only the authenticated worker's assigned jobs.
+- Push accepts queued offline actions with idempotency keys.
+- Reusing the same idempotency key returns `DUPLICATE` and does not duplicate job activity, proof photos, signatures, location captures, or parts actions.
+- Actions against another worker's job are stored as `REJECTED`, not processed.
+- Proof photos, signatures, completion locations, and job activities can store offline metadata such as `capturedAt`, `offlineCreatedAt`, `deviceId`, GPS data, and `syncId`.
+
+Supported offline action types:
+
+```text
+JOB_ARRIVE
+JOB_START
+JOB_PAUSE
+JOB_RESUME
+JOB_COMPLETE
+JOB_NOTE
+PROOF_PHOTO_UPLOADED
+SIGNATURE_CAPTURED
+LOCATION_CAPTURED
+PART_USED
+PART_SHORTAGE
+```
+
+This task does not build a native mobile app. It provides the safe API contract that a native app can use later.
