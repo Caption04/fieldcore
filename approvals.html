@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Approvals</title>
+    <link rel="stylesheet" href="assets/app.css?v=task5-approvals">
+    <script defer src="assets/layout.js"></script>
+  </head>
+  <body data-page="approvals" data-title="Approvals">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy"><h2>Approvals</h2><p>Review pending management approval requests before risky actions continue.</p></div>
+        <span class="api-status" data-status>Loading...</span>
+      </div>
+      <section class="panel">
+        <div class="panel-head"><h3>Create manual approval request</h3><span class="badge gray">Admin</span></div>
+        <form class="grid-form" data-approval-form>
+          <label>Entity type<input name="entityType" required placeholder="PurchaseOrder"></label>
+          <label>Entity ID<input name="entityId" required placeholder="po_123"></label>
+          <label>Event type<select name="eventType"><option>QUOTE_DISCOUNT</option><option>QUOTE_SEND</option><option>INVOICE_VOID</option><option>PAYMENT_REFUND</option><option>PURCHASE_ORDER_SEND</option><option>STOCK_ADJUSTMENT</option><option>JOB_RESCHEDULE</option><option>SLA_WAIVE</option></select></label>
+          <label>Reason<input name="reason" placeholder="Why approval is needed"></label>
+          <button type="submit" class="button primary">Request approval</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h3>Pending approvals</h3><button class="button" type="button" data-refresh>Refresh</button></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>Event</th><th>Entity</th><th>Reason</th><th>Requested</th><th>Action</th></tr></thead><tbody data-approvals></tbody></table></div>
+      </section>
+    </section>
+    <script>
+      const API = location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
+      const $ = (s) => document.querySelector(s);
+      async function api(path, options = {}) { const res = await fetch(API + path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...options }); const body = await res.json().catch(() => ({})); if (!res.ok) throw new Error(body.message || 'Request failed'); return body.data || body; }
+      function row(item) { return `<tr><td>${item.eventType}</td><td>${item.entityType} / ${item.entityId}</td><td>${item.reason || ''}</td><td>${item.createdAt ? new Date(item.createdAt).toLocaleString() : ''}</td><td><button class="button" data-approve="${item.id}">Approve</button> <button class="button danger" data-reject="${item.id}">Reject</button></td></tr>`; }
+      async function load() { try { $('[data-status]').textContent = 'Connected'; const data = await api('/approvals/pending'); $('[data-approvals]').innerHTML = (data || []).map(row).join('') || '<tr><td colspan="5">No pending approvals.</td></tr>'; } catch (e) { $('[data-status]').textContent = e.message; } }
+      $('[data-approval-form]').addEventListener('submit', async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); Object.keys(data).forEach((k) => { if (!data[k]) delete data[k]; }); await api('/approvals', { method: 'POST', body: JSON.stringify(data) }); event.currentTarget.reset(); load(); });
+      document.addEventListener('click', async (event) => { const approve = event.target.dataset.approve; const reject = event.target.dataset.reject; if (!approve && !reject) return; await api(`/approvals/${approve || reject}/${approve ? 'approve' : 'reject'}`, { method: 'POST', body: JSON.stringify({ decisionNote: approve ? 'Approved from approvals page' : 'Rejected from approvals page' }) }); load(); });
+      $('[data-refresh]').addEventListener('click', load);
+      load();
+    </script>
+  </body>
+</html>

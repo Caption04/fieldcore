@@ -96,6 +96,8 @@ function createMockPrisma(seed) {
   function supplierById(supplierId) { return db.suppliers.find((item) => item.id === supplierId); }
   function purchaseRequestById(requestId) { return db.purchaseRequests.find((item) => item.id === requestId); }
   function purchaseOrderById(orderId) { return db.purchaseOrders.find((item) => item.id === orderId); }
+  function branchById(branchId) { return db.branches.find((item) => item.id === branchId); }
+  function userByIdSafe(userId) { return db.users.find((item) => item.id === userId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
   function quoteLineItems(quoteId) { return db.quoteLineItems.filter((item) => item.quoteId === quoteId); }
   function invoiceLineItems(invoiceId) { return db.invoiceLineItems.filter((item) => item.invoiceId === invoiceId); }
@@ -126,6 +128,7 @@ function createMockPrisma(seed) {
   function enrichWorker(worker, include) {
     if (!worker) return null;
     const result = { ...worker };
+    if (include && include.branch) result.branch = clone(branchById(worker.branchId)) || null;
     if (include && include.user) result.user = include.user.select ? applySelect(userById(worker.userId), include.user.select) : clone(userById(worker.userId));
     return result;
   }
@@ -133,6 +136,7 @@ function createMockPrisma(seed) {
   function enrichJob(job, include) {
     if (!job) return null;
     const result = { ...job };
+    if (include && include.branch) result.branch = clone(branchById(job.branchId)) || null;
     if (include && include.customer) result.customer = clone(customerById(job.customerId));
     if (include && include.service) result.service = clone(serviceById(job.serviceId));
     if (include && include.contract) result.contract = clone(contractById(job.contractId)) || null;
@@ -148,6 +152,7 @@ function createMockPrisma(seed) {
   function enrichAsset(asset, include) {
     if (!asset) return null;
     const result = { ...asset };
+    if (include && include.branch) result.branch = clone(branchById(asset.branchId)) || null;
     if (include && include.customer) result.customer = clone(customerById(asset.customerId));
     if (include && include.property) result.property = clone(propertyById(asset.propertyId)) || null;
     if (include && include.service) result.service = clone(serviceById(asset.serviceId)) || null;
@@ -167,6 +172,7 @@ function createMockPrisma(seed) {
   function enrichServiceContract(contract, include) {
     if (!contract) return null;
     const result = { ...contract };
+    if (include && include.branch) result.branch = clone(branchById(contract.branchId)) || null;
     if (include && include.customer) result.customer = clone(customerById(contract.customerId));
     if (include && include.property) result.property = clone(propertyById(contract.propertyId)) || null;
     if (include && include.assets) result.assets = db.serviceContractAssets.filter((item) => item.contractId === contract.id).map((item) => enrichServiceContractAsset(item, include.assets.include));
@@ -304,6 +310,16 @@ function createMockPrisma(seed) {
     return result;
   }
 
+
+  function enrichApprovalRequest(request, include) {
+    if (!request) return null;
+    const result = { ...request };
+    if (include && include.policy) result.policy = clone(db.approvalPolicies.find((item) => item.id === request.policyId)) || null;
+    if (include && include.requestedBy) result.requestedBy = include.requestedBy.select ? applySelect(userByIdSafe(request.requestedById), include.requestedBy.select) : clone(userByIdSafe(request.requestedById));
+    if (include && include.approvedBy) result.approvedBy = include.approvedBy.select ? applySelect(userByIdSafe(request.approvedById), include.approvedBy.select) : clone(userByIdSafe(request.approvedById));
+    return result;
+  }
+
   function enrichReceipt(receipt, include) {
     if (!receipt) return null;
     const result = { ...receipt };
@@ -417,6 +433,9 @@ function createMockPrisma(seed) {
     financeIntegration: makeModel('financeIntegrations'),
     externalRecordLink: makeModel('externalRecordLinks'),
     financeExportLog: makeModel('financeExportLogs'),
+    branch: makeModel('branches'),
+    approvalPolicy: makeModel('approvalPolicies'),
+    approvalRequest: makeModel('approvalRequests', enrichApprovalRequest),
     customer: makeModel('customers'),
     workerProfile: makeModel('workerProfiles', enrichWorker),
     service: makeModel('services'),
@@ -557,6 +576,9 @@ async function buildApp() {
     financeIntegrations: [],
     externalRecordLinks: [],
     financeExportLogs: [],
+    branches: [],
+    approvalPolicies: [],
+    approvalRequests: [],
     users: [
       { id: 'owner-a', companyId: 'company-a', email: 'owner-a@test.local', phone: '+12025550100', name: 'Owner A', role: 'OWNER', passwordHash: hash },
       { id: 'admin-a', companyId: 'company-a', email: 'admin-a@test.local', phone: '+12025550101', name: 'Admin A', role: 'ADMIN', passwordHash: hash },
@@ -2907,4 +2929,93 @@ test('task4 offline sync rejects another worker job and stores proof metadata', 
   assert.equal(rejected.status, 200);
   assert.equal(rejected.body.data.results[0].status, 'REJECTED');
   assert.equal(app.locals.testDb.jobActivities.some((activity) => activity.syncId === 'offline-other-worker-001'), false);
+});
+
+
+test('task5 branches scope records and filter reports safely', async () => {
+  const app = await buildApp();
+  const adminA = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const branch = await adminA.post('/api/branches').send({ name: 'Harare Branch', code: 'HRE', city: 'Harare', country: 'ZW', timezone: 'Africa/Harare' });
+  assert.equal(branch.status, 201);
+
+  const customer = await adminA.post('/api/customers').send({ name: 'Branch Customer', branchId: branch.body.data.id, phone: '+263770000000' });
+  assert.equal(customer.status, 201);
+  assert.equal(customer.body.data.branchId, branch.body.data.id);
+
+  const job = await adminA.post('/api/jobs').send({ customerId: customer.body.data.id, serviceId: 'service-a', workerId: 'wp-a', branchId: branch.body.data.id, title: 'Branch Job' });
+  assert.equal(job.status, 201);
+  assert.equal(job.body.data.branchId, branch.body.data.id);
+
+  const filtered = await adminA.get('/api/jobs?branchId=' + branch.body.data.id);
+  assert.equal(filtered.status, 200);
+  assert.equal(filtered.body.data.every((item) => item.branchId === branch.body.data.id), true);
+
+  const report = await adminA.get('/api/reports/branch-performance?branchId=' + branch.body.data.id);
+  assert.equal(report.status, 200);
+  assert.equal(report.body.data.length, 1);
+  assert.equal(report.body.data[0].branch.id, branch.body.data.id);
+
+  assert.equal((await worker.get('/api/branches')).status, 403);
+  assert.equal((await adminB.patch('/api/branches/' + branch.body.data.id).send({ name: 'Wrong company' })).status, 404);
+});
+
+test('task5 approval requests are decided safely and company scoped', async () => {
+  const app = await buildApp();
+  const adminA = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const policy = await adminA.post('/api/approval-policies').send({ name: 'PO send approval', eventType: 'PURCHASE_ORDER_SEND', thresholdAmount: 500 });
+  assert.equal(policy.status, 201);
+
+  const requestApproval = await adminA.post('/api/approvals').send({ policyId: policy.body.data.id, entityType: 'PurchaseOrder', entityId: 'po-test-1', eventType: 'PURCHASE_ORDER_SEND', reason: 'Large PO' });
+  assert.equal(requestApproval.status, 201);
+  assert.equal(requestApproval.body.data.status, 'PENDING');
+
+  const pending = await adminA.get('/api/approvals/pending');
+  assert.equal(pending.status, 200);
+  assert.equal(pending.body.data.some((item) => item.id === requestApproval.body.data.id), true);
+
+  assert.equal((await worker.get('/api/approvals/pending')).status, 403);
+  assert.equal((await adminB.post('/api/approvals/' + requestApproval.body.data.id + '/approve').send({ decisionNote: 'Nope' })).status, 404);
+
+  const approved = await adminA.post('/api/approvals/' + requestApproval.body.data.id + '/approve').send({ decisionNote: 'Approved by manager' });
+  assert.equal(approved.status, 200);
+  assert.equal(approved.body.data.status, 'APPROVED');
+  assert.equal(approved.body.data.approvedById, 'admin-a');
+
+  const secondDecision = await adminA.post('/api/approvals/' + requestApproval.body.data.id + '/reject').send({ decisionNote: 'Too late' });
+  assert.equal(secondDecision.status, 409);
+
+  const auditHit = app.locals.testDb.auditLogs.some((log) => log.entity === 'ApprovalRequest' && log.entityId === requestApproval.body.data.id && log.action === 'APPROVE');
+  assert.equal(auditHit, true);
+});
+
+test('task5 deeper reports are admin-only and branch aware', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const branch = await admin.post('/api/branches').send({ name: 'South Branch', code: 'SOUTH' });
+  assert.equal(branch.status, 201);
+  await admin.post('/api/jobs').send({ customerId: 'customer-a', serviceId: 'service-a', workerId: 'wp-a', branchId: branch.body.data.id, title: 'SLA Job', completionDueAt: '2026-01-03T00:00:00.000Z', slaStatus: 'BREACHED' });
+
+  const endpoints = [
+    '/api/reports/service-profitability?branchId=' + branch.body.data.id,
+    '/api/reports/technician-productivity?branchId=' + branch.body.data.id,
+    '/api/reports/sla-performance?branchId=' + branch.body.data.id,
+    '/api/reports/inventory-value?branchId=' + branch.body.data.id,
+    '/api/reports/purchase-spend?branchId=' + branch.body.data.id,
+    '/api/reports/accounts-receivable-aging?branchId=' + branch.body.data.id
+  ];
+
+  for (const endpoint of endpoints) {
+    const res = await admin.get(endpoint);
+    assert.equal(res.status, 200, endpoint);
+  }
+
+  assert.equal((await worker.get('/api/reports/branch-performance')).status, 403);
 });

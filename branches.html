@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Branches</title>
+    <link rel="stylesheet" href="assets/app.css?v=task5-branches">
+    <script defer src="assets/layout.js"></script>
+  </head>
+  <body data-page="branches" data-title="Branches">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Branches</h2>
+          <p>Create branch records and use them to filter jobs, customers, inventory, and reports.</p>
+        </div>
+        <span class="api-status" data-status>Loading...</span>
+      </div>
+      <section class="panel">
+        <div class="panel-head"><h3>Create branch</h3><span class="badge gray">Admin</span></div>
+        <form class="grid-form" data-branch-form>
+          <label>Name<input name="name" required placeholder="Harare Operations"></label>
+          <label>Code<input name="code" placeholder="HRE"></label>
+          <label>Country<input name="country" placeholder="Zimbabwe"></label>
+          <label>City<input name="city" placeholder="Harare"></label>
+          <label>Timezone<input name="timezone" placeholder="Africa/Harare"></label>
+          <label>Address<input name="address" placeholder="Office address"></label>
+          <button type="submit" class="button primary">Create branch</button>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h3>Branch list</h3><button class="button" type="button" data-refresh>Refresh</button></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Code</th><th>City</th><th>Country</th><th>Status</th></tr></thead><tbody data-branches></tbody></table></div>
+      </section>
+    </section>
+    <script>
+      const API = location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
+      const $ = (s) => document.querySelector(s);
+      async function api(path, options = {}) { const res = await fetch(API + path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...options }); const body = await res.json().catch(() => ({})); if (!res.ok) throw new Error(body.message || 'Request failed'); return body.data || body; }
+      function row(branch) { return `<tr><td>${branch.name || ''}</td><td>${branch.code || ''}</td><td>${branch.city || ''}</td><td>${branch.country || ''}</td><td>${branch.active === false ? 'Inactive' : 'Active'}</td></tr>`; }
+      async function load() { try { $('[data-status]').textContent = 'Connected'; const data = await api('/branches'); $('[data-branches]').innerHTML = (data || []).map(row).join('') || '<tr><td colspan="5">No branches yet.</td></tr>'; } catch (e) { $('[data-status]').textContent = e.message; } }
+      $('[data-branch-form]').addEventListener('submit', async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); Object.keys(data).forEach((k) => { if (!data[k]) delete data[k]; }); await api('/branches', { method: 'POST', body: JSON.stringify(data) }); event.currentTarget.reset(); load(); });
+      $('[data-refresh]').addEventListener('click', load);
+      load();
+    </script>
+  </body>
+</html>

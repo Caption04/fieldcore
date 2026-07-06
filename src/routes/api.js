@@ -94,6 +94,8 @@ const financeExportStatusValues = ['COMPLETED', 'FAILED'];
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
 const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED'];
 const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'PART_USED', 'PART_SHORTAGE'];
+const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_ORDER_SEND', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'SLA_WAIVE'];
+const approvalStatusValues = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -139,6 +141,31 @@ async function paged(model, req, args) {
 function workerJobScope(req) {
   if (req.user.role !== 'WORKER') return {};
   return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
+}
+
+function branchFilterFromQuery(req) {
+  const branchId = req.query && req.query.branchId ? String(req.query.branchId).trim() : '';
+  return branchId ? { branchId } : {};
+}
+
+async function requireBranch(req, id) {
+  if (!id) return null;
+  const record = await prisma.branch.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Branch not found');
+  return record;
+}
+
+async function requireApprovalPolicy(req, id) {
+  if (!id) return null;
+  const record = await prisma.approvalPolicy.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Approval policy not found');
+  return record;
+}
+
+async function requireApprovalRequest(req, id) {
+  const record = await prisma.approvalRequest.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Approval request not found');
+  return record;
 }
 
 async function requireCustomer(req, id) {
@@ -542,6 +569,33 @@ const workerSyncPushSchema = z.object({
   actions: z.array(offlineActionSchema).min(1).max(100)
 });
 const workerSyncStatusParam = z.object({ idempotencyKey: z.string().trim().min(1).max(180) });
+
+const branchSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  code: optionalText(40),
+  country: optionalText(80),
+  city: optionalText(120),
+  address: optionalText(500),
+  timezone: optionalText(80),
+  active: z.boolean().optional()
+});
+const approvalPolicySchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  eventType: z.enum(approvalEventTypeValues),
+  thresholdAmount: amount.optional(),
+  active: z.boolean().optional()
+});
+const approvalRequestSchema = z.object({
+  policyId: optionalText(160),
+  entityType: z.string().trim().min(1).max(80),
+  entityId: z.string().trim().min(1).max(160),
+  eventType: z.enum(approvalEventTypeValues),
+  reason: optionalText(1000)
+});
+const approvalDecisionSchema = z.object({
+  decisionNote: optionalText(1000)
+});
+
 
 
 function lifecycleWorkerId(req, job) {
@@ -1112,7 +1166,7 @@ async function createReceiptForPayment(tx, payment, invoice) {
   const count = await tx.receipt.count({ where: { companyId: payment.companyId } });
   const settings = await getCompanyFinanceSettings(payment.companyId, tx);
   const prefix = settings.receiptPrefix || 'RCT';
-  return tx.receipt.create({ data: { companyId: payment.companyId, invoiceId: invoice.id, paymentId: payment.id, receiptNumber: prefix + '-' + String(count + 1).padStart(4, '0'), amount: payment.amount } });
+  return tx.receipt.create({ data: { companyId: payment.companyId, branchId: payment.branchId || invoice.branchId || null, invoiceId: invoice.id, paymentId: payment.id, receiptNumber: prefix + '-' + String(count + 1).padStart(4, '0'), amount: payment.amount } });
 }
 
 const scheduleInclude = { job: { include: { customer: true, service: true } }, worker: { include: SAFE_WORKER_INCLUDE } };
@@ -2222,9 +2276,101 @@ router.post(
   })
 );
 
+
+router.get('/branches', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.branch, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/branches', requireRole(...adminRoles), validate(branchSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.branch.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
+  await audit(req, 'CREATE', 'Branch', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/branches/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(branchSchema.partial()), asyncHandler(async (req, res) => {
+  await requireBranch(req, req.params.id);
+  const data = await prisma.branch.update({ where: { id: req.params.id }, data: req.body });
+  await audit(req, 'UPDATE', 'Branch', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/approval-policies', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.approvalPolicy, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/approval-policies', requireRole(...adminRoles), validate(approvalPolicySchema), asyncHandler(async (req, res) => {
+  const data = await prisma.approvalPolicy.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
+  await audit(req, 'CREATE', 'ApprovalPolicy', data.id);
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/approval-policies/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalPolicySchema.partial()), asyncHandler(async (req, res) => {
+  await requireApprovalPolicy(req, req.params.id);
+  const data = await prisma.approvalPolicy.update({ where: { id: req.params.id }, data: req.body });
+  await audit(req, 'UPDATE', 'ApprovalPolicy', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.get('/approvals', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const status = approvalStatusValues.includes(String(req.query.status || '')) ? String(req.query.status) : undefined;
+  const result = await paged(prisma.approvalRequest, req, {
+    where: { companyId: req.companyId, ...(status ? { status } : {}) },
+    include: { policy: true, requestedBy: { select: SAFE_USER_SELECT }, approvedBy: { select: SAFE_USER_SELECT } },
+    orderBy: { createdAt: 'desc' }
+  });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/approvals/pending', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.approvalRequest, req, {
+    where: { companyId: req.companyId, status: 'PENDING' },
+    include: { policy: true, requestedBy: { select: SAFE_USER_SELECT } },
+    orderBy: { createdAt: 'desc' }
+  });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.post('/approvals', requireRole(...adminRoles), validate(approvalRequestSchema), asyncHandler(async (req, res) => {
+  if (req.body.policyId) await requireApprovalPolicy(req, req.body.policyId);
+  const data = await prisma.approvalRequest.create({
+    data: { ...req.body, companyId: req.companyId, requestedById: req.user.id, status: 'PENDING' },
+    include: { policy: true, requestedBy: { select: SAFE_USER_SELECT } }
+  });
+  await audit(req, 'CREATE', 'ApprovalRequest', data.id, { eventType: data.eventType, entityType: data.entityType, entityId: data.entityId });
+  sendData(res, normalize(data), 201);
+}));
+
+router.post('/approvals/:id/approve', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalDecisionSchema), asyncHandler(async (req, res) => {
+  const existing = await requireApprovalRequest(req, req.params.id);
+  if (existing.status !== 'PENDING') throw new AppError(409, 'Approval request has already been decided.');
+  const data = await prisma.approvalRequest.update({
+    where: { id: req.params.id },
+    data: { status: 'APPROVED', approvedById: req.user.id, decisionNote: req.body.decisionNote, decidedAt: new Date() },
+    include: { policy: true, requestedBy: { select: SAFE_USER_SELECT }, approvedBy: { select: SAFE_USER_SELECT } }
+  });
+  await audit(req, 'APPROVE', 'ApprovalRequest', data.id, { eventType: data.eventType, entityType: data.entityType, entityId: data.entityId });
+  sendData(res, normalize(data));
+}));
+
+router.post('/approvals/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalDecisionSchema), asyncHandler(async (req, res) => {
+  const existing = await requireApprovalRequest(req, req.params.id);
+  if (existing.status !== 'PENDING') throw new AppError(409, 'Approval request has already been decided.');
+  const data = await prisma.approvalRequest.update({
+    where: { id: req.params.id },
+    data: { status: 'REJECTED', approvedById: req.user.id, decisionNote: req.body.decisionNote, decidedAt: new Date() },
+    include: { policy: true, requestedBy: { select: SAFE_USER_SELECT }, approvedBy: { select: SAFE_USER_SELECT } }
+  });
+  await audit(req, 'REJECT', 'ApprovalRequest', data.id, { eventType: data.eventType, entityType: data.entityType, entityId: data.entityId });
+  sendData(res, normalize(data));
+}));
+
 router.get('/dashboard', asyncHandler(async (req, res) => {
   const companyId = req.companyId;
-  const jobWhere = { companyId, ...workerJobScope(req) };
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const branchWhere = branchFilterFromQuery(req);
+  const jobWhere = { companyId, ...branchWhere, ...workerJobScope(req) };
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const end = new Date(start);
@@ -2436,6 +2582,109 @@ router.get('/reports', requireRole(...adminRoles), asyncHandler(async (req, res)
   sendData(res, normalize(await reportData(req.companyId, req.query)));
 }));
 
+
+function dateRangeWhere(query, field = 'createdAt') {
+  const where = {};
+  if (query.startDate || query.endDate) {
+    where[field] = {};
+    if (query.startDate) where[field].gte = new Date(String(query.startDate));
+    if (query.endDate) where[field].lte = new Date(String(query.endDate));
+  }
+  return where;
+}
+
+async function reportBranchWhere(req) {
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  return { companyId: req.companyId, ...branchFilterFromQuery(req) };
+}
+
+router.get('/reports/branch-performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = await reportBranchWhere(req);
+  const [branches, jobs, invoices, payments] = await Promise.all([
+    prisma.branch.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } }),
+    prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) } }),
+    prisma.invoice.findMany({ where: { ...where, ...dateRangeWhere(req.query) } }),
+    prisma.payment.findMany({ where: { companyId: req.companyId, ...branchFilterFromQuery(req), ...dateRangeWhere(req.query) } })
+  ]);
+  const byBranch = new Map(branches.map((branch) => [branch.id, { branch, jobs: 0, completedJobs: 0, revenue: 0, payments: 0 }]));
+  if (!req.query.branchId) byBranch.set(null, { branch: null, jobs: 0, completedJobs: 0, revenue: 0, payments: 0 });
+  for (const job of jobs) { const row = byBranch.get(job.branchId || null) || byBranch.get(null); if (row) { row.jobs += 1; if (job.status === 'COMPLETED') row.completedJobs += 1; } }
+  for (const invoice of invoices) { const row = byBranch.get(invoice.branchId || null) || byBranch.get(null); if (row) row.revenue += Number(invoice.total || invoice.amount || 0); }
+  for (const payment of payments) { const row = byBranch.get(payment.branchId || null) || byBranch.get(null); if (row) row.payments += Number(payment.amount || 0); }
+  sendData(res, normalize(Array.from(byBranch.values()).filter((row) => req.query.branchId ? row.branch && row.branch.id === req.query.branchId : true)));
+}));
+
+router.get('/reports/service-profitability', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = await reportBranchWhere(req);
+  const [jobs, parts] = await Promise.all([
+    prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) }, include: { service: true } }),
+    prisma.jobPartUsage.findMany({ where: { companyId: req.companyId }, include: { item: true } })
+  ]);
+  const partCostByJob = new Map();
+  for (const part of parts) partCostByJob.set(part.jobId, (partCostByJob.get(part.jobId) || 0) + Number(part.quantityUsed || 0) * Number(part.unitCost || 0));
+  const rows = new Map();
+  for (const job of jobs) {
+    const key = job.serviceId || 'unassigned';
+    const row = rows.get(key) || { serviceId: job.serviceId, serviceName: job.service ? job.service.name : 'Unassigned', jobs: 0, revenue: 0, partsCost: 0, grossProfit: 0 };
+    row.jobs += 1; row.revenue += Number(job.total || 0); row.partsCost += partCostByJob.get(job.id) || 0; row.grossProfit = row.revenue - row.partsCost; rows.set(key, row);
+  }
+  sendData(res, normalize(Array.from(rows.values())));
+}));
+
+router.get('/reports/technician-productivity', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = await reportBranchWhere(req);
+  const jobs = await prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) }, include: { worker: { include: SAFE_WORKER_INCLUDE } } });
+  const rows = new Map();
+  for (const job of jobs) {
+    const key = job.workerId || 'unassigned';
+    const row = rows.get(key) || { workerId: job.workerId, workerName: job.worker && job.worker.user ? job.worker.user.name : 'Unassigned', jobs: 0, completedJobs: 0, revenue: 0 };
+    row.jobs += 1; if (job.status === 'COMPLETED') row.completedJobs += 1; row.revenue += Number(job.total || 0); rows.set(key, row);
+  }
+  sendData(res, normalize(Array.from(rows.values())));
+}));
+
+router.get('/reports/sla-performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = await reportBranchWhere(req);
+  const jobs = await prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) } });
+  const rows = Object.fromEntries(slaStatusValues.map((status) => [status, 0]));
+  for (const job of jobs) rows[job.slaStatus || 'NOT_APPLICABLE'] = (rows[job.slaStatus || 'NOT_APPLICABLE'] || 0) + 1;
+  sendData(res, { total: jobs.length, byStatus: rows, breached: rows.BREACHED || 0, waived: rows.WAIVED || 0 });
+}));
+
+router.get('/reports/inventory-value', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const locationWhere = { companyId: req.companyId, ...branchFilterFromQuery(req) };
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const locations = await prisma.stockLocation.findMany({ where: locationWhere });
+  const stocks = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId, locationId: { in: locations.map((loc) => loc.id) } }, include: { item: true, location: true } });
+  const rows = stocks.map((stock) => ({ itemId: stock.itemId, itemName: stock.item && stock.item.name, locationId: stock.locationId, locationName: stock.location && stock.location.name, quantityOnHand: Number(stock.quantityOnHand || 0), unitCost: Number(stock.item && stock.item.unitCost || 0), value: Number(stock.quantityOnHand || 0) * Number(stock.item && stock.item.unitCost || 0) }));
+  sendData(res, normalize({ totalValue: rows.reduce((sum, row) => sum + row.value, 0), rows }));
+}));
+
+router.get('/reports/purchase-spend', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId, ...branchFilterFromQuery(req), ...dateRangeWhere(req.query) };
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const orders = await prisma.purchaseOrder.findMany({ where, include: { supplier: true, lines: { include: { item: true } } } });
+  const rows = orders.map((order) => ({ id: order.id, orderNumber: order.orderNumber, supplierName: order.supplier && order.supplier.name, status: order.status, total: (order.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0) * Number(line.unitCost || 0), 0) }));
+  sendData(res, normalize({ totalSpend: rows.reduce((sum, row) => sum + row.total, 0), rows }));
+}));
+
+router.get('/reports/accounts-receivable-aging', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId, ...branchFilterFromQuery(req), status: { in: ['SENT', 'PARTIALLY_PAID', 'OVERDUE'] } };
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const invoices = await prisma.invoice.findMany({ where, include: { customer: true } });
+  const now = Date.now();
+  const buckets = { current: 0, days1To30: 0, days31To60: 0, days61To90: 0, over90: 0 };
+  const rows = invoices.map((invoice) => {
+    const due = invoice.dueDate ? new Date(invoice.dueDate).getTime() : new Date(invoice.createdAt).getTime();
+    const age = Math.max(0, Math.floor((now - due) / 86400000));
+    const amount = Number(invoice.balanceDue || invoice.total || invoice.amount || 0);
+    const bucket = age <= 0 ? 'current' : age <= 30 ? 'days1To30' : age <= 60 ? 'days31To60' : age <= 90 ? 'days61To90' : 'over90';
+    buckets[bucket] += amount;
+    return { id: invoice.id, number: invoice.number, customerName: invoice.customer && invoice.customer.name, ageDays: age, balanceDue: amount, bucket };
+  });
+  sendData(res, normalize({ buckets, rows }));
+}));
+
 router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const section = String(req.query.section || 'revenue');
   if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'Unsupported report export section.');
@@ -2447,6 +2696,7 @@ router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (re
 }));
 
 const customerSchema = z.object({
+  branchId: z.string().min(1).optional(),
   name: z.string().min(2),
   email: z.string().email().optional().or(z.literal('')).transform((v) => v || undefined),
   phone: z.string().optional(),
@@ -2455,11 +2705,13 @@ const customerSchema = z.object({
 });
 
 router.get('/customers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const result = await paged(prisma.customer, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' }, include: { jobs: true, invoices: true } });
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const result = await paged(prisma.customer, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, orderBy: { createdAt: 'desc' }, include: { jobs: true, invoices: true } });
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
 router.post('/customers', requireRole(...adminRoles), validate(customerSchema), asyncHandler(async (req, res) => {
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.customer.create({ data: { ...req.body, companyId: req.companyId } });
   await audit(req, 'CREATE', 'Customer', data.id);
   sendData(res, normalize(data), 201);
@@ -2471,6 +2723,7 @@ router.get('/customers/:id', requireRole(...adminRoles), validate(idParam, 'para
 
 router.patch('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(customerSchema.partial()), asyncHandler(async (req, res) => {
   await requireCustomer(req, req.params.id);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.customer.update({ where: { id: req.params.id }, data: req.body });
   await audit(req, 'UPDATE', 'Customer', data.id);
   sendData(res, normalize(data));
@@ -2484,6 +2737,7 @@ router.delete('/customers/:id', requireRole(...adminRoles), validate(idParam, 'p
 }));
 
 const assetSchema = z.object({
+  branchId: z.string().min(1).optional(),
   customerId: z.string().min(1),
   propertyId: optionalText(80),
   serviceId: optionalText(80),
@@ -2503,6 +2757,7 @@ const assetSchema = z.object({
 });
 
 const contractSchema = z.object({
+  branchId: z.string().min(1).optional(),
   customerId: z.string().min(1),
   propertyId: optionalText(80),
   contractNumber: z.string().trim().min(1).max(80),
@@ -2986,6 +3241,7 @@ router.post('/booking-requests/:id/create-quote', requireRole(...adminRoles), va
   sendData(res, normalize(data), 201);
 }));
 const workerCreateSchema = z.object({
+  branchId: z.string().min(1).optional(),
   name: z.string().min(2),
   email: z.string().email().transform((v) => v.toLowerCase()),
   password: z.string().min(8),
@@ -2994,7 +3250,7 @@ const workerCreateSchema = z.object({
   phone: z.string().optional(),
   active: z.boolean().optional()
 });
-const workerPatchSchema = z.object({ roleId: z.string().nullable().optional(), title: z.string().optional(), phone: z.string().optional(), active: z.boolean().optional() });
+const workerPatchSchema = z.object({ branchId: z.string().min(1).nullable().optional(), roleId: z.string().nullable().optional(), title: z.string().optional(), phone: z.string().optional(), active: z.boolean().optional() });
 
 router.get('/worker-roles', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const roles = await prisma.workerRole.findMany({ where: { companyId: req.companyId }, orderBy: { name: 'asc' } });
@@ -3059,6 +3315,7 @@ router.patch('/workers/:id', requireRole(...adminRoles), validate(idParam, 'para
   await requireWorker(req, req.params.id);
   const body = { ...req.body };
   if (body.roleId) await requireWorkerRole(req, body.roleId);
+  if (body.branchId) await requireBranch(req, body.branchId);
   const data = await prisma.workerProfile.update({ where: { id: req.params.id }, data: body, include: SAFE_WORKER_INCLUDE });
   await audit(req, 'UPDATE', 'WorkerProfile', data.id);
   sendData(res, normalize({ ...data, user: publicUser(data.user) }));
@@ -3130,6 +3387,7 @@ const workerPartUsedSchema = z.object({ itemId: z.string().min(1), locationId: z
 const workerPartShortageSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, notes: optionalText(2000) });
 
 const purchaseRequestSchema = z.object({
+  branchId: z.string().min(1).optional(),
   jobId: z.string().min(1).optional(),
   status: z.enum(purchaseRequestStatusValues).optional(),
   reason: optionalText(2000)
@@ -3138,6 +3396,7 @@ const purchaseRequestPatchSchema = z.object({ status: z.enum(purchaseRequestStat
 
 const purchaseOrderLineSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, unitCost: amount.optional() });
 const purchaseOrderSchema = z.object({
+  branchId: z.string().min(1).optional(),
   supplierId: z.string().min(1).optional(),
   purchaseRequestId: z.string().min(1).optional(),
   orderNumber: optionalText(80),
@@ -3145,7 +3404,7 @@ const purchaseOrderSchema = z.object({
   notes: optionalText(2000),
   lines: z.array(purchaseOrderLineSchema).min(1).default([])
 });
-const purchaseOrderPatchSchema = z.object({ supplierId: z.string().min(1).optional(), expectedAt: optionalDate, notes: optionalText(2000), status: z.enum(purchaseOrderStatusValues).optional() });
+const purchaseOrderPatchSchema = z.object({ branchId: z.string().min(1).optional(), supplierId: z.string().min(1).optional(), expectedAt: optionalDate, notes: optionalText(2000), status: z.enum(purchaseOrderStatusValues).optional() });
 const purchaseOrderReceiveSchema = z.object({
   locationId: z.string().min(1),
   lines: z.array(z.object({ lineId: z.string().min(1), receivedQuantity: positiveQuantity })).min(1)
@@ -3180,6 +3439,7 @@ router.get('/stock-locations', requireRole(...adminRoles), asyncHandler(async (r
 
 router.post('/stock-locations', requireRole(...adminRoles), validate(stockLocationSchema), asyncHandler(async (req, res) => {
   if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.stockLocation.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
   await audit(req, 'CREATE', 'StockLocation', data.id);
   sendData(res, normalize(data), 201);
@@ -3188,6 +3448,7 @@ router.post('/stock-locations', requireRole(...adminRoles), validate(stockLocati
 router.patch('/stock-locations/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(stockLocationSchema.partial()), asyncHandler(async (req, res) => {
   await requireStockLocation(req, req.params.id);
   if (req.body.workerId) await requireWorker(req, req.body.workerId);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.stockLocation.update({ where: { id: req.params.id }, data: req.body });
   await audit(req, 'UPDATE', 'StockLocation', data.id);
   sendData(res, normalize(data));
@@ -3354,6 +3615,7 @@ router.get('/purchase-requests', requireRole(...adminRoles), asyncHandler(async 
 }));
 
 router.post('/purchase-requests', requireRole(...adminRoles), validate(purchaseRequestSchema), asyncHandler(async (req, res) => {
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   if (req.body.jobId) await requireJob(req, req.body.jobId, { assignedOnly: false });
   const data = await prisma.purchaseRequest.create({ data: { companyId: req.companyId, requestedById: req.user.id, jobId: req.body.jobId, status: req.body.status || 'REQUESTED', reason: req.body.reason } });
   await audit(req, 'CREATE', 'PurchaseRequest', data.id);
@@ -3387,6 +3649,7 @@ router.get('/purchase-orders', requireRole(...adminRoles), asyncHandler(async (r
 }));
 
 router.post('/purchase-orders', requireRole(...adminRoles), validate(purchaseOrderSchema), asyncHandler(async (req, res) => {
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   if (req.body.supplierId) await requireSupplier(req, req.body.supplierId);
   if (req.body.purchaseRequestId) await requirePurchaseRequest(req, req.body.purchaseRequestId);
   for (const line of req.body.lines) await requireInventoryItem(req, line.itemId);
@@ -3415,6 +3678,7 @@ router.get('/purchase-orders/:id', requireRole(...adminRoles), validate(idParam,
 
 router.patch('/purchase-orders/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(purchaseOrderPatchSchema), asyncHandler(async (req, res) => {
   await requirePurchaseOrder(req, req.params.id);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   if (req.body.supplierId) await requireSupplier(req, req.body.supplierId);
   const data = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: req.body, include: purchaseOrderInclude });
   await audit(req, 'UPDATE', 'PurchaseOrder', data.id);
@@ -3499,6 +3763,7 @@ router.post('/services', requireRole(...adminRoles), validate(serviceSchema), as
 }));
 
 const jobSchema = z.object({
+  branchId: z.string().min(1).optional(),
   customerId: z.string().min(1),
   serviceId: z.string().optional(),
   workerId: z.string().optional(),
@@ -3524,7 +3789,8 @@ const jobSchema = z.object({
 });
 
 router.get('/jobs', asyncHandler(async (req, res) => {
-  const result = await paged(prisma.job, req, { where: { companyId: req.companyId, ...workerJobScope(req) }, include: jobInclude, orderBy: { createdAt: 'desc' } });
+  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const result = await paged(prisma.job, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req), ...workerJobScope(req) }, include: jobInclude, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
@@ -3546,6 +3812,7 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
   if (proofDefaults.requiresProofPhotos || proofDefaults.requiresBeforePhotos || proofDefaults.requiresAfterPhotos || req.body.requiresSignature || proofDefaults.requiresLocation || Number(proofDefaults.minimumProofPhotos || 0) > 0) {
     await requireFeature(req.companyId, 'proofOfWork');
   }
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateJobRelations(req, req.body);
   const trustedService = req.body.serviceId ? await requireService(req, req.body.serviceId) : null;
   const trustedJobTotal = trustedService ? trustedService.price : 0;
@@ -3912,6 +4179,7 @@ router.post('/jobs/:id/activity', requireRole(...adminRoles, 'WORKER'), validate
 }));
 
 const quoteSchema = z.object({
+  branchId: z.string().min(1).optional(),
   customerId: z.string().min(1),
   serviceId: z.string().optional(),
   jobId: z.string().optional(),
@@ -3932,12 +4200,13 @@ router.get('/quotes', requireRole(...adminRoles), asyncHandler(async (req, res) 
   await purgeExpiredDeletedQuotes(req.companyId);
   const [company, result] = await Promise.all([
     getCompanyWithBranding(req.companyId),
-    paged(prisma.quote, req, { where: { companyId: req.companyId, ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
+    paged(prisma.quote, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req), ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
   ]);
   sendData(res, normalize(result.data.map((item) => ({ ...item, branding: publicBranding(company) }))), 200, result.meta);
 }));
 
 router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncHandler(async (req, res) => {
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateQuoteRelations(req, req.body);
   const data = await prisma.$transaction(async (tx) => {
     const { lineItems, amount: ignoredAmount, ...quoteData } = req.body;
@@ -4016,7 +4285,7 @@ router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam, 
     if (current.status !== 'SENT' && current.status !== 'ACCEPTED') throw new AppError(409, 'Only sent quotes can be accepted');
     let jobId = current.jobId;
     if (!jobId) {
-      const job = await tx.job.create({ data: { companyId: req.companyId, customerId: current.customerId, serviceId: current.serviceId, title: current.title, description: current.description, total: current.total || current.amount } });
+      const job = await tx.job.create({ data: { companyId: req.companyId, branchId: current.branchId || null, customerId: current.customerId, serviceId: current.serviceId, title: current.title, description: current.description, total: current.total || current.amount } });
       jobId = job.id;
     }
     if (current.status !== 'ACCEPTED') await addQuoteStatusHistory(tx, req, current, 'ACCEPTED', 'Quote accepted');
@@ -4109,6 +4378,7 @@ router.delete('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), 
 }));
 
 const invoiceSchema = z.object({
+  branchId: z.string().min(1).optional(),
   customerId: z.string().min(1),
   serviceId: z.string().optional(),
   jobId: z.string().optional(),
@@ -4128,12 +4398,13 @@ function fallbackInvoiceLines(body) {
 router.get('/invoices', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const [company, result] = await Promise.all([
     getCompanyWithBranding(req.companyId),
-    paged(prisma.invoice, req, { where: { companyId: req.companyId }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
+    paged(prisma.invoice, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
   ]);
   sendData(res, normalize(result.data.map((item) => ({ ...item, branding: publicBranding(company) }))), 200, result.meta);
 }));
 
 router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), asyncHandler(async (req, res) => {
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateInvoiceRelations(req, req.body);
   if (req.body.quoteId) await requireQuote(req, req.body.quoteId);
   const data = await prisma.$transaction(async (tx) => {
@@ -4289,7 +4560,7 @@ router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idPar
   if (confirmNow && toDecimal(req.body.amount).greaterThan(balance)) throw new AppError(400, 'Payment exceeds invoice balance');
   let createdPayment = null;
   const data = await prisma.$transaction(async (tx) => {
-    const payment = await tx.payment.create({ data: { ...req.body, companyId: req.companyId, invoiceId: invoice.id, status: confirmNow ? 'CONFIRMED' : 'PENDING', receivedAt: req.body.receivedAt || new Date(), confirmedAt: confirmNow ? new Date() : null, createdById: req.user.id } });
+    const payment = await tx.payment.create({ data: { ...req.body, companyId: req.companyId, branchId: invoice.branchId || null, invoiceId: invoice.id, status: confirmNow ? 'CONFIRMED' : 'PENDING', receivedAt: req.body.receivedAt || new Date(), confirmedAt: confirmNow ? new Date() : null, createdById: req.user.id } });
     createdPayment = payment;
     if (confirmNow) await createReceiptForPayment(tx, payment, invoice);
     return confirmNow ? recalcInvoice(tx, req.companyId, invoice.id) : tx.invoice.findFirst({ where: { id: invoice.id, companyId: req.companyId }, include: invoiceInclude });

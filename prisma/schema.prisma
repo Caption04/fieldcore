@@ -313,6 +313,24 @@ enum OfflineActionType {
   PART_SHORTAGE
 }
 
+enum ApprovalEventType {
+  QUOTE_DISCOUNT
+  QUOTE_SEND
+  INVOICE_VOID
+  PAYMENT_REFUND
+  PURCHASE_ORDER_SEND
+  STOCK_ADJUSTMENT
+  JOB_RESCHEDULE
+  SLA_WAIVE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 model Company {
   id                     String                     @id @default(cuid())
   name                   String
@@ -387,6 +405,9 @@ model Company {
   financeExportLogs      FinanceExportLog[]
   workerDevices          WorkerDevice[]
   offlineActionQueues    OfflineActionQueue[]
+  branches               Branch[]
+  approvalPolicies       ApprovalPolicy[]
+  approvalRequests       ApprovalRequest[]
 }
 
 model SaaSPlan {
@@ -496,13 +517,87 @@ model User {
   financeExportLogsCreated    FinanceExportLog[]      @relation("FinanceExportLogCreatedBy")
   workerDevices               WorkerDevice[]
   offlineActionQueues         OfflineActionQueue[]
+  approvalRequestsMade        ApprovalRequest[]       @relation("ApprovalRequestRequestedBy")
+  approvalRequestsDecided     ApprovalRequest[]       @relation("ApprovalRequestDecidedBy")
 
   @@index([companyId])
+}
+
+model Branch {
+  id               String            @id @default(cuid())
+  companyId        String
+  name             String
+  code             String?
+  country          String?
+  city             String?
+  address          String?
+  timezone         String?
+  active           Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  company          Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customers        Customer[]
+  properties       CustomerProperty[]
+  workers          WorkerProfile[]
+  jobs             Job[]
+  quotes           Quote[]
+  invoices         Invoice[]
+  payments         Payment[]
+  receipts         Receipt[]
+  assets           Asset[]
+  serviceContracts ServiceContract[]
+  stockLocations   StockLocation[]
+  purchaseRequests PurchaseRequest[]
+  purchaseOrders   PurchaseOrder[]
+
+  @@unique([companyId, code])
+  @@index([companyId, active])
+}
+
+model ApprovalPolicy {
+  id              String            @id @default(cuid())
+  companyId       String
+  name            String
+  eventType       ApprovalEventType
+  thresholdAmount Decimal?          @db.Decimal(12, 2)
+  active          Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  requests        ApprovalRequest[]
+
+  @@index([companyId, eventType, active])
+}
+
+model ApprovalRequest {
+  id             String            @id @default(cuid())
+  companyId      String
+  policyId       String?
+  requestedById  String
+  approvedById   String?
+  entityType     String
+  entityId       String
+  eventType      ApprovalEventType
+  status         ApprovalStatus    @default(PENDING)
+  reason         String?
+  decisionNote   String?
+  createdAt      DateTime          @default(now())
+  decidedAt      DateTime?
+  updatedAt      DateTime          @updatedAt
+  company        Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  policy         ApprovalPolicy?   @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  requestedBy    User              @relation("ApprovalRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy     User?             @relation("ApprovalRequestDecidedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status, createdAt])
+  @@index([companyId, entityType, entityId])
+  @@index([companyId, eventType, status])
 }
 
 model Customer {
   id                String             @id @default(cuid())
   companyId         String
+  branchId          String?
   name              String
   email             String?
   phone             String?
@@ -511,6 +606,7 @@ model Customer {
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch            Branch?            @relation(fields: [branchId], references: [id], onDelete: SetNull)
   jobs              Job[]
   quotes            Quote[]
   invoices          Invoice[]
@@ -524,6 +620,7 @@ model Customer {
   serviceContracts  ServiceContract[]
 
   @@index([companyId])
+  @@index([companyId, branchId])
 }
 
 model ClientAccount {
@@ -551,6 +648,7 @@ model ClientAccount {
 model CustomerProperty {
   id               String            @id @default(cuid())
   companyId        String
+  branchId         String?
   customerId       String
   clientAccountId  String?
   label            String
@@ -561,6 +659,7 @@ model CustomerProperty {
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   company          Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch           Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
   clientAccount    ClientAccount?    @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
   assets           Asset[]
@@ -569,6 +668,7 @@ model CustomerProperty {
   @@index([companyId, customerId])
   @@index([companyId, clientAccountId])
   @@index([companyId, customerId, isDefault])
+  @@index([companyId, branchId])
 }
 
 model WorkerRole {
@@ -590,6 +690,7 @@ model WorkerRole {
 model WorkerProfile {
   id              String               @id @default(cuid())
   companyId       String
+  branchId        String?
   userId          String               @unique
   roleId          String?
   title           String?
@@ -598,6 +699,7 @@ model WorkerProfile {
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch          Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
   user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   role            WorkerRole?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
   jobs            Job[]
@@ -616,6 +718,7 @@ model WorkerProfile {
 
   @@index([companyId])
   @@index([companyId, roleId])
+  @@index([companyId, branchId])
 }
 
 model Service {
@@ -644,6 +747,7 @@ model Service {
 model Job {
   id                   String                 @id @default(cuid())
   companyId            String
+  branchId             String?
   customerId           String
   serviceId            String?
   workerId             String?
@@ -681,6 +785,7 @@ model Job {
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
   company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch               Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer             Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
   service              Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   contract             ServiceContract?       @relation(fields: [contractId], references: [id], onDelete: SetNull)
@@ -706,11 +811,13 @@ model Job {
   @@index([companyId, customerId])
   @@index([companyId, contractId])
   @@index([companyId, slaStatus])
+  @@index([companyId, branchId])
 }
 
 model Asset {
   id                    String                 @id @default(cuid())
   companyId             String
+  branchId              String?
   customerId            String
   propertyId            String?
   serviceId             String?
@@ -730,6 +837,7 @@ model Asset {
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch                Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer              Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
   property              CustomerProperty?      @relation(fields: [propertyId], references: [id], onDelete: SetNull)
   service               Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
@@ -740,6 +848,7 @@ model Asset {
   @@index([companyId, customerId])
   @@index([companyId, propertyId])
   @@index([companyId, status])
+  @@index([companyId, branchId])
 }
 
 model JobAsset {
@@ -762,6 +871,7 @@ model JobAsset {
 model ServiceContract {
   id                 String                 @id @default(cuid())
   companyId          String
+  branchId           String?
   customerId         String
   propertyId         String?
   contractNumber     String
@@ -779,6 +889,7 @@ model ServiceContract {
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
   company            Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch             Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer           Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
   property           CustomerProperty?      @relation(fields: [propertyId], references: [id], onDelete: SetNull)
   jobs               Job[]
@@ -788,6 +899,7 @@ model ServiceContract {
   @@unique([companyId, contractNumber])
   @@index([companyId, customerId])
   @@index([companyId, status])
+  @@index([companyId, branchId])
 }
 
 model ServiceContractAsset {
@@ -863,6 +975,7 @@ model StockLocation {
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch          Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
   worker          WorkerProfile?    @relation(fields: [workerId], references: [id], onDelete: SetNull)
   stocks          InventoryStock[]
   stockMovements  StockMovement[]
@@ -871,6 +984,7 @@ model StockLocation {
   @@unique([companyId, name])
   @@index([companyId, active])
   @@index([companyId, workerId])
+  @@index([companyId, branchId])
 }
 
 model InventoryItem {
@@ -970,6 +1084,7 @@ model JobPartUsage {
 model PurchaseRequest {
   id            String                @id @default(cuid())
   companyId     String
+  branchId      String?
   requestedById String?
   jobId         String?
   status        PurchaseRequestStatus @default(REQUESTED)
@@ -977,17 +1092,20 @@ model PurchaseRequest {
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt
   company       Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch        Branch?               @relation(fields: [branchId], references: [id], onDelete: SetNull)
   requestedBy   User?                 @relation("PurchaseRequestRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
   job           Job?                  @relation(fields: [jobId], references: [id], onDelete: SetNull)
   purchaseOrders PurchaseOrder[]
 
   @@index([companyId, status])
   @@index([companyId, jobId])
+  @@index([companyId, branchId])
 }
 
 model PurchaseOrder {
   id                String              @id @default(cuid())
   companyId         String
+  branchId          String?
   supplierId        String?
   purchaseRequestId String?
   status            PurchaseOrderStatus @default(DRAFT)
@@ -998,6 +1116,7 @@ model PurchaseOrder {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   company           Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch            Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
   supplier          Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   purchaseRequest   PurchaseRequest?    @relation(fields: [purchaseRequestId], references: [id], onDelete: SetNull)
   lines             PurchaseOrderLine[]
@@ -1006,6 +1125,7 @@ model PurchaseOrder {
   @@unique([companyId, orderNumber])
   @@index([companyId, status])
   @@index([companyId, supplierId])
+  @@index([companyId, branchId])
 }
 
 model PurchaseOrderLine {
@@ -1124,6 +1244,7 @@ model ScheduleItem {
 model Quote {
   id              String               @id @default(cuid())
   companyId       String
+  branchId        String?
   customerId      String
   serviceId       String?
   jobId           String?
@@ -1145,6 +1266,7 @@ model Quote {
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch          Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer        Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
   service         Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   job             Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
@@ -1154,6 +1276,7 @@ model Quote {
 
   @@index([companyId])
   @@index([companyId, deletedAt])
+  @@index([companyId, branchId])
 }
 
 model QuoteLineItem {
@@ -1207,6 +1330,7 @@ model CompanyInvoiceCounter {
 model Invoice {
   id            String                 @id @default(cuid())
   companyId     String
+  branchId      String?
   customerId    String
   serviceId     String?
   jobId         String?
@@ -1225,6 +1349,7 @@ model Invoice {
   createdAt     DateTime               @default(now())
   updatedAt     DateTime               @updatedAt
   company       Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch        Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
   customer      Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
   service       Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   job           Job?                   @relation(fields: [jobId], references: [id], onDelete: SetNull)
@@ -1238,6 +1363,7 @@ model Invoice {
 
   @@unique([companyId, number])
   @@index([companyId])
+  @@index([companyId, branchId])
 }
 
 model InvoiceLineItem {
@@ -1280,6 +1406,7 @@ model InvoiceStatusHistory {
 model Payment {
   id          String        @id @default(cuid())
   companyId   String
+  branchId    String?
   invoiceId   String
   amount      Decimal       @db.Decimal(12, 2)
   method      PaymentMethod @default(OTHER)
@@ -1292,16 +1419,19 @@ model Payment {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
   company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch      Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
   invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   createdBy   User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
   receipt     Receipt?
 
   @@index([companyId])
+  @@index([companyId, branchId])
 }
 
 model Receipt {
   id            String   @id @default(cuid())
   companyId     String
+  branchId      String?
   invoiceId     String
   paymentId     String   @unique
   receiptNumber String
@@ -1310,11 +1440,13 @@ model Receipt {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch        Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
   invoice       Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   payment       Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
   @@unique([companyId, receiptNumber])
   @@index([companyId, invoiceId])
+  @@index([companyId, branchId])
 }
 
 model WorkerLocation {

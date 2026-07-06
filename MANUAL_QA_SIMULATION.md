@@ -1294,3 +1294,13 @@ Do not treat manual QA as optional. Automated tests prove code paths; this simul
 6. Try pushing an action for another worker's job and confirm it is `REJECTED`.
 7. Push a proof-photo metadata action and confirm the record stores `capturedAt`, `offlineCreatedAt`, `deviceId`, GPS fields, and `syncId`.
 8. Confirm admin/user tests still pass and no worker can access company-wide financial or management data through sync.
+
+
+## TASK5 manual QA - Branches, approvals, and reports
+
+- Create two branches and confirm they appear on the Branches page.
+- Assign a customer and job to a branch, then filter jobs/reports by `branchId`.
+- Confirm a worker cannot open `/api/branches`, `/api/approvals/pending`, or management reports.
+- Create an approval request, approve it once, and confirm a second approve/reject attempt is blocked.
+- Open each deeper report endpoint and confirm results are company-scoped and branch-aware.
+- Confirm Company B cannot update or decide Company A branch/approval records.
