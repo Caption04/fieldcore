@@ -59,8 +59,13 @@ async function brand() {
     const company = await api("/public/company");
     document.querySelectorAll("[data-client-brand]").forEach(function(el) { el.textContent = company.brandName || "FieldCore"; });
     document.querySelectorAll("[data-client-logo]").forEach(function(el) {
-      el.textContent = (company.brandName || "FC").slice(0, 2).toUpperCase();
-      if (company.logoUrl) el.style.backgroundImage = "url(" + company.logoUrl + ")";
+      const brandName = company.brandName || "FieldCore";
+      el.style.backgroundImage = "";
+      if (company.logoUrl) {
+        el.innerHTML = '<img src="' + escapeHtml(company.logoUrl) + '" alt="' + escapeHtml(brandName) + ' logo">';
+      } else {
+        el.textContent = brandName.slice(0, 2).toUpperCase();
+      }
     });
   } catch (error) {}
 }
@@ -130,10 +135,41 @@ function activateRequestSubtab(name) {
 
 function openPasswordModal(name) {
   document.querySelectorAll("[data-password-modal]").forEach(function(modal) { modal.hidden = modal.dataset.passwordModal !== name; });
+  syncClientModalScrollLock();
 }
 
 function closePasswordModals() {
   document.querySelectorAll("[data-password-modal]").forEach(function(modal) { modal.hidden = true; });
+  syncClientModalScrollLock();
+}
+
+function syncClientModalScrollLock() {
+  const openModal = Array.from(document.querySelectorAll("[data-password-modal], [data-client-detail-modal]")).some(function(modal) {
+    return !modal.hidden;
+  });
+  document.body.classList.toggle("modal-open", openModal);
+}
+
+if (window.MutationObserver) {
+  new MutationObserver(syncClientModalScrollLock).observe(document.body, { attributes: true, subtree: true, attributeFilter: ["hidden"] });
+}
+
+function passwordMatchState() {
+  const form = document.querySelector("[data-client-change-password-form]");
+  if (!form) return true;
+  const msg = document.querySelector("[data-password-match-message]");
+  const submit = document.querySelector("[data-change-password-submit]");
+  const newPassword = form.newPassword && form.newPassword.value || "";
+  const confirm = form.confirmNewPassword && form.confirmNewPassword.value || "";
+  const touched = Boolean(newPassword || confirm);
+  const matches = Boolean(newPassword && confirm && newPassword === confirm);
+  if (msg) {
+    msg.hidden = !touched;
+    msg.textContent = !touched ? "" : matches ? "Passwords match." : "New passwords do not match.";
+    msg.classList.toggle("is-success", matches);
+  }
+  if (submit) submit.disabled = touched && !matches;
+  return !touched || matches;
 }
 
 function openDetail(title, html) {
@@ -141,11 +177,13 @@ function openDetail(title, html) {
   document.querySelector("[data-client-detail-title]").textContent = title;
   document.querySelector("[data-client-detail-body]").innerHTML = html;
   modal.hidden = false;
+  syncClientModalScrollLock();
 }
 
 function closeDetail() {
   const modal = document.querySelector("[data-client-detail-modal]");
   if (modal) modal.hidden = true;
+  syncClientModalScrollLock();
 }
 
 async function authPage(kind) {
@@ -279,7 +317,14 @@ function fillProfile(profile) {
   document.querySelector("[data-client-profile-status]").textContent = profile.client.status || "ACTIVE";
   document.querySelector("[data-client-avatar]").textContent = (profile.client.name || profile.client.email || "FC").slice(0, 2).toUpperCase();
   const summary = document.querySelector("[data-client-customer-summary]");
-  summary.textContent = profile.customer ? [profile.customer.name, profile.customer.address].filter(Boolean).join(" - ") : "No linked customer details yet.";
+  const property = (state.properties || []).find(function(item) { return item.isDefault; }) || (state.properties || [])[0];
+  if (property) {
+    summary.hidden = false;
+    summary.textContent = [property.label, property.address, property.city].filter(Boolean).join(" - ");
+  } else {
+    summary.hidden = true;
+    summary.textContent = "";
+  }
   const requestForm = document.querySelector("[data-client-request-form]");
   requestForm.customerName.value = profile.client.name || "";
   requestForm.customerEmail.value = profile.client.email || "";
@@ -437,16 +482,25 @@ async function clientPasswordSubmitHandler(event) {
   const form = changeForm || forgotForm;
   const msg = document.querySelector(isChange ? "[data-client-change-password-message]" : "[data-client-forgot-password-message]");
   message(msg, "");
+  if (isChange && !passwordMatchState()) {
+    message(msg, "New passwords do not match.");
+    return;
+  }
   try {
-    await api(isChange ? "/client/profile/password" : "/client/auth/forgot-password", { method: "POST", body: JSON.stringify(clean(data(form))) });
+    const payload = clean(data(form));
+    if (isChange) delete payload.confirmNewPassword;
+    await api(isChange ? "/client/profile/password" : "/client/auth/forgot-password", { method: "POST", body: JSON.stringify(payload) });
     if (isChange) { form.reset(); message(msg, "Password updated.", true); setTimeout(closePasswordModals, 700); }
     else message(msg, "Password reset email delivery is not configured yet. Please contact the company to reset your password.", true);
   } catch (error) {
-    message(msg, error.message);
+    message(msg, /current password/i.test(error.message) ? "Current password is incorrect." : error.message);
   }
 }
 
 document.addEventListener("submit", clientPasswordSubmitHandler);
+document.addEventListener("input", function(event) {
+  if (event.target.closest("[data-client-change-password-form]")) passwordMatchState();
+});
 
 document.addEventListener("DOMContentLoaded", function() {
   if (page === "login") authPage("login");

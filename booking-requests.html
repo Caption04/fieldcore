@@ -5,7 +5,7 @@
     <title>FieldCore Booking Requests</title>
     <link rel=stylesheet href=assets/app.css>
     <script defer src=assets/layout.js></script>
-    <script defer src=assets/api.js></script>
+    <script defer src=assets/api.js?v=worker-activity-notes-1></script>
   </head>
   <body data-page=booking-requests data-title=Booking-Requests>
     <section class=page>
@@ -17,10 +17,10 @@
         <span class=api-status data-api-status>Connecting...</span>
       </div>
       <section class=stats>
-        <article class=card stat-card><div class=stat-label>New</div><div class=stat-value>0</div><div class=trend>Awaiting review</div></article>
-        <article class=card stat-card><div class=stat-label>Reviewed</div><div class=stat-value>0</div><div class=trend>Ready to convert</div></article>
-        <article class=card stat-card><div class=stat-label>Converted</div><div class=stat-value>0</div><div class=trend>Jobs created</div></article>
-        <article class=card stat-card><div class=stat-label>Declined</div><div class=stat-value>0</div><div class=trend red>Not proceeding</div></article>
+        <article class=card stat-card data-booking-stat=NEW><div class=stat-label>New</div><div class=stat-value>0</div><div class=trend>Awaiting review</div></article>
+        <article class=card stat-card data-booking-stat=REVIEWED><div class=stat-label>Reviewed</div><div class=stat-value>0</div><div class=trend>Ready to convert</div></article>
+        <article class=card stat-card data-booking-stat=CONVERTED><div class=stat-label>Converted</div><div class=stat-value>0</div><div class=trend>Jobs created</div></article>
+        <article class=card stat-card data-booking-stat=DECLINED><div class=stat-label>Declined</div><div class=stat-value>0</div><div class=trend red>Not proceeding</div></article>
       </section>
       <section class=table-card>
         <div class=empty-state><div><strong>No booking requests yet</strong><span>Public service requests will appear here.</span></div></div>

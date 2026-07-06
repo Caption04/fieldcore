@@ -3,19 +3,23 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FieldCore Customers</title>
+    <title>FieldCore People/Members</title>
     <link rel="stylesheet" href="assets/app.css">
     <script defer src="assets/layout.js"></script>
-    <script defer src="assets/api.js"></script>
+    <script defer src="assets/api.js?v=worker-activity-notes-1"></script>
   </head>
-  <body data-page="customers" data-title="Customers">
+  <body data-page="customers" data-title="People/Members">
     <section class="page">
       <div class="hero-row">
         <div class="hero-copy">
-          <h2>Customer Directory</h2>
-          <p>Customer records, balances, and service history will appear here once created.</p>
+          <h2 data-people-title>People/Members</h2>
+          <p data-people-copy>Customer records, balances, workers, and service history will appear here once created.</p>
         </div>
-        <button class="primary-button" type="button">+ New Customer</button>
+        <button class="primary-button" type="button" data-create-resource="customers" data-people-create>+ New Customer</button>
+      </div>
+      <div class="tabs" aria-label="People and members sections">
+        <button class="tab active" type="button" data-people-tab="customers">Customers</button>
+        <button class="tab" type="button" data-people-tab="workers">Workers</button>
       </div>
       <section class="stats">
         <article class="card stat-card">

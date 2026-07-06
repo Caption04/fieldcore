@@ -4,6 +4,7 @@ const { cleanError, sendEmail } = require('./emailProvider.service');
 const { normalizePhoneNumber } = require('./phoneNumber.service');
 const { canUseFeature } = require('./subscription.service');
 const { sendWhatsApp, templateName } = require('./whatsappProvider.service');
+const { sendViaIntegration } = require('./integrations/integrationConnections.service');
 
 const CHANNEL = { EMAIL: 'EMAIL', WHATSAPP: 'WHATSAPP', SMS: 'SMS' };
 const dedupeStatuses = ['SENT', 'SKIPPED', 'PENDING'];
@@ -12,7 +13,7 @@ function channels() {
   return String(process.env.NOTIFICATION_CHANNELS || 'EMAIL,WHATSAPP')
     .split(',')
     .map((item) => item.trim().toUpperCase())
-    .filter((item) => item === CHANNEL.EMAIL || item === CHANNEL.WHATSAPP);
+    .filter((item) => item === CHANNEL.EMAIL || item === CHANNEL.WHATSAPP || item === CHANNEL.SMS);
 }
 
 function uniqBy(recipients, keyFn) {
@@ -103,7 +104,8 @@ async function deliverEmail({ companyId, eventType, recipient, template, related
   if (duplicate) return duplicate;
   const pending = await writeLog({ companyId, eventType, channel: CHANNEL.EMAIL, recipient: email, subject: template.subject, status: 'PENDING', relatedType, relatedId });
   try {
-    const result = await sendEmail({ to: email, subject: template.subject, text: template.text, html: template.html });
+    let result = await sendViaIntegration({ companyId, channel: CHANNEL.EMAIL, message: { to: email, subject: template.subject, text: template.text, html: template.html }, relatedType, relatedId, notificationLogId: pending.id });
+    if (result.status === 'SKIPPED') result = await sendEmail({ to: email, subject: template.subject, text: template.text, html: template.html });
     return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: result.status || 'SENT', error: result.error ? cleanError(result.error) : null, sentAt: result.status === 'SENT' ? new Date() : null } });
   } catch (error) {
     return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: 'FAILED', error: cleanError(error) } });
@@ -119,7 +121,23 @@ async function deliverWhatsApp({ companyId, eventType, recipient, template, rela
   if (duplicate) return duplicate;
   const pending = await writeLog({ companyId, eventType, channel: CHANNEL.WHATSAPP, recipient: phone, subject, status: 'PENDING', relatedType, relatedId });
   try {
-    const result = await sendWhatsApp({ to: phone, eventType, templateName: template.templateName, text: template.text });
+    let result = await sendViaIntegration({ companyId, channel: CHANNEL.WHATSAPP, message: { to: phone, eventType, templateName: template.templateName, text: template.text }, relatedType, relatedId, notificationLogId: pending.id });
+    if (result.status === 'SKIPPED') result = await sendWhatsApp({ to: phone, eventType, templateName: template.templateName, text: template.text });
+    return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: result.status || 'SENT', error: result.error ? cleanError(result.error) : null, sentAt: result.status === 'SENT' ? new Date() : null } });
+  } catch (error) {
+    return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: 'FAILED', error: cleanError(error) } });
+  }
+}
+
+async function deliverSms({ companyId, eventType, recipient, template, relatedType, relatedId }) {
+  const phone = normalizePhoneNumber(recipient.phone);
+  const subject = template.subject || eventType;
+  if (!phone) return skippedLog({ companyId, eventType, channel: CHANNEL.SMS, recipient: 'none', subject, error: 'No valid SMS phone number available', relatedType, relatedId });
+  const duplicate = await duplicateLog(companyId, eventType, CHANNEL.SMS, phone, relatedType, relatedId);
+  if (duplicate) return duplicate;
+  const pending = await writeLog({ companyId, eventType, channel: CHANNEL.SMS, recipient: phone, subject, status: 'PENDING', relatedType, relatedId });
+  try {
+    const result = await sendViaIntegration({ companyId, channel: CHANNEL.SMS, message: { to: phone, eventType, text: template.text || subject }, relatedType, relatedId, notificationLogId: pending.id });
     return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: result.status || 'SENT', error: result.error ? cleanError(result.error) : null, sentAt: result.status === 'SENT' ? new Date() : null } });
   } catch (error) {
     return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: 'FAILED', error: cleanError(error) } });
@@ -154,6 +172,12 @@ async function notify(eventType, options = {}) {
       const whatsappRecipients = uniqBy(recipients, (recipient) => normalizePhoneNumber(recipient.phone) || String(recipient.name || recipient.email || 'none'));
       if (!whatsappRecipients.length) tasks.push(skippedLog({ companyId, eventType, channel: CHANNEL.WHATSAPP, recipient: 'none', subject: whatsappTemplate.templateName || whatsappTemplate.label, error: 'No valid WhatsApp phone number available', relatedType, relatedId }));
       else tasks.push(...whatsappRecipients.map((recipient) => deliverWhatsApp({ companyId, eventType, recipient, template: whatsappTemplate, relatedType, relatedId })));
+    }
+
+    if (activeChannels.includes(CHANNEL.SMS)) {
+      const smsRecipients = uniqBy(recipients, (recipient) => normalizePhoneNumber(recipient.phone) || String(recipient.name || recipient.email || 'none'));
+      if (!smsRecipients.length) tasks.push(skippedLog({ companyId, eventType, channel: CHANNEL.SMS, recipient: 'none', subject: emailTemplate.subject, error: 'No valid SMS phone number available', relatedType, relatedId }));
+      else tasks.push(...smsRecipients.map((recipient) => deliverSms({ companyId, eventType, recipient, template: emailTemplate, relatedType, relatedId })));
     }
 
     return Promise.all(tasks);

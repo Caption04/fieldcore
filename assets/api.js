@@ -3,7 +3,7 @@
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], billing: null };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, reports: null, activeReportTab: 'overview' };
 
   const tableConfigs = {
     customers: {
@@ -11,6 +11,12 @@
       emptyTitle: 'No customers yet',
       emptyText: 'Create your first customer to fill this directory.',
       row: (item) => [item.name, [item.email, item.phone].filter(Boolean).join(' / ') || '-', item.address || '-', (item.jobs || []).length, money.format((item.invoices || []).filter((i) => i.status !== 'PAID').reduce((sum, i) => sum + Number(i.amount || 0), 0))]
+    },
+    workers: {
+      columns: ['Worker', 'Contact', 'Title', 'Status', 'Joined'],
+      emptyTitle: 'No workers yet',
+      emptyText: 'Create your first worker to fill the team directory.',
+      row: (item) => [item.user && item.user.name || 'Worker', [item.user && item.user.email, item.phone].filter(Boolean).join(' / ') || '-', item.title || '-', badge(item.active === false ? 'INACTIVE' : 'ACTIVE'), formatDate(item.createdAt)]
     },
     jobs: {
       columns: ['Job', 'Customer', 'Worker', 'Status', 'Scheduled', 'Total', 'Actions'],
@@ -22,7 +28,7 @@
       columns: ['Quote', 'Customer', 'Status', 'Total', 'Valid Until', 'Actions'],
       emptyTitle: 'No quotes yet',
       emptyText: 'Create your first quote to start the pipeline.',
-      row: (item) => [item.title, item.customer && item.customer.name || '-', badge(item.status), money.format(Number(item.total || item.amount || 0)), formatDate(item.validUntil), rowActions('quotes', item)]
+      row: (item) => [item.title, item.customer && item.customer.name || '-', item.deletedAt ? badge('DELETED') : badge(item.status), money.format(Number(item.total || item.amount || 0)), item.deletedAt ? formatDate(item.deleteExpiresAt) : formatDate(item.validUntil), rowActions('quotes', item)]
     },
     invoices: {
       columns: ['Invoice', 'Customer', 'Status', 'Total', 'Balance', 'Due', 'Actions'],
@@ -53,6 +59,22 @@
       node.textContent = message;
       node.classList.toggle('red', ok === false);
     });
+  }
+
+  function showToast(message, ok = true) {
+    let stack = document.querySelector('[data-toast-stack]');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.className = 'toast-stack';
+      stack.dataset.toastStack = 'true';
+      document.body.appendChild(stack);
+    }
+    const toast = document.createElement('div');
+    toast.className = 'corner-toast' + (ok ? '' : ' error');
+    toast.innerHTML = '<strong>' + escapeHtml(ok ? 'Done' : 'Action failed') + '</strong><span>' + escapeHtml(message) + '</span><i></i>';
+    stack.appendChild(toast);
+    window.setTimeout(() => { toast.classList.add('toast-hiding'); }, 3400);
+    window.setTimeout(() => { toast.remove(); if (!stack.children.length) stack.remove(); }, 4000);
   }
 
 
@@ -252,25 +274,35 @@
   }
 
 
-  function rowActions(resource, item) {
+  function rowActionItems(resource, item) {
     if (isWorker()) {
-      return resource === 'jobs' ? workerJobActions(item, true) : '';
+      return [];
     }
-    const buttons = [];
-    const add = (label, action, primary) => buttons.push('<button class="' + (primary ? 'primary-button' : 'secondary-button') + ' compact" type="button" data-row-action="' + action + '" data-id="' + escapeHtml(item.id) + '">' + label + '</button>');
-    if (resource === 'quotes' && item.status === 'DRAFT') add('Send', 'quote-send');
-    if (resource === 'quotes' && item.status === 'SENT') add('Accept', 'quote-accept');
-    if (resource === 'quotes' && item.status === 'SENT') add('Reject', 'quote-reject');
+    const actions = [];
+    const add = (label, action, primary) => actions.push({ label, action, primary: Boolean(primary) });
+    if (resource === 'quotes') {
+      const status = String(item.status || '').toUpperCase();
+      if (item.deletedAt) {
+        add('Restore', 'quote-restore', true);
+      } else {
+        if (status === 'DRAFT') add('Send', 'quote-send', true);
+        if (status === 'SENT') add('Accept', 'quote-accept', true);
+        if (status === 'SENT') add('Reject', 'quote-reject');
+        if (status === 'REJECTED') add('Reverse Rejection', 'quote-reverse-rejection', true);
+        add('Delete', 'quote-delete');
+      }
+    }
     if (resource === 'jobs') add('Details', 'job-detail', true);
     if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add(item.scheduledStart ? 'Reschedule' : 'Schedule', item.scheduledStart ? 'job-reschedule' : 'job-schedule');
     if (resource === 'jobs' && item.scheduledStart && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Unschedule', 'job-unschedule');
     if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice');
     if (resource === 'booking-requests') {
+      const quoteAlreadySent = /quote has been sent/i.test(String(item.customerFacingMessage || ''));
       add('View', 'booking-view', true);
       if (item.status === 'NEW') add('Mark Reviewed', 'booking-review');
       if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Decline', 'booking-decline');
       if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Convert to Job', 'booking-convert');
-      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Create Quote', 'booking-quote');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED' && !quoteAlreadySent) add('Create Quote', 'booking-quote');
     }
     if (resource === 'invoices') {
       const status = String(item.status || '').toUpperCase();
@@ -280,7 +312,49 @@
       if (hasReceipts) add(status === 'PARTIALLY_PAID' || item.receipts.length > 1 ? 'View Receipts' : 'View Receipt', 'invoice-receipts', status === 'PAID');
       if (status !== 'VOID' && status !== 'PAID') add('Void', 'invoice-void');
     }
-    return '<div class="row-actions">' + buttons.join('') + '</div>';
+    return actions;
+  }
+
+  function rowActionButton(action, id) {
+    return '<button class="' + (action.primary ? 'primary-button' : 'secondary-button') + ' compact" type="button" data-row-action="' + escapeHtml(action.action) + '" data-id="' + escapeHtml(id) + '">' + escapeHtml(action.label) + '</button>';
+  }
+
+  function rowActions(resource, item) {
+    if (isWorker()) {
+      return resource === 'jobs' ? workerJobActions(item, true) : '';
+    }
+    const actions = rowActionItems(resource, item);
+    if (!actions.length) return '<span class="muted">-</span>';
+    return '<div class="row-actions"><button class="secondary-button compact action-menu-button" type="button" data-row-action-menu="' + escapeHtml(resource) + '" data-id="' + escapeHtml(item.id) + '">Actions</button></div>';
+  }
+
+  function actionMenuTitle(resource) {
+    return {
+      jobs: 'Job Actions',
+      quotes: 'Quote Actions',
+      invoices: 'Invoice Actions',
+      'booking-requests': 'Booking Request Actions'
+    }[resource] || 'Actions';
+  }
+
+  function actionMenuSubtitle(resource, item) {
+    if (resource === 'jobs') return item.title || 'Job';
+    if (resource === 'quotes') return item.title || 'Quote';
+    if (resource === 'invoices') return item.number || 'Invoice';
+    if (resource === 'booking-requests') return item.customerName || item.publicReference || 'Booking request';
+    return 'Select an action';
+  }
+
+  function openRowActionMenu(resource, item) {
+    const actions = rowActionItems(resource, item);
+    if (!actions.length) return;
+    closeModal();
+    const modal = document.createElement('div');
+    modal.className = 'fc-modal';
+    modal.dataset.actionMenuModal = 'true';
+    modal.innerHTML = '<div class="fc-dialog action-menu-dialog"><div class="panel-head"><div><h3>' + escapeHtml(actionMenuTitle(resource)) + '</h3><p class="modal-copy">' + escapeHtml(actionMenuSubtitle(resource, item)) + '</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="action-menu-list">' + actions.map((action) => rowActionButton(action, item.id)).join('') + '</div></div>';
+    modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('[data-close]')) closeModal(); });
+    document.body.appendChild(modal);
   }
 
   function setStats(values) {
@@ -442,8 +516,11 @@
     const cells = Array.from(grid.querySelectorAll('.schedule-cell'));
     const empty = card.querySelector('.empty-state');
     const rangeHead = document.querySelector('[data-schedule-range]');
+    const toolbarRange = document.querySelector('[data-schedule-toolbar-range]');
     const count = document.querySelector('[data-schedule-count]');
-    if (rangeHead) rangeHead.textContent = scheduleRangeLabel(range);
+    const label = scheduleRangeLabel(range);
+    if (rangeHead) rangeHead.textContent = label;
+    if (toolbarRange) toolbarRange.textContent = label;
     if (count) count.textContent = `${scheduleData.length} ${scheduleData.length === 1 ? 'job' : 'jobs'}`;
     document.querySelectorAll('[data-schedule-view]').forEach((tab) => tab.classList.toggle('active', tab.dataset.scheduleView === state.scheduleView));
     if (empty) empty.hidden = scheduleData.length > 0;
@@ -469,6 +546,7 @@
 
   function itemMatchesListFilter(resource, item, filter) {
     if (!filter || filter === 'all') return true;
+    if (resource === 'jobs' && filter === 'ON_HOLD') return ['ON_HOLD', 'PAUSED'].includes(String(item.status || '').toUpperCase());
     if (resource === 'invoices' && filter === 'UNPAID') return !['PAID', 'VOID', 'DRAFT'].includes(String(item.status || '').toUpperCase());
     if (resource === 'invoices' && filter === 'OVERDUE') {
       const status = String(item.status || '').toUpperCase();
@@ -499,10 +577,12 @@
     if (!card || !config) return;
     if (!data.length) {
       card.innerHTML = `<div class="empty-state"><div><strong>${config.emptyTitle}</strong><span>${config.emptyText}</span></div></div><footer class="table-footer"><span>Showing 0 ${resource}</span><div class="pager"><span class="page-dot active">1</span></div></footer>`;
+      if (resource === 'booking-requests') updateBookingRequestStats(data);
       return;
     }
     const rows = data.map((item) => `<tr>${config.row(item).map((cell) => `<td>${String(cell).startsWith('<span') || String(cell).startsWith('<div') ? cell : escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
     card.innerHTML = `<div class="table-scroll"><table><thead><tr>${config.columns.map((name) => `<th>${escapeHtml(name)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div><footer class="table-footer"><span>Showing ${data.length} ${resource}</span><div class="pager"><span class="page-dot active">1</span></div></footer>`;
+    if (resource === 'booking-requests') updateBookingRequestStats(data);
   }
 
   function setScheduleFilterOptions() {
@@ -606,46 +686,310 @@
 
   function reportTable(columns, rows, emptyText) {
     if (!rows || !rows.length) return '<div class="empty-state compact-empty"><div><strong>' + escapeHtml(emptyText || 'No data for this range.') + '</strong></div></div>';
-    return '<div class="table-scroll"><table><thead><tr>' + columns.map((column) => '<th>' + escapeHtml(column.label) + '</th>').join('') + '</tr></thead><tbody>' + rows.map((row) => '<tr>' + columns.map((column) => '<td>' + (column.html ? column.value(row) : escapeHtml(column.value(row))) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+    return '<div class="table-scroll report-table-scroll report-table-panel"><table><thead><tr>' + columns.map((column) => '<th>' + escapeHtml(column.label) + '</th>').join('') + '</tr></thead><tbody>' + rows.map((row) => '<tr>' + columns.map((column) => '<td>' + (column.html ? column.value(row) : escapeHtml(column.value(row))) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+  }
+
+  function reportValue(value, formatter) {
+    if (formatter) return formatter(value);
+    if (value == null || value === '') return '-';
+    return String(value);
+  }
+
+  function reportMetricCard(label, value, trend) {
+    return '<article class="card stat-card report-metric-card"><div class="stat-label">' + escapeHtml(label) + '</div><div class="stat-value">' + escapeHtml(value) + '</div><div class="trend">' + escapeHtml(trend || '') + '</div></article>';
+  }
+
+  function reportPanel(title, body, meta) {
+    return '<section class="panel report-insight-card"><div class="panel-head"><h3>' + escapeHtml(title) + '</h3>' + (meta ? '<span class="badge gray">' + escapeHtml(meta) + '</span>' : '') + '</div>' + body + '</section>';
+  }
+
+  function reportRows(rows) {
+    return Array.isArray(rows) ? rows.filter(Boolean) : [];
+  }
+
+  function reportMax(rows, valueKey) {
+    return Math.max(0, ...reportRows(rows).map((row) => Number(row[valueKey] || 0)));
+  }
+
+  function reportBarChart(title, rows, labelKey, valueKey, formatter) {
+    const items = reportRows(rows).slice(0, 10);
+    if (!items.length) return reportPanel(title, '<div class="empty-state compact-empty"><div><strong>No chart data yet.</strong></div></div>');
+    const max = reportMax(items, valueKey) || 1;
+    const bars = items.map((item) => {
+      const raw = Number(item[valueKey] || 0);
+      const width = Math.max(4, Math.round((raw / max) * 100));
+      return '<div class="report-bar-row"><span>' + escapeHtml(item[labelKey] || 'Unknown') + '</span><div class="report-bar-track"><i style="width:' + width + '%"></i></div><strong>' + escapeHtml(reportValue(raw, formatter)) + '</strong></div>';
+    }).join('');
+    return reportPanel(title, '<div class="report-chart report-bar-chart">' + bars + '</div>');
+  }
+
+  function reportLineChart(title, rows, labelKey, valueKey, formatter) {
+    const items = reportRows(rows).slice(-20);
+    if (!items.length) return reportPanel(title, '<div class="empty-state compact-empty"><div><strong>No trend data yet.</strong></div></div>');
+    const values = items.map((item) => Number(item[valueKey] || 0));
+    const max = Math.max(...values, 1);
+    const min = Math.min(...values, 0);
+    const spread = max - min || 1;
+    const points = items.map((item, index) => {
+      const x = items.length === 1 ? 50 : Math.round((index / (items.length - 1)) * 100);
+      const y = Math.round(90 - (((Number(item[valueKey] || 0) - min) / spread) * 70));
+      return x + ',' + y;
+    }).join(' ');
+    const last = items[items.length - 1];
+    const first = items[0];
+    const dots = items.map((item, index) => {
+      const [x, y] = points.split(' ')[index].split(',');
+      return '<circle cx="' + x + '" cy="' + y + '" r="2"><title>' + escapeHtml(item[labelKey] + ': ' + reportValue(item[valueKey], formatter)) + '</title></circle>';
+    }).join('');
+    return reportPanel(title, '<div class="report-chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"><polyline points="' + points + '"></polyline>' + dots + '</svg><div class="report-chart-footer"><span>' + escapeHtml(first[labelKey] || '') + '</span><strong>' + escapeHtml(reportValue(last[valueKey], formatter)) + '</strong><span>' + escapeHtml(last[labelKey] || '') + '</span></div></div>');
+  }
+
+  function reportPieChart(title, rows, labelKey, valueKey, formatter) {
+    const items = reportRows(rows).filter((item) => Number(item[valueKey] || 0) > 0).slice(0, 6);
+    const total = items.reduce((sum, item) => sum + Number(item[valueKey] || 0), 0);
+    if (!items.length || !total) return reportPanel(title, '<div class="empty-state compact-empty"><div><strong>No split data yet.</strong></div></div>');
+    let offset = 0;
+    const slices = items.map((item, index) => {
+      const value = Number(item[valueKey] || 0);
+      const pctValue = (value / total) * 100;
+      const slice = '<circle class="report-pie-slice segment-' + (index % 6) + '" r="15.915" cx="20" cy="20" stroke-dasharray="' + pctValue.toFixed(3) + ' ' + (100 - pctValue).toFixed(3) + '" stroke-dashoffset="-' + offset.toFixed(3) + '"><title>' + escapeHtml(item[labelKey] + ': ' + reportValue(value, formatter)) + '</title></circle>';
+      offset += pctValue;
+      return slice;
+    }).join('');
+    const legend = items.map((item, index) => '<li><i class="segment-' + (index % 6) + '"></i><span>' + escapeHtml(item[labelKey] || 'Unknown') + '</span><strong>' + escapeHtml(reportValue(item[valueKey], formatter)) + '</strong></li>').join('');
+    return reportPanel(title, '<div class="report-chart report-pie-chart"><svg viewBox="0 0 40 40" role="img"><circle class="report-pie-bg" r="15.915" cx="20" cy="20"></circle>' + slices + '</svg><ul class="report-legend">' + legend + '</ul></div>');
+  }
+
+  function reportFunnelChart(title, rows) {
+    return reportBarChart(title, reportRows(rows).map((row) => ({ name: row.name || row.label, value: row.value || row.count || 0 })), 'name', 'value', (value) => String(value));
+  }
+
+  function reportExportHref(section, filters) {
+    const params = new URLSearchParams();
+    ['period', 'startDate', 'endDate', 'serviceId', 'workerId', 'customerId'].forEach((name) => {
+      const value = filters && filters[name];
+      if (value) params.set(name, String(value).slice(0, name.endsWith('Date') ? 10 : undefined));
+    });
+    params.set('section', section);
+    return '/api/reports/export?' + params.toString();
+  }
+
+  function renderReportFilters(data) {
+    const filters = data.filters || {};
+    const options = data.options || {};
+    return '<form class="panel form-grid report-filters" data-report-filters><div class="field"><label for="reportPeriod">Period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisWeek">This week</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option><option value="custom">Custom</option></select></div><div class="field"><label for="reportStart">Start</label><input id="reportStart" name="startDate" type="date"></div><div class="field"><label for="reportEnd">End</label><input id="reportEnd" name="endDate" type="date"></div><div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div><div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div><div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Apply Filters</button><a class="secondary-button" href="' + escapeHtml(reportExportHref('revenue', filters)) + '">Export Revenue CSV</a><a class="secondary-button" href="' + escapeHtml(reportExportHref('invoices', filters)) + '">Export Invoices CSV</a><a class="secondary-button" href="' + escapeHtml(reportExportHref('jobs', filters)) + '">Export Jobs CSV</a></div><p class="fc-form-error span-2" data-report-message hidden></p></form>';
+  }
+
+  function renderReportSwitcher() {
+    const views = [
+      ['overview', 'Overview'],
+      ['revenue', 'Revenue'],
+      ['unpaid-invoices', 'Unpaid invoices'],
+      ['completed-jobs', 'Completed jobs'],
+      ['worker-performance', 'Worker performance'],
+      ['service-popularity', 'Service popularity'],
+      ['quote-conversion', 'Quote conversion'],
+      ['customer-analytics', 'Customer analytics/history']
+    ];
+
+    return `
+      <div class="report-switcher">
+        <label for="reportView">Report view</label>
+        <select id="reportView" data-report-view>
+          ${views.map(([key, label]) => `
+            <option value="${key}" ${state.activeReportTab === key ? 'selected' : ''}>
+              ${escapeHtml(label)}
+            </option>
+          `).join('')}
+        </select>
+      </div>
+    `;
+  }
+
+  function renderOverviewReport(data) {
+    const overview = data.overview || {};
+    const revenue = data.revenue || {};
+    const quotes = data.quotes || {};
+    const urgent = overview.urgentItems || {};
+    const urgentRows = [
+      { label: 'Overdue unpaid invoices', value: urgent.overdueUnpaidInvoices || 0 },
+      { label: 'In-progress jobs', value: urgent.inProgressJobs || 0 },
+      { label: 'Rejected quotes', value: urgent.rejectedQuotes || 0 }
+    ];
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Paid revenue', money.format(overview.totalRevenue || 0), 'Confirmed payments') +
+      reportMetricCard('Unpaid invoices', money.format(overview.unpaidInvoiceTotal || 0), money.format(overview.overdueInvoiceTotal || 0) + ' overdue') +
+      reportMetricCard('Completed jobs', overview.completedJobs || 0, (overview.scheduledJobs || 0) + ' scheduled') +
+      reportMetricCard('Quote acceptance', (overview.quoteAcceptanceRate || 0) + '%', 'Sent quote outcomes') +
+      '</div><div class="report-grid two">' +
+      reportLineChart('Revenue trend', revenue.byPeriod || [], 'date', 'value', (value) => money.format(value || 0)) +
+      reportPieChart('Service popularity', data.services || [], 'name', 'jobs', (value) => String(value || 0)) +
+      reportFunnelChart('Quote conversion funnel', quotes.funnel || []) +
+      reportPanel('Urgent items', reportTable([{ label: 'Item', value: (row) => row.label }, { label: 'Count', value: (row) => row.value }], urgentRows, 'No urgent items.')) +
+      '</div></section>';
+  }
+
+  function renderRevenueReport(data) {
+    const revenue = data.revenue || {};
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Total revenue', money.format(revenue.totalRevenue || 0), 'Confirmed payments') +
+      reportMetricCard('Paid invoice total', money.format(revenue.paidInvoiceTotal || 0), 'Paid invoices') +
+      reportMetricCard('Unpaid invoice total', money.format(revenue.unpaidInvoiceTotal || 0), 'Still outstanding') +
+      reportMetricCard('Average invoice value', money.format(revenue.averageInvoiceValue || 0), 'Across invoices') +
+      '</div><div class="report-grid two">' +
+      reportLineChart('Revenue trend', revenue.byPeriod || [], 'date', 'value', (value) => money.format(value || 0)) +
+      reportBarChart('Revenue by service', revenue.byService || [], 'name', 'total', (value) => money.format(value || 0)) +
+      reportPieChart('Payment method split', revenue.byPaymentMethod || [], 'name', 'total', (value) => money.format(value || 0)) +
+      reportPanel('Top revenue customers', reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Payments', value: (row) => row.count }, { label: 'Revenue', value: (row) => money.format(row.total || 0) }], revenue.topRevenueCustomers || revenue.byCustomer || [], 'No paying customers in this range.')) +
+      '</div></section>';
+  }
+
+  function renderUnpaidInvoicesReport(data) {
+    const invoices = data.invoices || {};
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Unpaid count', invoices.unpaidCount || 0, 'Open invoices') +
+      reportMetricCard('Unpaid total', money.format(invoices.unpaidTotal || 0), 'Balance due') +
+      reportMetricCard('Overdue count', invoices.overdueCount || 0, 'Past due date') +
+      reportMetricCard('Overdue total', money.format(invoices.overdueTotal || 0), 'Needs follow-up') +
+      '</div><div class="report-grid two">' +
+      reportPieChart('Unpaid age buckets', invoices.ageBuckets || [], 'name', 'total', (value) => money.format(value || 0)) +
+      reportBarChart('Top unpaid customers', invoices.topUnpaidCustomers || [], 'name', 'total', (value) => money.format(value || 0)) +
+      '</div>' +
+      reportPanel('Unpaid invoice details', reportTable([{ label: 'Invoice', value: (row) => row.number }, { label: 'Customer', value: (row) => row.customerName }, { label: 'Status', value: (row) => row.status }, { label: 'Total', value: (row) => money.format(row.total || 0) }, { label: 'Balance', value: (row) => money.format(row.balanceDue || 0) }, { label: 'Due', value: (row) => formatDate(row.dueDate) }, { label: 'Days overdue', value: (row) => row.daysOverdue || 0 }], invoices.details || [], 'No unpaid invoices.')) +
+      '</section>';
+  }
+
+  function renderCompletedJobsReport(data) {
+    const jobs = data.jobs || {};
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Completed', jobs.completedCount || 0, 'Finished jobs') +
+      reportMetricCard('Scheduled', jobs.scheduledCount || 0, 'On calendar') +
+      reportMetricCard('In progress', jobs.inProgressCount || 0, 'Active work') +
+      reportMetricCard('Completion rate', (jobs.completionRate || 0) + '%', 'Completed vs cancelled') +
+      '</div><div class="report-grid two">' +
+      reportLineChart('Completed jobs trend', jobs.byPeriod || [], 'date', 'value', (value) => String(value || 0)) +
+      reportBarChart('Jobs by service', jobs.byService || [], 'name', 'count', (value) => String(value || 0)) +
+      reportBarChart('Jobs by worker', jobs.byWorker || [], 'name', 'count', (value) => String(value || 0)) +
+      reportPanel('Recent completed jobs', reportTable([{ label: 'Job', value: (row) => row.title }, { label: 'Customer', value: (row) => row.customerName }, { label: 'Service', value: (row) => row.serviceName }, { label: 'Worker', value: (row) => row.workerName }, { label: 'Completed', value: (row) => formatDate(row.completedAt) }, { label: 'Proof', value: (row) => row.proofComplete ? 'Complete' : 'Missing' }], jobs.recentCompletedJobs || [], 'No completed jobs yet.')) +
+      '</div></section>';
+  }
+
+  function renderWorkerPerformanceReport(data) {
+    const workers = data.workers || [];
+    const avgCompletion = workers.length ? Math.round(workers.reduce((sum, worker) => sum + Number(worker.completionRate || 0), 0) / workers.length) : 0;
+    const avgProof = workers.filter((worker) => worker.proofComplianceRate != null);
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Workers tracked', workers.length, 'With activity') +
+      reportMetricCard('Avg completion', avgCompletion + '%', 'Across workers') +
+      reportMetricCard('Proof compliance', (avgProof.length ? Math.round(avgProof.reduce((sum, worker) => sum + Number(worker.proofComplianceRate || 0), 0) / avgProof.length) : 0) + '%', 'Required proof') +
+      reportMetricCard('Revenue handled', money.format(workers.reduce((sum, worker) => sum + Number(worker.revenueHandled || 0), 0)), 'Completed paid work') +
+      '</div><div class="report-grid two">' +
+      reportBarChart('Worker completion', workers, 'name', 'completed', (value) => String(value || 0)) +
+      reportBarChart('Proof compliance', workers.filter((worker) => worker.proofComplianceRate != null), 'name', 'proofComplianceRate', (value) => (value || 0) + '%') +
+      '</div>' +
+      reportPanel('Worker performance table', reportTable([{ label: 'Worker', value: (row) => row.name }, { label: 'Assigned', value: (row) => row.assigned }, { label: 'Completed', value: (row) => row.completed }, { label: 'In progress', value: (row) => row.inProgress }, { label: 'Completion', value: (row) => row.completionRate + '%' }, { label: 'Avg duration', value: (row) => row.averageDurationMinutes ? row.averageDurationMinutes + ' min' : '-' }, { label: 'Proof', value: (row) => row.proofComplianceRate == null ? '-' : row.proofComplianceRate + '%' }, { label: 'Revenue', value: (row) => money.format(row.revenueHandled || 0) }, { label: 'Active', value: (row) => row.active ? 'Yes' : 'No' }], workers, 'No worker activity.')) +
+      '</section>';
+  }
+
+  function renderServicePopularityReport(data) {
+    const services = data.services || [];
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Services tracked', services.length, 'Configured services') +
+      reportMetricCard('Booking requests', services.reduce((sum, item) => sum + Number(item.bookingRequests || 0), 0), 'From requests') +
+      reportMetricCard('Jobs', services.reduce((sum, item) => sum + Number(item.jobs || 0), 0), 'All job activity') +
+      reportMetricCard('Revenue', money.format(services.reduce((sum, item) => sum + Number(item.revenue || 0), 0)), 'By service') +
+      '</div><div class="report-grid two">' +
+      reportBarChart('Service revenue', services, 'name', 'revenue', (value) => money.format(value || 0)) +
+      reportBarChart('Service quote acceptance', services, 'name', 'quoteAcceptanceRate', (value) => (value || 0) + '%') +
+      '</div>' +
+      reportPanel('Service performance table', reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Bookings', value: (row) => row.bookingRequests }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Completed', value: (row) => row.completedJobs }, { label: 'Revenue', value: (row) => money.format(row.revenue || 0) }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Accepted', value: (row) => row.acceptedQuotes }, { label: 'Quote rate', value: (row) => row.quoteAcceptanceRate + '%' }, { label: 'Avg invoice', value: (row) => money.format(row.averageInvoiceValue || 0) }], services, 'No service activity.')) +
+      '</section>';
+  }
+
+  function renderQuoteConversionReport(data) {
+    const quotes = data.quotes || {};
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Created', quotes.createdCount || 0, 'All quotes') +
+      reportMetricCard('Accepted', quotes.acceptedCount || 0, money.format(quotes.acceptedQuoteValue || 0)) +
+      reportMetricCard('Rejected', quotes.rejectedCount || 0, (quotes.rejectionRate || 0) + '% rejection') +
+      reportMetricCard('Acceptance', (quotes.acceptanceRate || 0) + '%', money.format(quotes.averageQuoteValue || 0) + ' avg quote') +
+      '</div><div class="report-grid two">' +
+      reportFunnelChart('Quote funnel', quotes.funnel || []) +
+      reportLineChart('Quote trend', quotes.byPeriod || [], 'date', 'value', (value) => String(value || 0)) +
+      '</div>' +
+      reportPanel('Quote conversion by service', reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Sent', value: (row) => row.sent }, { label: 'Accepted', value: (row) => row.accepted }, { label: 'Rejected', value: (row) => row.rejected }, { label: 'Acceptance', value: (row) => row.acceptanceRate + '%' }], quotes.byService || [], 'No quotes in this range.')) +
+      '</section>';
+  }
+
+  function renderCustomerAnalyticsReport(data) {
+    const customers = data.customers || {};
+    return '<section class="report-section"><div class="report-kpi-row">' +
+      reportMetricCard('Total customers', customers.totalCustomers || 0, 'All time') +
+      reportMetricCard('New customers', customers.newCustomers || 0, 'In selected range') +
+      reportMetricCard('Repeat customers', customers.repeatCustomers || 0, 'More than one job') +
+      reportMetricCard('Customers with unpaid', (customers.customersWithUnpaidInvoices || []).length, 'Need collection') +
+      '</div><div class="report-grid two">' +
+      reportBarChart('Top customer revenue', customers.topCustomers || [], 'name', 'revenue', (value) => money.format(value || 0)) +
+      reportPanel('Customers with unpaid invoices', reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Unpaid', value: (row) => money.format(row.unpaidTotal || 0) }, { label: 'Invoices', value: (row) => row.invoices }, { label: 'Jobs', value: (row) => row.jobs }], customers.customersWithUnpaidInvoices || [], 'No customers with unpaid invoices.')) +
+      '</div>' +
+      reportPanel('Customer history', reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Revenue', value: (row) => money.format(row.revenue || 0) }, { label: 'Unpaid', value: (row) => money.format(row.unpaidTotal || 0) }, { label: 'Invoices', value: (row) => row.invoices }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Completed jobs', value: (row) => row.completedJobs }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Bookings', value: (row) => row.bookingRequests }, { label: 'Last job', value: (row) => formatDate(row.lastJobDate) }, { label: 'Last payment', value: (row) => formatDate(row.lastPaymentDate) }], customers.customerHistory || customers.topCustomers || [], 'No customer history yet.')) +
+      '</section>';
+  }
+
+  function renderActiveReportTab(data) {
+    const renderers = {
+      overview: renderOverviewReport,
+      revenue: renderRevenueReport,
+      'unpaid-invoices': renderUnpaidInvoicesReport,
+      'completed-jobs': renderCompletedJobsReport,
+      'worker-performance': renderWorkerPerformanceReport,
+      'service-popularity': renderServicePopularityReport,
+      'quote-conversion': renderQuoteConversionReport,
+      'customer-analytics': renderCustomerAnalyticsReport
+    };
+    const renderer = renderers[state.activeReportTab] || renderOverviewReport;
+    return renderer(data || {});
+  }
+
+  function bindReportControls(data) {
+    const form = document.querySelector('[data-report-filters]');
+    const reportView = document.querySelector('[data-report-view]');
+    if (reportView) {
+      reportView.addEventListener('change', () => {
+        state.activeReportTab = reportView.value || 'overview';
+        renderReports(state.reports || data);
+      });
+    }
+    if (!form) return;
+    const filters = data.filters || {};
+    form.elements.period.value = filters.period || 'last30days';
+    form.elements.startDate.value = String(filters.startDate || '').slice(0, 10);
+    form.elements.endDate.value = String(filters.endDate || '').slice(0, 10);
+    form.elements.period.addEventListener('change', () => {
+      if (form.elements.period.value === 'custom') return;
+      form.elements.startDate.value = '';
+      form.elements.endDate.value = '';
+    });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (form.elements.startDate.value || form.elements.endDate.value) form.elements.period.value = 'custom';
+      await loadReports();
+    });
   }
 
   function renderReports(data) {
     const root = document.querySelector('[data-reports-root]');
     if (!root) return;
+    state.reports = data || {};
+    state.activeReportTab = state.activeReportTab || 'overview';
     const filters = data.filters || {};
-    const options = data.options || {};
-    const overview = data.overview || {};
-    const revenue = data.revenue || {};
-    const invoices = data.invoices || {};
-    const jobs = data.jobs || {};
-    const quotes = data.quotes || {};
-    const customers = data.customers || {};
-    const exportBase = '/api/reports/export?' + reportQueryFromForm().toString();
     root.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Business Performance</h2><p>Company-scoped analytics from ' + escapeHtml(formatDate(filters.startDate)) + ' to ' + escapeHtml(formatDate(filters.endDate)) + '.</p></div><span class="api-status" data-api-status>Connected</span></div>' +
-      '<form class="panel form-grid" data-report-filters><div class="field"><label for="reportPeriod">Period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisWeek">This week</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option><option value="custom">Custom</option></select></div><div class="field"><label for="reportStart">Start</label><input id="reportStart" name="startDate" type="date"></div><div class="field"><label for="reportEnd">End</label><input id="reportEnd" name="endDate" type="date"></div><div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div><div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div><div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Apply Filters</button><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=revenue') + '">Export Revenue CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=invoices') + '">Export Invoices CSV</a><a class="secondary-button" href="' + escapeHtml(exportBase + (exportBase.endsWith('?') ? '' : '&') + 'section=jobs') + '">Export Jobs CSV</a></div><p class="fc-form-error span-2" data-report-message hidden></p></form>' +
-      '<section class="stats"><article class="card stat-card"><div class="stat-label">Paid Revenue</div><div class="stat-value">' + money.format(overview.totalRevenue || 0) + '</div><div class="trend">Confirmed payments</div></article><article class="card stat-card"><div class="stat-label">Unpaid Invoices</div><div class="stat-value">' + money.format(overview.unpaidInvoiceTotal || 0) + '</div><div class="trend">' + escapeHtml(invoices.unpaidCount || 0) + ' open invoices</div></article><article class="card stat-card"><div class="stat-label">Jobs Completed</div><div class="stat-value">' + escapeHtml(overview.completedJobs || 0) + '</div><div class="trend">' + escapeHtml(jobs.completionRate || 0) + '% completion rate</div></article><article class="card stat-card"><div class="stat-label">Quote Acceptance</div><div class="stat-value">' + escapeHtml(overview.quoteAcceptanceRate || 0) + '%</div><div class="trend">Sent quote outcomes</div></article></section>' +
-      '<section class="split"><div class="panel"><div class="panel-head"><h2>Revenue</h2><span class="badge green">' + money.format(revenue.totalRevenue || 0) + '</span></div>' + reportTable([{ label: 'Date', value: (row) => row.date }, { label: 'Revenue', value: (row) => money.format(row.value) }], revenue.byPeriod || [], 'No confirmed payments in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Unpaid Invoices</h3><span class="badge gray">' + money.format(invoices.unpaidTotal || 0) + '</span></div>' + reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Count', value: (row) => row.count }, { label: 'Total', value: (row) => money.format(row.total) }], invoices.topUnpaidCustomers || [], 'No unpaid invoices.') + '</aside></section>' +
-      '<section class="split"><div class="panel"><div class="panel-head"><h2>Jobs</h2><span class="badge blue">' + escapeHtml(jobs.completedCount || 0) + ' completed</span></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Jobs', value: (row) => row.count }], jobs.byService || [], 'No jobs in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Worker Performance</h3></div>' + reportTable([{ label: 'Worker', value: (row) => row.name }, { label: 'Assigned', value: (row) => row.assigned }, { label: 'Completed', value: (row) => row.completed }, { label: 'Rate', value: (row) => row.completionRate + '%' }], data.workers || [], 'No worker activity in this range.') + '</aside></section>' +
-      '<section class="split"><div class="panel"><div class="panel-head"><h2>Services</h2></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Bookings', value: (row) => row.bookingRequests }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Revenue', value: (row) => money.format(row.revenue) }], data.services || [], 'No service activity in this range.') + '</div><aside class="panel"><div class="panel-head"><h3>Quote Conversion</h3><span class="badge blue">' + escapeHtml(quotes.acceptanceRate || 0) + '%</span></div>' + reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Accepted', value: (row) => row.accepted }, { label: 'Rate', value: (row) => row.acceptanceRate + '%' }], quotes.byService || [], 'No quotes in this range.') + '</aside></section>' +
-      '<section class="panel"><div class="panel-head"><h2>Customers</h2><span class="badge gray">' + escapeHtml(customers.totalCustomers || 0) + ' total</span></div>' + reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Revenue', value: (row) => money.format(row.revenue) }, { label: 'Unpaid', value: (row) => money.format(row.unpaidTotal) }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Last Payment', value: (row) => formatDate(row.lastPaymentDate) }], customers.topCustomers || [], 'No customer history yet.') + '</section>';
-    const form = document.querySelector('[data-report-filters]');
-    if (form) {
-      form.elements.period.value = filters.period || 'last30days';
-      form.elements.startDate.value = String(filters.startDate || '').slice(0, 10);
-      form.elements.endDate.value = String(filters.endDate || '').slice(0, 10);
-      form.elements.period.addEventListener('change', () => {
-        if (form.elements.period.value === 'custom') return;
-        form.elements.startDate.value = '';
-        form.elements.endDate.value = '';
-      });
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        if (form.elements.startDate.value || form.elements.endDate.value) form.elements.period.value = 'custom';
-        await loadReports();
-      });
-    }
+      renderReportFilters(data || {}) +
+      renderReportSwitcher() +
+      '<div data-report-tab-panel>' + renderActiveReportTab(data || {}) + '</div>';
+    bindReportControls(data || {});
   }
-
+  
   async function loadReports() {
     const root = document.querySelector('[data-reports-root]');
     if (!root) return;
@@ -757,12 +1101,17 @@
   function updateListStats(resource, data) {
     if (resource === 'customers') {
       const balance = data.reduce((sum, c) => sum + (c.invoices || []).filter((i) => i.status !== 'PAID').reduce((inner, i) => inner + Number(i.amount || 0), 0), 0);
-      setStats([{ value: data.length, trend: 'Total records' }, { value: data.length, trend: 'Active accounts' }, { value: money.format(balance), trend: 'Outstanding' }, { value: average(data.map((c) => (c.jobs || []).length)), trend: 'Per customer' }]);
+      setStats([{ label: 'Total Customers', value: data.length, trend: 'Total records' }, { label: 'Active Accounts', value: data.length, trend: 'Active accounts' }, { label: 'Outstanding Balance', value: money.format(balance), trend: 'Outstanding' }, { label: 'Avg. Jobs', value: average(data.map((c) => (c.jobs || []).length)), trend: 'Per customer' }]);
     }
-    if (resource === 'jobs') setStats(countStatuses(data, ['NEW', 'IN_PROGRESS', 'COMPLETED', 'PAUSED'], ['Open jobs', 'Active work', 'Finished', 'Paused']));
+    if (resource === 'workers') {
+      const active = data.filter((worker) => worker.active !== false).length;
+      const titled = data.filter((worker) => worker.title).length;
+      setStats([{ label: 'Total Workers', value: data.length, trend: 'Team members' }, { label: 'Active Workers', value: active, trend: 'Available for work' }, { label: 'Inactive Workers', value: data.length - active, trend: 'Not active' }, { label: 'With Titles', value: titled, trend: 'Role assigned' }]);
+    }
+    if (resource === 'jobs') setStats(countStatuses(data, ['NEW', 'IN_PROGRESS', 'SCHEDULED', 'ON_HOLD'], ['Not on calendar', 'Active work', 'On calendar', 'Paused or held']));
     if (resource === 'quotes') setStats(countStatuses(data, ['SENT', 'ACCEPTED', 'SENT', 'DRAFT'], ['Open quotes', 'Accepted', 'Sent', 'Drafts']));
     if (resource === 'invoices') setStats(countStatuses(data, ['ALL', 'PAID', 'SENT', 'OVERDUE', 'DRAFT'], ['Total invoices', 'Paid', 'Unpaid', 'Overdue', 'Drafts']));
-    if (resource === 'booking-requests') setStats(countStatuses(data, ['NEW', 'REVIEWED', 'CONVERTED', 'DECLINED'], ['Awaiting review', 'Ready to convert', 'Jobs created', 'Not proceeding']));
+    if (resource === 'booking-requests') updateBookingRequestStats(data);
   }
 
   function average(values) {
@@ -771,7 +1120,60 @@
   }
 
   function countStatuses(data, statuses, trends) {
-    return statuses.map((status, index) => ({ value: status === 'ALL' ? data.length : data.filter((item) => item.status === status).length, trend: trends[index] }));
+    const aliases = {
+      SUBMITTED: 'NEW',
+      UNDER_REVIEW: 'REVIEWED',
+      APPROVED: 'CONVERTED',
+      REJECTED: 'DECLINED',
+      PAUSED: 'ON_HOLD'
+    };
+    const normalizeStatus = (value) => {
+      const key = String(value || '').trim().toUpperCase().replace(/\s+/g, '_');
+      return aliases[key] || key;
+    };
+    return statuses.map((status, index) => ({ value: status === 'ALL' ? data.length : data.filter((item) => normalizeStatus(item.status) === status).length, trend: trends[index] }));
+  }
+
+  function normalizeBookingRequestStatus(value) {
+    const key = String(value || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+    return {
+      SUBMITTED: 'NEW',
+      NEW: 'NEW',
+      UNDER_REVIEW: 'REVIEWED',
+      REVIEWED: 'REVIEWED',
+      APPROVED: 'CONVERTED',
+      CONVERTED: 'CONVERTED',
+      REJECTED: 'DECLINED',
+      DECLINED: 'DECLINED'
+    }[key] || key;
+  }
+
+  function updateBookingRequestStats(data) {
+    const counts = {
+      NEW: 0,
+      REVIEWED: 0,
+      CONVERTED: 0,
+      DECLINED: 0
+    };
+
+    (data || []).forEach((item) => {
+      const status = normalizeBookingRequestStatus(item.status);
+
+      if (Object.prototype.hasOwnProperty.call(counts, status)) {
+        counts[status] += 1;
+      }
+    });
+
+    document
+      .querySelectorAll('body[data-page="booking-requests"] [data-booking-stat]')
+      .forEach((card) => {
+        const status = card.dataset.bookingStat;
+        const value = card.querySelector('.stat-value');
+
+        if (value && Object.prototype.hasOwnProperty.call(counts, status)) {
+          value.textContent = String(counts[status]);
+        }
+      });
   }
 
   async function preloadLookups() {
@@ -780,6 +1182,7 @@
     if (['jobs', 'quotes', 'invoices'].includes(page)) requests.push(api('/services').then((d) => state.services = d).catch(() => []));
     if (['jobs', 'schedule'].includes(page)) requests.push(api('/workers').then((d) => state.workers = d).catch(() => []));
     if (['quotes', 'invoices', 'schedule'].includes(page)) requests.push(api('/jobs').then((d) => state.jobs = d).catch(() => []));
+    if (['jobs', 'schedule'].includes(page) && !isWorker()) requests.push(api('/company/scheduling-settings').then((d) => state.scheduleSettings = d).catch(() => null));
     await Promise.all(requests);
   }
 
@@ -796,9 +1199,9 @@
     return `<div class="field"><label for="fc-${name}">${label}</label><input id="fc-${name}" name="${name}" type="${type || 'text'}" ${attrs || ''}></div>`;
   }
 
-  function checkboxField(name, label) {
+  function checkboxField(name, label, checked) {
     const q = String.fromCharCode(34);
-    return "<div class=" + q + "field checkbox-field" + q + "><label for=" + q + "fc-" + name + q + "><input id=" + q + "fc-" + name + q + " name=" + q + name + q + " type=" + q + "checkbox" + q + "> " + escapeHtml(label) + "</label></div>";
+    return "<div class=" + q + "field checkbox-field" + q + "><label for=" + q + "fc-" + name + q + "><input id=" + q + "fc-" + name + q + " name=" + q + name + q + " type=" + q + "checkbox" + q + (checked ? " checked" : "") + "> " + escapeHtml(label) + "</label></div>";
   }
 
   function formSection(title) {
@@ -812,7 +1215,12 @@
 
   function formFor(resource) {
     if (resource === 'customers') return { title: 'New Customer', action: '/customers', fields: field('name', 'Name', 'text', 'required') + field('email', 'Email', 'email') + field('phone', 'Phone') + field('address', 'Address') };
-    if (resource === 'jobs') return {
+    if (resource === 'workers') return { title: 'New Worker', action: '/workers', fields: field('name', 'Name', 'text', 'required') + field('email', 'Email', 'email', 'required') + field('password', 'Temporary Password', 'password', 'required minlength="8"') + field('title', 'Title') + field('phone', 'Phone') };
+    if (resource === 'jobs') {
+      const settings = state.scheduleSettings || {};
+      const duration = settings.defaultJobDurationMinutes || 60;
+      const buffer = settings.defaultTravelBufferMinutes || 0;
+      return {
   title: 'New Job',
   action: '/jobs',
   fields:
@@ -821,16 +1229,17 @@
     select('serviceId', 'Service', optionList(state.services, 'No service'), false) +
     select('workerId', 'Worker', optionList(state.workers, 'No worker'), false) +
     field('scheduledStart', 'Scheduled Start', 'datetime-local') +
-    field('durationMinutes', 'Duration Minutes', 'number', 'min="1" value="60"') +
-    field('travelBufferMinutes', 'Travel Buffer Minutes', 'number', 'min="0" value="0"') +
+    field('durationMinutes', 'Duration Minutes', 'number', 'min="1" value="' + escapeHtml(duration) + '"') +
+    field('travelBufferMinutes', 'Travel Buffer Minutes', 'number', 'min="0" value="' + escapeHtml(buffer) + '"') +
     field('total', 'Total', 'number', 'min="0" step="0.01"') +
     formSection('Completion Requirements') +
-    checkboxField('requiresProofPhotos', 'Require proof of work photo') +
-    checkboxField('requiresBeforePhotos', 'Require before photo') +
-    checkboxField('requiresAfterPhotos', 'Require after photo') +
+    checkboxField('requiresProofPhotos', 'Require proof of work photo', settings.requireProofPhotos !== false) +
+    checkboxField('requiresBeforePhotos', 'Require before photo', Boolean(settings.requireBeforePhotos)) +
+    checkboxField('requiresAfterPhotos', 'Require after photo', Boolean(settings.requireAfterPhotos)) +
     checkboxField('requiresSignature', 'Require customer signature') +
-    checkboxField('requiresLocation', 'Require completion location')
-};
+    checkboxField('requiresLocation', 'Require completion location', Boolean(settings.requireLocation))
+      };
+    }
     if (resource === 'quotes') return { title: 'New Quote', action: '/quotes', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('validUntil', 'Valid Until', 'date') };
     if (resource === 'invoices') return { title: 'New Invoice', action: '/invoices', fields: field('number', 'Number') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('jobId', 'Job', optionList(state.jobs, 'No job'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('dueDate', 'Due Date', 'date') };
   }
@@ -898,6 +1307,7 @@
             await api(config.action, { method: 'POST', body: JSON.stringify(body) });
             closeModal();
             await load();
+            showToast('Saved.', true);
           } catch (err) {
             if (err.status === 409 && err.details && err.details.conflicts) {
               error.textContent = err.details.conflicts.map((item) => item.message).join('\n');
@@ -1070,6 +1480,7 @@
         await api('/jobs/' + jobId + '/' + (mode === 'reschedule' ? 'reschedule' : 'schedule'), { method: 'POST', body: JSON.stringify(body) });
         closeModal();
         await load();
+        showToast(mode === 'reschedule' ? 'Job rescheduled.' : 'Job scheduled.', true);
       } catch (err) {
         if (err.status === 409 && err.details && err.details.conflicts) {
           const detail = err.details.conflicts.map((item) => item.message).join('\n');
@@ -1087,6 +1498,7 @@
               await api('/jobs/' + jobId + '/' + (mode === 'reschedule' ? 'reschedule' : 'schedule'), { method: 'POST', body: JSON.stringify(body) });
               closeModal();
               await load();
+              showToast(mode === 'reschedule' ? 'Job rescheduled.' : 'Job scheduled.', true);
               return;
             } catch (retryError) {
               error.textContent = retryError.message;
@@ -1111,12 +1523,97 @@
       if (button.closest('form')) return;
       const text = button.textContent.trim().toLowerCase();
       if (!text.startsWith('+ new ')) return;
-      const resource = text.includes('customer') ? 'customers' : text.includes('job') ? 'jobs' : text.includes('quote') ? 'quotes' : text.includes('invoice') ? 'invoices' : null;
-      if (!resource) return;
       button.addEventListener('click', async () => {
+        const currentText = button.textContent.trim().toLowerCase();
+        const resource = button.dataset.createResource || (currentText.includes('worker') ? 'workers' : currentText.includes('customer') ? 'customers' : currentText.includes('job') ? 'jobs' : currentText.includes('quote') ? 'quotes' : currentText.includes('invoice') ? 'invoices' : null);
+        if (!resource) return;
         await preloadLookups();
         openModal(formFor(resource));
       });
+    });
+  }
+
+  function peopleResource() {
+    const active = document.querySelector('[data-people-tab].active');
+    return active && active.dataset.peopleTab || 'customers';
+  }
+
+  function updatePeopleChrome(resource) {
+    const title = document.querySelector('[data-people-title]');
+    const copy = document.querySelector('[data-people-copy]');
+    const create = document.querySelector('[data-people-create]');
+    if (title) title.textContent = resource === 'workers' ? 'Workers' : 'People/Members';
+    if (copy) copy.textContent = resource === 'workers'
+      ? 'Manage field workers, contact details, titles, and active team status.'
+      : 'Customer records, balances, and service history will appear here once created.';
+    if (create) {
+      create.textContent = resource === 'workers' ? '+ New Worker' : '+ New Customer';
+      create.dataset.createResource = resource;
+    }
+  }
+
+  async function loadPeopleResource(resource) {
+    updatePeopleChrome(resource);
+    if (!state.listFilters[resource]) state.listFilters[resource] = 'all';
+    const data = await api('/' + resource);
+    state[resource] = data;
+    renderTable(resource, filteredListData(resource, data));
+    setupStatusTabs(resource, data);
+    updateListStats(resource, data);
+  }
+
+  function setupPeopleTabs() {
+    const tabs = document.querySelectorAll('[data-people-tab]');
+    if (!tabs.length) return;
+    tabs.forEach((tab) => {
+      tab.onclick = async () => {
+        const resource = tab.dataset.peopleTab || 'customers';
+        tabs.forEach((item) => item.classList.toggle('active', item === tab));
+        try {
+          await loadPeopleResource(resource);
+          setStatus('Connected as ' + state.user.name, true);
+        } catch (error) {
+          setStatus(error.message, false);
+        }
+      };
+    });
+  }
+
+  function activeQuoteFilter() {
+    const active = document.querySelector('body[data-page="quotes"] [data-status-filter].active');
+    return active && active.dataset.statusFilter || 'all';
+  }
+
+  function updateQuoteBinNote(filter) {
+    const note = document.querySelector('[data-quote-bin-note]');
+    if (note) note.hidden = filter !== 'DELETED';
+  }
+
+  async function loadQuotesResource(filter) {
+    const selected = filter || activeQuoteFilter();
+    const deleted = selected === 'DELETED';
+    const data = await api('/quotes' + (deleted ? '?deleted=true' : ''));
+    state.quotes = data;
+    state.listFilters.quotes = deleted ? 'all' : selected;
+    renderTable('quotes', deleted ? data : filteredListData('quotes', data));
+    updateListStats('quotes', deleted ? [] : data);
+    updateQuoteBinNote(selected);
+  }
+
+  function setupQuoteTabs() {
+    document.querySelectorAll('body[data-page="quotes"] [data-status-filter]').forEach((tab) => {
+      tab.classList.toggle('active', (activeQuoteFilter() || 'all') === tab.dataset.statusFilter);
+      tab.onclick = async () => {
+        const filter = tab.dataset.statusFilter || 'all';
+        document.querySelectorAll('body[data-page="quotes"] [data-status-filter]').forEach((item) => item.classList.toggle('active', item === tab));
+        try {
+          await loadQuotesResource(filter);
+          setStatus('Connected as ' + state.user.name, true);
+        } catch (error) {
+          setStatus(error.message, false);
+          showToast(error.message, false);
+        }
+      };
     });
   }
 
@@ -1144,10 +1641,12 @@
 
   function renderActivityTimeline(items) {
     if (!items.length) return '<div class="empty-state job-activity-empty"><div><strong>No activity yet</strong><span>Lifecycle updates and notes will appear here.</span></div></div>';
-    return `<div class="job-timeline">${items.map((item) => {
-      const actor = item.user && (item.user.name || item.user.email) || item.worker && item.worker.user && item.worker.user.name || 'FieldCore';
-      return `<div class="job-timeline-item"><span class="job-timeline-dot"></span><div><div class="job-timeline-head"><strong>${escapeHtml(activityTitle(item))}</strong><small>${escapeHtml(formatDateTime(item.createdAt))}</small></div><small>${escapeHtml(actor)}</small>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ''}</div></div>`;
-    }).join('')}</div>`;
+    return `<div class="job-timeline">${items.map(renderActivityTimelineItem).join('')}</div>`;
+  }
+
+  function renderActivityTimelineItem(item) {
+    const actor = item.user && (item.user.name || item.user.email) || item.worker && item.worker.user && item.worker.user.name || 'FieldCore';
+    return `<div class="job-timeline-item"><span class="job-timeline-dot"></span><div><div class="job-timeline-head"><strong>${escapeHtml(activityTitle(item))}</strong><small>${escapeHtml(formatDateTime(item.createdAt))}</small></div><small>${escapeHtml(actor)}</small>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ''}</div></div>`;
   }
 
   function jobEvidenceSummary(job) {
@@ -1173,14 +1672,61 @@
     return `<section class="job-evidence-section"><h4>Completion Requirements</h4><div class="job-detail-grid">${detailItem("Proof Photos", proofLabel)}${detailItem("Before Photos", beforeLabel)}${detailItem("After Photos", afterLabel)}${detailItem("Customer Signature", signatureLabel)}${detailItem("Completion Location", locationLabel)}${detailItem("Completion Notes", "Required")}</div></section>`;
   }
 
-  function renderProofPhotos(job) {
+  function renderProofPhotos(job, options = {}) {
+    const editable = options.editable !== false;
     const photos = job.proofPhotos || [];
     const group = (label, category) => {
       const groupPhotos = photos.filter((photo) => (photo.category || 'GENERAL') === category || category === 'GENERAL' && !['BEFORE', 'AFTER'].includes(photo.category || 'GENERAL'));
-      const items = groupPhotos.length ? groupPhotos.map((photo) => `<div class="job-proof-photo"><button class="proof-thumb-button" type="button" data-proof-preview="${escapeHtml(photo.id)}"><img src="${escapeHtml(photo.url)}" alt="Proof photo"></button><div><strong>${escapeHtml(photo.caption || label)}</strong><small>${escapeHtml((photo.category || 'GENERAL').replace(/_/g, ' '))} / ${escapeHtml(formatDateTime(photo.createdAt))}</small></div><button class="secondary-button compact" type="button" data-proof-delete="${escapeHtml(photo.id)}">Remove</button></div>`).join("") : `<div class="empty-state compact-empty"><div><strong>No ${escapeHtml(label.toLowerCase())}</strong><span>Upload evidence here.</span></div></div>`;
-      return `<h5>${escapeHtml(label)}</h5><div class="job-proof-list">${items}</div>`;
+      const items = groupPhotos.length ? groupPhotos.map(renderProofPhotoItem).join("") : renderProofEmpty(label);
+      const key = 'proof-' + category.toLowerCase();
+      const upload = editable ? `<form class="job-proof-form proof-category-upload" data-proof-category="${escapeHtml(category)}"><input type="hidden" name="category" value="${escapeHtml(category)}"><div class="proof-selected-preview" data-evidence-preview="${escapeHtml(key)}"><strong>No photos selected</strong></div><div class="proof-upload-controls"><div class="file-upload-row"><label class="file-upload-button" for="fc-${escapeHtml(key)}">Choose photos</label><span class="file-name" data-evidence-file-name="${escapeHtml(key)}">No files selected</span></div><input id="fc-${escapeHtml(key)}" name="photo" type="file" accept="image/png,image/jpeg,image/webp" data-evidence-input="${escapeHtml(key)}" required multiple hidden><small>PNG, JPG, or WEBP. Max 5MB each. Choose again to replace the current selection.</small></div><div class="field proof-caption-field"><label for="fc-${escapeHtml(key)}-caption">Caption</label><input id="fc-${escapeHtml(key)}-caption" name="caption" maxlength="500" placeholder="${escapeHtml(label)}"></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Upload ${escapeHtml(label)}</button></div><p class="fc-form-error" hidden></p></form>` : '';
+      return `<div class="proof-category-section" data-proof-category-section="${escapeHtml(category)}"><h5>${escapeHtml(label)}</h5><div class="job-proof-list" data-proof-list="${escapeHtml(category)}">${items}</div>${upload}</div>`;
     };
-    return `<section class="job-evidence-section"><h4>Proof Photos</h4>${group('Before Photos', 'BEFORE')}${group('After Photos', 'AFTER')}${group('General Proof Photos', 'GENERAL')}<form class="job-proof-form"><div class="form-grid"><div class='field span-2'><label for='fc-proof-photo'>Photo</label><div class='evidence-upload proof-upload-panel'><div class='proof-selected-preview' data-evidence-preview='proof'><strong>No photos selected</strong></div><div class='logo-upload-controls'><div class='file-upload-row'><label class='file-upload-button' for='fc-proof-photo'>Choose photos</label><span class='file-name' data-evidence-file-name='proof'>No files selected</span></div><input id='fc-proof-photo' name='photo' type='file' accept='image/png,image/jpeg,image/webp' data-evidence-input='proof' required multiple hidden><small>Upload one or more PNG, JPG, or WEBP proof photos. Max 5MB each.</small></div></div></div><div class="field"><label for="fc-proof-category">Category</label><select id="fc-proof-category" name="category"><option value="GENERAL">General</option><option value="BEFORE">Before</option><option value="AFTER">After</option><option value="DAMAGE">Damage</option><option value="ISSUE">Issue</option><option value="EXTRA_WORK">Extra Work</option><option value="CUSTOMER_APPROVAL">Customer Approval</option></select></div><div class="field"><label for="fc-proof-caption">Caption</label><input id="fc-proof-caption" name="caption" maxlength="500"></div></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Upload Photo</button></div><p class="fc-form-error" hidden></p></form></section>`;
+    return `<section class="job-evidence-section"><h4>Proof Photos</h4>${group('Before Photos', 'BEFORE')}${group('After Photos', 'AFTER')}${group('General Proof Photos', 'GENERAL')}</section>`;
+  }
+
+  function proofPhotoCategory(photo) {
+    return ['BEFORE', 'AFTER'].includes(photo && photo.category || '') ? photo.category : 'GENERAL';
+  }
+
+  function proofCategoryLabel(category) {
+    return { BEFORE: 'Before Photos', AFTER: 'After Photos', GENERAL: 'General Proof Photos' }[category] || 'Proof Photos';
+  }
+
+  function renderProofPhotoItem(photo) {
+    const category = proofPhotoCategory(photo);
+    const label = proofCategoryLabel(category);
+    const remove = isWorker() ? `<button class="secondary-button compact" type="button" data-proof-delete="${escapeHtml(photo.id)}">Remove</button>` : '';
+    return `<div class="job-proof-photo" data-proof-photo-id="${escapeHtml(photo.id)}" data-proof-category="${escapeHtml(category)}"><button class="proof-thumb-button" type="button" data-proof-preview="${escapeHtml(photo.id)}"><img src="${escapeHtml(photo.url)}" alt="Proof photo"></button><div><strong>${escapeHtml(photo.caption || label)}</strong><small>${escapeHtml((photo.category || 'GENERAL').replace(/_/g, ' '))} / ${escapeHtml(formatDateTime(photo.createdAt))}</small></div>${remove}</div>`;
+  }
+
+  function renderProofEmpty(label) {
+    return `<div class="empty-state compact-empty"><div><strong>No ${escapeHtml(label.toLowerCase())}</strong><span>Upload evidence here.</span></div></div>`;
+  }
+
+  function resetProofUploadForm(form) {
+    if (!form) return;
+    const input = form.querySelector('[data-evidence-input]');
+    const key = input && input.dataset.evidenceInput;
+    if (input) input.value = '';
+    const preview = key && form.querySelector('[data-evidence-preview="' + key + '"]');
+    const fileName = key && form.querySelector('[data-evidence-file-name="' + key + '"]');
+    if (preview) {
+      preview.classList.remove('has-proof-previews');
+      preview.innerHTML = '<strong>No photos selected</strong>';
+    }
+    if (fileName) fileName.textContent = 'No files selected';
+    const caption = form.querySelector('[name="caption"]');
+    if (caption) caption.value = '';
+  }
+
+  function appendProofPhotoToModal(modal, photo) {
+    const category = proofPhotoCategory(photo);
+    const list = modal.querySelector('[data-proof-list="' + category + '"]');
+    if (!list) return;
+    const empty = list.querySelector('.empty-state');
+    if (empty) empty.remove();
+    list.insertAdjacentHTML('afterbegin', renderProofPhotoItem(photo));
   }
 
 
@@ -1194,10 +1740,13 @@
     document.body.appendChild(modal);
   }
 
-  function renderSignature(job) {
+  function renderSignature(job, options = {}) {
+    const editable = options.editable !== false;
     const signature = job.signature;
     const preview = signature ? '<button class="signature-preview-box has-signature" type="button" data-signature-preview><img src="' + escapeHtml(signature.signatureUrl) + '" alt="Customer signature"><span>' + escapeHtml(signature.signerName || 'Customer signature') + '</span><small>' + escapeHtml(formatDateTime(signature.createdAt)) + '</small></button>' : '<button class="signature-preview-box" type="button" data-signature-preview><strong>Signature not available</strong></button>';
-    return '<section class="job-evidence-section"><div class="signature-section-head"><h4>Customer Signature</h4><div class="row-actions"><button class="primary-button compact" type="button" data-signature-capture>Sign</button><button class="secondary-button compact" type="button" data-signature-delete ' + (signature ? '' : 'disabled') + '>Delete</button></div></div>' + preview + '<div class="field signature-signer-field"><label for="fc-signer-name">Signer Name</label><input id="fc-signer-name" name="signerName" maxlength="160" data-signature-signer-name value="' + escapeHtml(signature && signature.signerName || '') + '"></div><p class="fc-form-error" data-signature-message hidden></p></section>';
+    const actions = editable ? '<div class="row-actions"><button class="primary-button compact" type="button" data-signature-capture>Sign</button><button class="secondary-button compact" type="button" data-signature-delete ' + (signature ? '' : 'disabled') + '>Delete</button></div>' : '';
+    const signerField = editable ? '<div class="field signature-signer-field"><label for="fc-signer-name">Signer Name</label><input id="fc-signer-name" name="signerName" maxlength="160" data-signature-signer-name value="' + escapeHtml(signature && signature.signerName || '') + '"></div>' : '';
+    return '<section class="job-evidence-section" data-signature-section><div class="signature-section-head"><h4>Customer Signature</h4>' + actions + '</div>' + preview + signerField + '<p class="fc-form-error" data-signature-message hidden></p></section>';
   }
 
   function dataUrlToFile(dataUrl, filename) {
@@ -1314,14 +1863,15 @@
       input.addEventListener('change', () => {
         const files = Array.from(input.files || []);
         const file = files[0];
+        const isProofInput = key.indexOf('proof') === 0;
         if (!file) {
-          if (fileName) fileName.textContent = key === 'proof' ? 'No files selected' : 'No file selected';
-          if (preview) preview.innerHTML = key === 'signature' ? 'Sign' : '<strong>No photos selected</strong>';
+          if (fileName) fileName.textContent = isProofInput ? 'No files selected' : 'No file selected';
+          if (preview) preview.innerHTML = isProofInput ? '<strong>No photos selected</strong>' : 'Sign';
           return;
         }
         if (fileName) fileName.textContent = files.length > 1 ? files.length + ' files selected' : file.name;
         if (!preview) return;
-        if (key === 'proof') {
+        if (isProofInput) {
           preview.classList.add('has-proof-previews');
           preview.replaceChildren();
           files.forEach((selected, index) => {
@@ -1367,8 +1917,10 @@
 
   async function completeJobWithNotes(job) {
     const summary = jobEvidenceSummary(job);
-    const notes = await openInputModal({ title: "Complete Job", label: "Completion Notes", name: "completionNotes", type: "text", attrs: "required maxlength='2000'" });
-    if (!notes) return false;
+    const notesRequired = !state.scheduleSettings || state.scheduleSettings.requireCompletionNotes !== false;
+    const notes = await openInputModal({ title: "Complete Job", label: notesRequired ? "Completion Notes" : "Completion Notes (Optional)", name: "completionNotes", type: "text", attrs: (notesRequired ? "required " : "") + "maxlength='2000'" });
+    if (notesRequired && !notes) return false;
+    if (!notesRequired && notes == null) return false;
     const body = { completionNotes: notes };
     if (summary.missing) {
       if (!state.user || state.user.role === "WORKER") throw new Error("Upload required completion evidence before completing this job.");
@@ -1389,18 +1941,25 @@
     });
   }
 
-  function renderCompletionLocation(job) {
+  function renderCompletionLocation(job, options = {}) {
+    const editable = options.editable !== false;
     const location = job.completionLocation;
-    const status = location ? detailItem('Location Captured', formatDateTime(location.capturedAt)) + detailItem('Accuracy', location.accuracy ? Math.round(Number(location.accuracy)) + ' m' : '-') : detailItem('Location', job.requiresLocation ? 'Missing' : 'Not captured');
-    return `<section class="job-evidence-section"><div class="signature-section-head"><h4>Completion Location</h4><button class="secondary-button compact" type="button" data-location-capture>Capture</button></div><div class="job-detail-grid">${status}</div><p class="fc-form-error" data-location-message hidden></p></section>`;
+    const status = location
+      ? detailItem('Captured', formatDateTime(location.capturedAt)) + detailItem('Accuracy', location.accuracy ? Math.round(Number(location.accuracy)) + ' m' : '-') + detailItem('Latitude', location.latitude) + detailItem('Longitude', location.longitude) + detailItem('Source', String(location.source || '-').replace(/_/g, ' '))
+      : detailItem('Location', job.requiresLocation ? 'Missing' : 'Not captured');
+    const action = editable ? '<div class="location-capture-actions"><button class="secondary-button compact" type="button" data-location-capture>Capture Location</button></div>' : '';
+    return `<section class="job-evidence-section" data-location-section><h4>Completion Location</h4><div class="job-detail-grid">${status}</div>${action}<p class="fc-form-error" data-location-message hidden></p></section>`;
   }
 
   async function openJobDetail(jobId) {
     closeModal();
     const [job, activity] = await Promise.all([api('/jobs/' + jobId), api('/jobs/' + jobId + '/activity')]);
+    const editableEvidence = isWorker();
+    const lifecycle = editableEvidence ? '<div class="job-lifecycle-actions">' + lifecycleActions(job) + '</div>' : '';
+    const noteForm = editableEvidence ? '<form class="job-note-form"><div class="field"><label for="fc-job-note">Worker Activity Note</label><textarea id="fc-job-note" name="note" maxlength="2000"></textarea></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Add Note</button></div><p class="fc-form-error" hidden></p></form>' : '';
     const modal = document.createElement('div');
     modal.className = 'fc-modal';
-    modal.innerHTML = `<div class="fc-dialog job-detail-dialog"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}${detailItem('Completed', formatDateTime(job.completedAt))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}<div class="job-lifecycle-actions">${lifecycleActions(job)}</div>${renderCompletionRequirements(job)}${renderProofPhotos(job)}${renderSignature(job)}${renderCompletionLocation(job)}<form class="job-note-form"><div class="field"><label for="fc-job-note">Activity Note</label><textarea id="fc-job-note" name="note" maxlength="2000"></textarea></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Add Note</button></div><p class="fc-form-error" hidden></p></form><section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
+    modal.innerHTML = `<div class="fc-dialog job-detail-dialog ${editableEvidence ? 'worker-job-detail-dialog' : 'admin-job-detail-dialog'}"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}${detailItem('Completed', formatDateTime(job.completedAt))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}${lifecycle}${renderCompletionRequirements(job)}${renderProofPhotos(job, { editable: editableEvidence })}${renderSignature(job, { editable: editableEvidence })}${renderCompletionLocation(job, { editable: editableEvidence })}${noteForm}<section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
     modal.addEventListener('click', async (event) => {
       if (event.target === modal || event.target.closest('[data-close]')) return closeModal();
       const proofDelete = event.target.closest('[data-proof-delete]');
@@ -1415,6 +1974,14 @@
       try {
         if (proofDelete) {
           await api('/jobs/' + job.id + '/proof-photos/' + proofDelete.dataset.proofDelete, { method: 'DELETE' });
+          job.proofPhotos = (job.proofPhotos || []).filter((photo) => photo.id !== proofDelete.dataset.proofDelete);
+          const item = proofDelete.closest('.job-proof-photo');
+          const list = item && item.parentElement;
+          const category = item && item.dataset.proofCategory || 'GENERAL';
+          if (item) item.remove();
+          if (list && !list.querySelector('.job-proof-photo')) list.innerHTML = renderProofEmpty(proofCategoryLabel(category));
+          showToast('Proof photo removed.', true);
+          return;
         } else if (proofPreview) {
           openProofPhotoPreview((job.proofPhotos || []).find((photo) => photo.id === proofPreview.dataset.proofPreview));
           return;
@@ -1424,14 +1991,27 @@
         } else if (signatureCapture) {
           const file = await openSignatureCapture(job);
           const signerName = modal.querySelector('[data-signature-signer-name]') && modal.querySelector('[data-signature-signer-name]').value;
-          await uploadSignatureFile(job.id, file, signerName);
+          job.signature = await uploadSignatureFile(job.id, file, signerName);
+          const section = modal.querySelector('[data-signature-section]');
+          if (section) section.outerHTML = renderSignature(job);
+          showToast('Signature saved.', true);
+          return;
         } else if (signatureDelete) {
           const confirmed = await openConfirmModal({ title: 'Delete Signature', message: 'Are you sure you want to delete this customer signature?', okLabel: 'Delete', cancelLabel: 'Cancel', closeExisting: false });
           if (!confirmed) return;
           await api('/jobs/' + job.id + '/signature', { method: 'DELETE' });
+          job.signature = null;
+          const section = modal.querySelector('[data-signature-section]');
+          if (section) section.outerHTML = renderSignature(job);
+          showToast('Signature deleted.', true);
+          return;
         } else if (locationCapture) {
           const location = await captureBrowserLocation();
-          await api('/jobs/' + job.id + '/completion-location', { method: 'POST', body: JSON.stringify(location) });
+          job.completionLocation = await api('/jobs/' + job.id + '/completion-location', { method: 'POST', body: JSON.stringify(location) });
+          const section = modal.querySelector('[data-location-section]');
+          if (section) section.outerHTML = renderCompletionLocation(job);
+          showToast('Location captured.', true);
+          return;
         } else if (action === 'complete') {
           const completed = await completeJobWithNotes(job);
           if (!completed) return;
@@ -1446,39 +2026,52 @@
       }
     });
     setupEvidenceUploadPreviews(modal);
-    modal.querySelector('.job-proof-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const message = event.currentTarget.querySelector('.fc-form-error');
-      if (message) message.hidden = true;
-      try {
-        const files = Array.from(event.currentTarget.photo && event.currentTarget.photo.files || []);
-        if (files.length > 1) {
+    modal.querySelectorAll('.job-proof-form').forEach((proofForm) => {
+      proofForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const message = event.currentTarget.querySelector('.fc-form-error');
+        if (message) message.hidden = true;
+        try {
+          const files = Array.from(event.currentTarget.photo && event.currentTarget.photo.files || []);
+          if (!files.length) {
+            if (message) { message.textContent = 'Choose at least one photo before uploading.'; message.hidden = false; }
+            return;
+          }
           const caption = event.currentTarget.caption && event.currentTarget.caption.value || '';
-          const category = event.currentTarget.category && event.currentTarget.category.value || 'GENERAL';
+          const category = event.currentTarget.category && event.currentTarget.category.value || event.currentTarget.dataset.proofCategory || 'GENERAL';
           for (const file of files) {
             const formData = new FormData();
             formData.append('photo', file);
             formData.append('caption', caption);
             formData.append('category', category);
-            await uploadJobEvidence(job.id, '/proof-photos', formData);
+            const photo = await uploadJobEvidence(job.id, '/proof-photos', formData);
+            job.proofPhotos = [photo].concat(job.proofPhotos || []);
+            appendProofPhotoToModal(modal, photo);
           }
-        } else {
-          await uploadJobEvidence(job.id, '/proof-photos', event.currentTarget);
+          resetProofUploadForm(event.currentTarget);
+          showToast(files.length === 1 ? 'Proof photo uploaded.' : files.length + ' proof photos uploaded.', true);
+        } catch (error) {
+          if (message) { message.textContent = error.message; message.hidden = false; }
         }
-        await openJobDetail(job.id);
-      } catch (error) {
-        if (message) { message.textContent = error.message; message.hidden = false; }
-      }
+      });
     });
-   modal.querySelector('.job-note-form').addEventListener('submit', async (event) => {
+   const noteFormNode = modal.querySelector('.job-note-form');
+   if (noteFormNode) noteFormNode.addEventListener('submit', async (event) => {
       event.preventDefault();
+      const form = event.currentTarget;
       const note = event.currentTarget.note.value.trim();
       if (!note) return;
       const message = modal.querySelector('.fc-form-error');
       if (message) message.hidden = true;
       try {
-        await api('/jobs/' + job.id + '/activity', { method: 'POST', body: JSON.stringify({ note }) });
-        await openJobDetail(job.id);
+        const item = await api('/jobs/' + job.id + '/activity', { method: 'POST', body: JSON.stringify({ note }) });
+        const section = modal.querySelector('.job-activity-section');
+        const empty = section && section.querySelector('.job-activity-empty');
+        if (empty) empty.outerHTML = '<div class="job-timeline"></div>';
+        const timeline = section && section.querySelector('.job-timeline');
+        if (timeline) timeline.insertAdjacentHTML('afterbegin', renderActivityTimelineItem(item));
+        form.reset();
+        showToast('Activity note added.', true);
       } catch (error) {
         if (message) { message.textContent = error.message; message.hidden = false; }
       }
@@ -1507,7 +2100,7 @@
 
   function bookingDetail(label, value) {
     const q = String.fromCharCode(34);
-    return '<div class=' + q + 'job-detail-item' + q + '><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || '-') + '</strong></div>';
+    return '<div class=' + q + 'booking-detail-row' + q + '><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || '-') + '</strong></div>';
   }
 
   function openBookingRequestModal(item) {
@@ -1518,15 +2111,47 @@
     const contact = [item.customerEmail, item.customerPhone].filter(Boolean).join(' / ') || '-';
     const preferred = [formatDate(item.preferredDate), item.preferredTimeWindow && String(item.preferredTimeWindow).replace(/_/g, ' ')].filter(Boolean).join(' / ') || '-';
     const photos = (item.photos || []).map((photo) => '<a class=' + q + 'secondary-button compact' + q + ' href=' + q + escapeHtml(photo.url) + q + ' target=' + q + '_blank' + q + ' rel=' + q + 'noreferrer' + q + '>' + escapeHtml(photo.originalName || photo.filename || 'Photo') + '</a>').join('');
-    modal.innerHTML = '<div class=' + q + 'fc-dialog job-detail-dialog' + q + '><div class=' + q + 'panel-head' + q + '><div><h3>Booking Request</h3><p class=' + q + 'modal-copy' + q + '>' + escapeHtml(item.customerName || 'Customer') + '</p></div><button class=' + q + 'icon-button' + q + ' type=' + q + 'button' + q + ' data-close>&times;</button></div><div class=' + q + 'job-detail-grid' + q + '>' + bookingDetail('Reference', item.publicReference) + bookingDetail('Source', item.source) + bookingDetail('Customer', item.customerName) + bookingDetail('Contact', contact) + bookingDetail('Service', service) + bookingDetail('Preferred', preferred) + bookingDetail('Address', item.address) + bookingDetail('City/Suburb', item.city) + bookingDetail('Property Type', item.propertyType) + bookingDetail('Status', String(item.status || '-').replace(/_/g, ' ')) + bookingDetail('Created', formatDateTime(item.createdAt)) + bookingDetail('Converted Job', item.convertedJob && item.convertedJob.title) + '</div>' + (item.accessNotes ? '<div class=' + q + 'job-notes' + q + '><span>Access Notes</span><p>' + escapeHtml(item.accessNotes) + '</p></div>' : '') + (item.notes ? '<div class=' + q + 'job-notes' + q + '><span>Notes</span><p>' + escapeHtml(item.notes) + '</p></div>' : '') + (item.customerFacingMessage ? '<div class=' + q + 'job-notes' + q + '><span>Customer Message</span><p>' + escapeHtml(item.customerFacingMessage) + '</p></div>' : '') + (photos ? '<div class=' + q + 'job-notes' + q + '><span>Photos</span><div class=' + q + 'row-actions' + q + '>' + photos + '</div></div>' : '') + '<div class=' + q + 'fc-form-actions' + q + '><button class=' + q + 'secondary-button' + q + ' type=' + q + 'button' + q + ' data-close>Close</button></div></div>';
+    modal.innerHTML = '<div class=' + q + 'fc-dialog job-detail-dialog booking-detail-dialog' + q + '><div class=' + q + 'panel-head' + q + '><div><h3>Booking Request</h3><p class=' + q + 'modal-copy' + q + '>' + escapeHtml(item.customerName || 'Customer') + '</p></div><button class=' + q + 'icon-button' + q + ' type=' + q + 'button' + q + ' data-close>&times;</button></div><div class=' + q + 'booking-detail-list' + q + '>' + bookingDetail('Reference', item.publicReference) + bookingDetail('Source', item.source) + bookingDetail('Customer', item.customerName) + bookingDetail('Contact', contact) + bookingDetail('Service', service) + bookingDetail('Preferred', preferred) + bookingDetail('Address', item.address) + bookingDetail('City/Suburb', item.city) + bookingDetail('Property Type', item.propertyType) + bookingDetail('Status', String(item.status || '-').replace(/_/g, ' ')) + bookingDetail('Created', formatDateTime(item.createdAt)) + bookingDetail('Converted Job', item.convertedJob && item.convertedJob.title) + (item.accessNotes ? bookingDetail('Access Notes', item.accessNotes) : '') + (item.notes ? bookingDetail('Notes', item.notes) : '') + (item.customerFacingMessage ? bookingDetail('Customer Message', item.customerFacingMessage) : '') + (photos ? '<div class=' + q + 'booking-detail-row booking-detail-photos' + q + '><span>Photos</span><div class=' + q + 'row-actions' + q + '>' + photos + '</div></div>' : '') + '</div><div class=' + q + 'fc-form-actions' + q + '><button class=' + q + 'secondary-button' + q + ' type=' + q + 'button' + q + ' data-close>Close</button></div></div>';
     modal.addEventListener('click', (event) => { if (event.target === modal || event.target.closest('[data-close]')) modal.remove(); });
     document.body.appendChild(modal);
   }
+
+  function actionSuccessMessage(action) {
+    return {
+      'booking-review': 'Booking request marked reviewed.',
+      'booking-decline': 'Booking request declined.',
+      'booking-convert': 'Booking request converted to a job.',
+      'booking-quote': 'Quote created from booking request.',
+      'quote-send': 'Quote sent.',
+      'quote-accept': 'Quote accepted.',
+      'quote-reject': 'Quote rejected.',
+      'quote-reverse-rejection': 'Quote rejection reversed.',
+      'quote-delete': 'Quote moved to Deleted. It will be automatically removed after 30 days.',
+      'quote-restore': 'Quote restored.',
+      'job-unschedule': 'Job unscheduled.',
+      'job-invoice': 'Invoice created from job.',
+      'invoice-send': 'Invoice sent.',
+      'invoice-void': 'Invoice voided.',
+      'invoice-pay': 'Payment recorded.'
+    }[action] || 'Action completed.';
+  }
+
   async function handleRowAction(event) {
+    const menuButton = event.target.closest('[data-row-action-menu]');
+    if (menuButton) {
+      const resource = menuButton.dataset.rowActionMenu;
+      const id = menuButton.dataset.id;
+      const item = state[resource] && state[resource].find((record) => record.id === id);
+      if (item) openRowActionMenu(resource, item);
+      return;
+    }
+
     const button = event.target.closest('[data-row-action]');
     if (!button) return;
     const id = button.dataset.id;
     const action = button.dataset.rowAction;
+    if (button.closest('[data-action-menu-modal]')) closeModal();
+    button.disabled = true;
     try {
       if (action === 'booking-view') {
         const item = state['booking-requests'].find((record) => record.id === id) || await api('/booking-requests/' + id);
@@ -1544,6 +2169,13 @@
       if (action === 'quote-send') await api('/quotes/' + id + '/send', { method: 'POST', body: '{}' });
       if (action === 'quote-accept') await api('/quotes/' + id + '/accept', { method: 'POST', body: '{}' });
       if (action === 'quote-reject') await api('/quotes/' + id + '/reject', { method: 'POST', body: '{}' });
+      if (action === 'quote-reverse-rejection') await api('/quotes/' + id + '/reverse-rejection', { method: 'POST', body: '{}' });
+      if (action === 'quote-delete') {
+        const ok = await openConfirmModal({ title: 'Delete Quote', message: 'Move this quote to Deleted? Deleted quotes are automatically removed after 30 days.', okLabel: 'Delete' });
+        if (!ok) return;
+        await api('/quotes/' + id, { method: 'DELETE' });
+      }
+      if (action === 'quote-restore') await api('/quotes/' + id + '/restore', { method: 'POST', body: '{}' });
       if (action === 'job-detail') {
         await openJobDetail(id);
         return;
@@ -1569,9 +2201,14 @@
         if (!amount) return;
         await api('/invoices/' + id + '/payments', { method: 'POST', body: JSON.stringify({ amount: Number(amount), method: 'CASH', status: 'CONFIRMED' }) });
       }
-      await load();
+      showToast(actionSuccessMessage(action), true);
+      if (page === 'quotes') await loadQuotesResource(activeQuoteFilter());
+      else await load();
     } catch (error) {
       setStatus(error.message, false);
+      showToast(error.message, false);
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -1600,6 +2237,7 @@
     message.textContent = textValue;
     message.classList.toggle('green', ok === true);
     message.hidden = false;
+    if (ok === true) showToast(textValue, true);
   }
 
   function setupWorkerSettings() {
@@ -1718,6 +2356,7 @@
       await api('/company/scheduling-settings', { method: 'PATCH', body: JSON.stringify(settingsPayload(form)) });
       await loadSchedulingSettings();
       if (message) { message.textContent = successText; message.classList.add('green'); message.hidden = false; }
+      showToast(successText, true);
     } catch (error) {
       if (message) { message.textContent = error.message; message.hidden = false; }
     }
@@ -1755,6 +2394,7 @@
     if (!document.querySelector('[data-scheduling-form]')) return;
     try {
       const [settings, workers, roles] = await Promise.all([api('/company/scheduling-settings'), api('/workers').catch(() => []), api('/worker-roles').catch(() => [])]);
+      state.scheduleSettings = settings;
       state.workers = workers;
       state.roles = roles;
       document.querySelectorAll('[data-scheduling-field]').forEach((field) => {
@@ -1783,7 +2423,7 @@
     const status = document.querySelector('[data-notification-status-filter]');
     const filtered = logs.filter((item) => (!channel || !channel.value || item.channel === channel.value) && (!status || !status.value || item.status === status.value));
     if (count) count.textContent = String(filtered.length);
-    const controls = '<div class="panel-head card"><h3>Recent Notifications</h3><span class="badge gray" data-notification-log-count>' + filtered.length + '</span></div><div class="row-actions"><select data-notification-channel-filter aria-label="Notification channel"><option value="">All channels</option><option value="EMAIL"' + (channel && channel.value === 'EMAIL' ? ' selected' : '') + '>Email</option><option value="WHATSAPP"' + (channel && channel.value === 'WHATSAPP' ? ' selected' : '') + '>WhatsApp</option></select><select data-notification-status-filter aria-label="Notification status"><option value="">All statuses</option><option value="SENT"' + (status && status.value === 'SENT' ? ' selected' : '') + '>Sent</option><option value="FAILED"' + (status && status.value === 'FAILED' ? ' selected' : '') + '>Failed</option><option value="SKIPPED"' + (status && status.value === 'SKIPPED' ? ' selected' : '') + '>Skipped</option></select></div>';
+    const controls = '<div class="panel-head card"><h3>Recent Notifications</h3><span class="badge gray" data-notification-log-count>' + filtered.length + '</span></div><div class="notification-filters"><label><span>Channel</span><select data-notification-channel-filter aria-label="Notification channel"><option value="">All channels</option><option value="EMAIL"' + (channel && channel.value === 'EMAIL' ? ' selected' : '') + '>Email</option><option value="WHATSAPP"' + (channel && channel.value === 'WHATSAPP' ? ' selected' : '') + '>WhatsApp</option></select></label><label><span>Status</span><select data-notification-status-filter aria-label="Notification status"><option value="">All statuses</option><option value="SENT"' + (status && status.value === 'SENT' ? ' selected' : '') + '>Sent</option><option value="FAILED"' + (status && status.value === 'FAILED' ? ' selected' : '') + '>Failed</option><option value="SKIPPED"' + (status && status.value === 'SKIPPED' ? ' selected' : '') + '>Skipped</option></select></label></div>';
     if (!filtered.length) {
       card.innerHTML = controls + '<div class="empty-state"><div><strong>No matching notifications.</strong><span>Change the filters or trigger a notification event.</span></div></div>';
       bindNotificationFilters();
@@ -1809,6 +2449,119 @@
       const card = document.querySelector('[data-notification-log-card]');
       if (card) card.innerHTML = '<div class="empty-state"><div><strong>Notification history unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
     }
+  }
+
+  const integrationProviders = [
+    { provider: 'BREVO', title: 'Brevo Email', channel: 'EMAIL', initials: 'BE', config: [['senderName', 'Sender name'], ['senderEmail', 'Sender email'], ['replyToEmail', 'Reply-to email']], secrets: [['apiKey', 'Brevo API key']] },
+    { provider: 'META_WHATSAPP_CLOUD', title: 'Meta WhatsApp Cloud API', channel: 'WHATSAPP', initials: 'WA', config: [['wabaId', 'WABA ID'], ['phoneNumberId', 'Phone number ID'], ['businessPhoneDisplayNumber', 'Display number'], ['defaultTemplateName', 'Default template']], secrets: [['accessToken', 'Permanent access token'], ['webhookVerifyToken', 'Webhook verify token'], ['appSecret', 'App secret']] },
+    { provider: 'CLICKATELL', title: 'Clickatell SMS', channel: 'SMS', initials: 'CT', config: [['senderId', 'Sender ID'], ['profileId', 'Profile ID'], ['channel', 'Channel']], secrets: [['apiKey', 'Clickatell API key']] },
+    { provider: 'AFRICAS_TALKING', title: "Africa's Talking SMS", channel: 'SMS', initials: 'AT', config: [['senderId', 'Sender ID'], ['shortCode', 'Short code'], ['environment', 'Environment']], secrets: [['username', 'Username'], ['apiKey', "Africa's Talking API key"]] },
+    { provider: 'CLOUDFLARE_R2', title: 'Cloudflare R2 Storage', channel: 'STORAGE', initials: 'R2', config: [['accountId', 'Account ID'], ['bucket', 'Bucket'], ['endpoint', 'Endpoint'], ['publicDomain', 'Public domain'], ['region', 'Region']], secrets: [['accessKeyId', 'Access key ID'], ['secretAccessKey', 'Secret access key']] }
+  ];
+
+  function integrationByProvider(provider) {
+    return (state.integrations || []).find((item) => item.provider === provider);
+  }
+
+  function renderIntegrations() {
+    const card = document.querySelector('[data-integrations-card]');
+    if (!card) return;
+    card.innerHTML = integrationProviders.map((definition) => {
+      const item = integrationByProvider(definition.provider) || {};
+      const config = item.config || {};
+      const configuredSecrets = new Set(item.configuredSecrets || []);
+      const status = item.status || 'DISCONNECTED';
+      const statusClass = status === 'ACTIVE' || status === 'CONFIGURED' ? 'green' : status === 'ERROR' ? 'red' : 'gray';
+      const configFields = definition.config.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="config.' + escapeHtml(key) + '" value="' + escapeHtml(config[key] || '') + '"></div>').join('');
+      const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" placeholder="' + (configuredSecrets.has(key) ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved' : 'Not saved') + '"></div>').join('');
+      return '<form class="integration-card" data-integration-form="' + escapeHtml(definition.provider) + '" data-integration-id="' + escapeHtml(item.id || '') + '"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.channel + (item.lastTestedAt ? ' / tested ' + formatDateTime(item.lastTestedAt) : ' / not tested')) + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span></div><div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save Settings</button><button class="secondary-button compact" type="button" data-integration-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Test Connection</button><button class="secondary-button compact" type="button" data-integration-disable="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Disable</button></div><p class="fc-form-error span-2" data-integration-message hidden></p></div></form>';
+    }).join('');
+    bindIntegrationActions();
+  }
+
+  function integrationPayload(form) {
+    const payload = { provider: form.dataset.integrationForm, config: {}, secrets: {} };
+    form.querySelectorAll('input[name^="config."]').forEach((field) => { payload.config[field.name.replace('config.', '')] = field.value || ''; });
+    form.querySelectorAll('input[name^="secret."]').forEach((field) => {
+      if (field.value) payload.secrets[field.name.replace('secret.', '')] = field.value;
+    });
+    return payload;
+  }
+
+  async function loadIntegrations() {
+    if (!document.querySelector('[data-integrations-card]')) return;
+    try {
+      const [integrations, logs, storage] = await Promise.all([api('/admin/integrations'), api('/admin/integrations/message-logs').catch(() => []), api('/admin/integrations/storage-usage').catch(() => ({ usage: [], objects: [] }))]);
+      state.integrations = integrations;
+      state.messageLogs = logs;
+      state.storageUsage = storage;
+      renderIntegrations();
+      renderProviderMessageLogs(logs);
+      renderStorageUsage(storage);
+    } catch (error) {
+      const card = document.querySelector('[data-integrations-card]');
+      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Integrations unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+    }
+  }
+
+  function bindIntegrationActions() {
+    document.querySelectorAll('[data-integration-form]').forEach((form) => {
+      form.onsubmit = async (event) => {
+        event.preventDefault();
+        const message = form.querySelector('[data-integration-message]');
+        if (message) { message.hidden = true; message.classList.remove('green'); }
+        try {
+          const payload = integrationPayload(form);
+          const id = form.dataset.integrationId;
+          await api(id ? '/admin/integrations/' + id : '/admin/integrations', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+          if (message) { message.textContent = 'Integration settings saved.'; message.classList.add('green'); message.hidden = false; }
+          await loadIntegrations();
+        } catch (error) {
+          if (message) { message.textContent = error.message; message.hidden = false; }
+        }
+      };
+    });
+    document.querySelectorAll('[data-integration-test]').forEach((button) => {
+      button.onclick = async () => {
+        if (!button.dataset.integrationTest) return;
+        try {
+          const result = await api('/admin/integrations/' + button.dataset.integrationTest + '/test', { method: 'POST', body: JSON.stringify({}) });
+          showToast(result.test && result.test.ok ? 'Connection test passed.' : result.test && result.test.error || 'Connection test failed.', Boolean(result.test && result.test.ok));
+          await loadIntegrations();
+        } catch (error) {
+          showToast(error.message, false);
+        }
+      };
+    });
+    document.querySelectorAll('[data-integration-disable]').forEach((button) => {
+      button.onclick = async () => {
+        if (!button.dataset.integrationDisable) return;
+        try {
+          await api('/admin/integrations/' + button.dataset.integrationDisable + '/disable', { method: 'POST', body: JSON.stringify({}) });
+          showToast('Integration disabled.');
+          await loadIntegrations();
+        } catch (error) {
+          showToast(error.message, false);
+        }
+      };
+    });
+  }
+
+  function renderProviderMessageLogs(logs) {
+    const card = document.querySelector('[data-message-log-card]');
+    if (!card) return;
+    const rows = (logs || []).slice(0, 25).map((item) => '<tr><td>' + escapeHtml(item.provider || '-') + '</td><td>' + escapeHtml(item.channel || '-') + '</td><td>' + badge(item.status || '-') + '</td><td>' + escapeHtml(item.recipientMasked || '-') + '</td><td>' + escapeHtml(item.providerMessageId || '-') + '</td><td>' + escapeHtml(formatDateTime(item.sentAt || item.failedAt || item.createdAt)) + '</td><td>' + escapeHtml(item.errorMessageSanitized || '') + '</td></tr>').join('');
+    card.innerHTML = '<div class="panel-head card"><h3>Message Logs</h3><span class="badge gray">' + (logs || []).length + '</span></div>' + (rows ? '<div class="table-scroll"><table><thead><tr><th>Provider</th><th>Channel</th><th>Status</th><th>Recipient</th><th>Provider ID</th><th>Time</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<div class="empty-state"><div><strong>No provider messages yet.</strong><span>Email, WhatsApp, and SMS attempts will appear here.</span></div></div>');
+  }
+
+  function renderStorageUsage(storage) {
+    const card = document.querySelector('[data-storage-usage-card]');
+    if (!card) return;
+    const usage = storage && storage.usage || [];
+    const objects = storage && storage.objects || [];
+    const usageRows = usage.slice(0, 12).map((item) => '<tr><td>' + escapeHtml(item.year + '-' + String(item.month).padStart(2, '0')) + '</td><td>' + escapeHtml(item.provider || '-') + '</td><td>' + escapeHtml(item.objectCount || 0) + '</td><td>' + escapeHtml(item.totalBytes || 0) + '</td></tr>').join('');
+    const objectRows = objects.slice(0, 8).map((item) => '<tr><td>' + escapeHtml(item.bucket || '-') + '</td><td>' + escapeHtml(item.objectKey || '-') + '</td><td>' + escapeHtml(item.mimeType || '-') + '</td><td>' + escapeHtml(item.sizeBytes || 0) + '</td></tr>').join('');
+    card.innerHTML = '<div class="panel-head card"><h3>Storage Usage</h3><span class="badge gray">' + usage.length + '</span></div>' + (usageRows ? '<div class="table-scroll"><table><thead><tr><th>Month</th><th>Provider</th><th>Objects</th><th>Bytes</th></tr></thead><tbody>' + usageRows + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No usage rollups yet.</strong><span>R2 uploads will create monthly usage records.</span></div></div>') + (objectRows ? '<div class="table-scroll"><table><thead><tr><th>Bucket</th><th>Object</th><th>Type</th><th>Bytes</th></tr></thead><tbody>' + objectRows + '</tbody></table></div>' : '');
   }
 
   function renderSaaSBilling(summary) {
@@ -1914,6 +2667,7 @@
         });
         if (target === 'billing') loadBilling();
         if (target === 'notifications') loadNotificationLogs();
+        if (target === 'integrations') loadIntegrations();
         if (target === 'admin-tools') loadAdminTools();
         if (target === 'security') loadSecuritySettings();
       });
@@ -1984,6 +2738,7 @@
           state.availability[key] = await api('/worker-roles/' + body.roleId + '/availability', { method: 'PUT', body: JSON.stringify(next) });
           setAvailabilityFields(selectedAvailabilitySlot(state.availability[key], body.dayOfWeek));
           if (message) { message.textContent = 'Role availability saved.'; message.classList.add('green'); message.hidden = false; }
+          showToast('Role availability saved.', true);
         } catch (error) {
           if (message) { message.textContent = error.message; message.hidden = false; }
         }
@@ -2015,6 +2770,7 @@
           message.classList.add('green');
           message.hidden = false;
         }
+        showToast('Branding saved.', true);
       } catch (error) {
         if (message) {
           message.textContent = error.message;
@@ -2028,6 +2784,10 @@
     const current = window.location.pathname.split('/').pop() || 'index.html';
     const query = window.location.search || '';
     window.location.href = 'login.html?return=' + encodeURIComponent(current + query);
+  }
+
+  function redirectToClientPortal() {
+    window.location.href = 'client-portal.html';
   }
 
   async function uploadLogo(file) {
@@ -2048,6 +2808,12 @@
   async function load() {
     setStatus('Connecting to API...', true);
     try {
+      const clientSession = await api('/client/auth/session').catch(() => null);
+      if (clientSession) {
+        setStatus('Client session active. Redirecting to client portal...', false);
+        redirectToClientPortal();
+        return;
+      }
       state.user = await api('/auth/session');
       if (!state.user) throw new Error('Authentication required');
       document.querySelectorAll('[data-current-user-name]').forEach((node) => { node.textContent = state.user.name || state.user.email || 'Signed in'; });
@@ -2099,7 +2865,13 @@
         setupScheduleControls();
         renderSchedule(data, settings);
       }
-      if (tableConfigs[page] && page !== 'schedule') {
+      if (page === 'customers') {
+        setupPeopleTabs();
+        await loadPeopleResource(peopleResource());
+      } else if (page === 'quotes') {
+        setupQuoteTabs();
+        await loadQuotesResource(activeQuoteFilter());
+      } else if (tableConfigs[page] && page !== 'schedule') {
         const data = await api(`/${page}`);
         state[page] = data;
         if (!state.listFilters[page]) state.listFilters[page] = 'all';
@@ -2130,6 +2902,3 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', load);
   else load();
 })();
-
-
-

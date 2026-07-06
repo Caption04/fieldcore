@@ -6,7 +6,7 @@
     <title>FieldCore Quotes</title>
     <link rel="stylesheet" href="assets/app.css">
     <script defer src="assets/layout.js"></script>
-    <script defer src="assets/api.js"></script>
+    <script defer src="assets/api.js?v=worker-activity-notes-1"></script>
   </head>
   <body data-page="quotes" data-title="Quotes">
     <section class="page">
@@ -68,12 +68,15 @@
           <button class="tab active" type="button" data-status-filter="all">All</button>
           <button class="tab" type="button" data-status-filter="ACCEPTED">Accepted</button>
           <button class="tab" type="button" data-status-filter="SENT">Sent</button>
+          <button class="tab" type="button" data-status-filter="REJECTED">Rejected</button>
           <button class="tab" type="button" data-status-filter="DRAFT">Draft</button>
+          <button class="tab" type="button" data-status-filter="DELETED">Deleted</button>
         </div>
         <div class="toolbar-actions">
           <span class="api-status" data-api-status>Connecting...</span>
         </div>
       </div>
+      <p class="quote-bin-note" data-quote-bin-note hidden>Deleted quotes are automatically removed after 30 days. Restore a quote before then if it was deleted by mistake.</p>
       <section class="table-card">
         <div class="empty-state">
           <div>

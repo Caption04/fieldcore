@@ -5,15 +5,22 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const express = require('express');
 const helmet = require('helmet');
+const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
 const { apiRouter } = require('./routes/api');
+const { COOKIE_NAME } = require('./auth');
+const { prisma } = require('./db');
 const { errorHandler } = require('./errors');
 const { assertValidEnv } = require('./config/env');
 
 const app = express();
 const rootDir = path.resolve(__dirname, '..');
 const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:3000';
+const DEV_JWT_SECRET = 'dev-only-change-me';
+const JWT_SECRET = process.env.JWT_SECRET || DEV_JWT_SECRET;
+const CLIENT_COOKIE_NAME = process.env.CLIENT_COOKIE_NAME || 'fieldcore_client_token';
+const CLIENT_JWT_SECRET = process.env.JWT_SECRET || DEV_JWT_SECRET;
 
 assertValidEnv();
 app.disable('x-powered-by');
@@ -49,10 +56,94 @@ const publicBookingLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_P
 const trackingLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_TRACKING_WINDOW_MS || 15 * 60 * 1000), limit: Number(process.env.RATE_LIMIT_TRACKING_MAX || 20), message: 'Too many tracking attempts. Try again later.' });
 const uploadLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_UPLOAD_WINDOW_MS || 15 * 60 * 1000), limit: Number(process.env.RATE_LIMIT_UPLOAD_MAX || 60), message: 'Too many uploads. Try again later.' });
 
+const publicHtmlPages = new Set([
+  'login.html',
+  'register.html',
+  'client-login.html',
+  'client-register.html',
+  'booking.html'
+]);
+
+const staffHtmlPages = new Map([
+  ['index.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['jobs.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['schedule.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['map.html', ['OWNER', 'ADMIN']],
+  ['customers.html', ['OWNER', 'ADMIN']],
+  ['booking-requests.html', ['OWNER', 'ADMIN']],
+  ['quotes.html', ['OWNER', 'ADMIN']],
+  ['invoices.html', ['OWNER', 'ADMIN']],
+  ['reports.html', ['OWNER', 'ADMIN']],
+  ['settings.html', ['OWNER', 'ADMIN']]
+]);
+
+const clientHtmlPages = new Set(['client-portal.html']);
+
+function requestedHtmlPage(req) {
+  if (!['GET', 'HEAD'].includes(req.method)) return null;
+  if (req.path === '/') return 'index.html';
+
+  const page = req.path.replace(/^\/+/, '');
+  if (!page || page.includes('/')) return null;
+  if (page.endsWith('.html')) return page;
+  if (!path.extname(page)) return `${page}.html`;
+  return null;
+}
+
+async function staffPageUser(req) {
+  const token = req.cookies[COOKIE_NAME];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, role: true, companyId: true }
+    });
+  } catch (error) {
+    return null;
+  }
+}
+
+async function clientPageAccount(req) {
+  const token = req.cookies[CLIENT_COOKIE_NAME];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, CLIENT_JWT_SECRET);
+    if (payload.kind !== 'client') return null;
+    return prisma.clientAccount.findFirst({
+      where: { id: payload.sub, companyId: payload.companyId, status: { not: 'DISABLED' } },
+      select: { id: true, companyId: true }
+    });
+  } catch (error) {
+    return null;
+  }
+}
+
+async function htmlPageAccessGuard(req, res, next) {
+  const page = requestedHtmlPage(req);
+  if (!page || publicHtmlPages.has(page)) return next();
+
+  if (clientHtmlPages.has(page)) {
+    if (await clientPageAccount(req)) return next();
+    if (await staffPageUser(req)) return res.redirect(302, '/index.html');
+    return res.redirect(302, '/client-login.html');
+  }
+
+  const allowedRoles = staffHtmlPages.get(page);
+  if (!allowedRoles) return next();
+
+  if (req.cookies[CLIENT_COOKIE_NAME] && await clientPageAccount(req)) return res.redirect(302, '/client-portal.html');
+
+  const user = await staffPageUser(req);
+  if (!user) return res.redirect(302, '/login.html');
+  if (!allowedRoles.includes(user.role)) return res.redirect(302, '/index.html');
+
+  return next();
+}
+
 app.get('/healthz', (req, res) => res.json({ ok: true, status: 'alive' }));
 app.get('/readyz', async (req, res) => {
   try {
-    const { prisma } = require('./db');
     if (typeof prisma.$queryRaw === 'function') await prisma.$queryRaw`SELECT 1`;
     return res.json({ ok: true, status: 'ready' });
   } catch (error) {
@@ -73,6 +164,7 @@ app.use('/api/jobs', (req, res, next) => {
 });
 app.use('/api', apiRouter);
 app.use('/uploads', express.static(path.join(rootDir, 'uploads')));
+app.use(htmlPageAccessGuard);
 app.use(express.static(rootDir, { extensions: ['html'] }));
 
 app.use((req, res) => {

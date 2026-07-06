@@ -14,6 +14,16 @@ function providerConfigured(providerName, requiredVars) {
   return requiredVars.every(configured);
 }
 
+function validBase64Key(value) {
+  try {
+    const text = String(value || '').trim();
+    const key = Buffer.from(text, 'base64');
+    return key.length === 32 && key.toString('base64').replace(/=+$/, '') === text.replace(/=+$/, '');
+  } catch {
+    return false;
+  }
+}
+
 function validateEnv(env = process.env) {
   const nodeEnv = env.NODE_ENV || 'development';
   const errors = [];
@@ -28,6 +38,8 @@ function validateEnv(env = process.env) {
     if (has('EMAIL_PROVIDER') && env.EMAIL_PROVIDER !== 'console' && !has('EMAIL_FROM')) errors.push('EMAIL_FROM is required when EMAIL_PROVIDER is enabled.');
     if (has('WHATSAPP_PROVIDER') && !providerConfiguredWithEnv(env, 'WHATSAPP_PROVIDER', ['WHATSAPP_PHONE_NUMBER_ID'])) errors.push('WhatsApp provider is enabled but required WhatsApp configuration is missing.');
     if (env.SAAS_BILLING_PROVIDER === 'stripe' && !has('STRIPE_SECRET_KEY')) errors.push('STRIPE_SECRET_KEY is required when Stripe SaaS billing is enabled.');
+    if (!has('INTEGRATION_SECRET_MASTER_KEY_BASE64')) errors.push('INTEGRATION_SECRET_MASTER_KEY_BASE64 is required in production.');
+    else if (!validBase64Key(env.INTEGRATION_SECRET_MASTER_KEY_BASE64)) errors.push('INTEGRATION_SECRET_MASTER_KEY_BASE64 must decode to exactly 32 bytes.');
   }
 
   return { ok: errors.length === 0, errors, nodeEnv };
@@ -57,7 +69,8 @@ function configStatus() {
     email: configured('EMAIL_PROVIDER') && providerConfigured('EMAIL_PROVIDER', ['EMAIL_FROM']) ? 'configured' : 'not configured',
     whatsapp: configured('WHATSAPP_PROVIDER') && providerConfigured('WHATSAPP_PROVIDER', ['WHATSAPP_PHONE_NUMBER_ID']) ? 'configured' : 'not configured',
     saasBilling: configured('SAAS_BILLING_PROVIDER') && (process.env.SAAS_BILLING_PROVIDER !== 'stripe' || configured('STRIPE_SECRET_KEY')) ? 'configured' : 'not configured',
-    storage: boolEnv('USE_REMOTE_STORAGE') ? 'configured' : 'local uploads',
+    integrationSecrets: configured('INTEGRATION_SECRET_MASTER_KEY_BASE64') ? 'configured' : 'not configured',
+    storage: boolEnv('USE_REMOTE_STORAGE') || configured('INTEGRATION_SECRET_MASTER_KEY_BASE64') ? 'integration-ready' : 'local uploads',
     rateLimiting: 'enabled'
   };
 }

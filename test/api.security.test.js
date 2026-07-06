@@ -10,7 +10,7 @@ process.env.NOTIFICATION_CHANNELS = 'EMAIL,WHATSAPP';
 process.env.WHATSAPP_DEFAULT_COUNTRY_CODE = '1';
 
 function clone(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
+  return value == null ? value : JSON.parse(JSON.stringify(value, (key, item) => typeof item === 'bigint' ? Number(item) : item));
 }
 
 function applySelect(record, select) {
@@ -29,15 +29,32 @@ function stripUndefined(input) {
 }
 
 function matchesWhere(record, where = {}) {
-  return Object.entries(where).every(([key, expected]) => {
+  return Object.entries(where || {}).every(([key, expected]) => {
     const actual = record[key];
-    if (expected instanceof Date) return new Date(actual).getTime() === expected.getTime();
+
+    if (expected === null) {
+      return actual === null || actual === undefined;
+    }
+
+    if (expected instanceof Date) {
+      return new Date(actual).getTime() === expected.getTime();
+    }
+
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+      if ('not' in expected) {
+        if (expected.not === null) return actual !== null && actual !== undefined;
+        return actual !== expected.not;
+      }
+
       if ('in' in expected) return expected.in.includes(actual);
       if ('gte' in expected && !(new Date(actual) >= new Date(expected.gte))) return false;
+      if ('lte' in expected && !(new Date(actual) <= new Date(expected.lte))) return false;
+      if ('gt' in expected && !(new Date(actual) > new Date(expected.gt))) return false;
       if ('lt' in expected && !(new Date(actual) < new Date(expected.lt))) return false;
+
       return true;
     }
+
     return actual === expected;
   });
 }
@@ -73,6 +90,7 @@ function createMockPrisma(seed) {
   function receiptByPaymentId(paymentId) { return db.receipts.find((item) => item.paymentId === paymentId); }
   function paymentById(paymentId) { return db.payments.find((item) => item.id === paymentId); }
   function completionLocationByJobId(jobId) { return db.jobCompletionLocations.find((item) => item.jobId === jobId); }
+  function integrationSecretsByConnectionId(connectionId) { return db.integrationSecrets.filter((item) => item.integrationConnectionId === connectionId); }
 
   function enrichCompany(company, include) {
     if (!company) return null;
@@ -145,6 +163,16 @@ function createMockPrisma(seed) {
     if (include && include.clientAccount) {
       const account = clone(clientAccountById(request.clientAccountId)) || null;
       result.clientAccount = include.clientAccount.select ? applySelect(account, include.clientAccount.select) : account;
+    }
+    return result;
+  }
+
+  function enrichIntegrationConnection(connection, include) {
+    if (!connection) return null;
+    const result = { ...connection };
+    if (include && include.secrets) {
+      const secrets = integrationSecretsByConnectionId(connection.id);
+      result.secrets = include.secrets.select ? secrets.map((secret) => applySelect(secret, include.secrets.select)) : clone(secrets);
     }
     return result;
   }
@@ -302,6 +330,40 @@ function createMockPrisma(seed) {
     clientAccount: makeModel('clientAccounts'),
     customerProperty: makeModel('customerProperties'),
     notificationLog: makeModel('notificationLogs'),
+    integrationConnection: makeModel('integrationConnections', enrichIntegrationConnection),
+    integrationSecret: {
+      ...makeModel('integrationSecrets'),
+      upsert: async (args) => {
+        const where = args.where.integrationConnectionId_keyName;
+        const index = db.integrationSecrets.findIndex((item) => item.integrationConnectionId === where.integrationConnectionId && item.keyName === where.keyName);
+        if (index === -1) {
+          const record = { id: id('integrationSecret'), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...stripUndefined(args.create) };
+          db.integrationSecrets.push(record);
+          return clone(record);
+        }
+        db.integrationSecrets[index] = { ...db.integrationSecrets[index], ...stripUndefined(args.update), updatedAt: new Date().toISOString() };
+        return clone(db.integrationSecrets[index]);
+      }
+    },
+    messageLog: makeModel('messageLogs'),
+    storageObject: makeModel('storageObjects'),
+    storageUsageMonthly: {
+      ...makeModel('storageUsageMonthly'),
+      upsert: async (args) => {
+        const where = args.where.companyId_provider_year_month;
+        const index = db.storageUsageMonthly.findIndex((item) => item.companyId === where.companyId && item.provider === where.provider && item.year === where.year && item.month === where.month);
+        if (index === -1) {
+          const record = { id: id('storageUsageMonthly'), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...stripUndefined(args.create) };
+          db.storageUsageMonthly.push(record);
+          return clone(record);
+        }
+        const update = { ...args.update };
+        if (update.totalBytes && update.totalBytes.increment !== undefined) update.totalBytes = Number(db.storageUsageMonthly[index].totalBytes || 0) + Number(update.totalBytes.increment);
+        if (update.objectCount && update.objectCount.increment !== undefined) update.objectCount = Number(db.storageUsageMonthly[index].objectCount || 0) + Number(update.objectCount.increment);
+        db.storageUsageMonthly[index] = { ...db.storageUsageMonthly[index], ...stripUndefined(update), updatedAt: new Date().toISOString() };
+        return clone(db.storageUsageMonthly[index]);
+      }
+    },
     jobActivity: makeModel('jobActivities', (activity, include) => {
       const result = { ...activity };
       if (include && include.worker) result.worker = enrichWorker(workerById(activity.workerId), include.worker.include);
@@ -400,13 +462,18 @@ async function buildApp() {
     clientAccounts: [],
     customerProperties: [],
     notificationLogs: [],
+    integrationConnections: [],
+    integrationSecrets: [],
+    messageLogs: [],
+    storageObjects: [],
+    storageUsageMonthly: [],
     jobActivities: [],
     auditLogs: []
   };
 
   const dbPath = require.resolve('../src/db');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { prisma: createMockPrisma(seed) } };
-  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/app']) {
+  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/app']) {
     const resolved = require.resolve(mod);
     delete require.cache[resolved];
   }
@@ -2101,4 +2168,206 @@ test('client dashboard summarizes only client owned records', async () => {
   assert.equal(Object.prototype.hasOwnProperty.call(dashboard.body.data.stats, 'revenueMonthToDate'), false);
   assert.equal(JSON.stringify(dashboard.body).includes('invoice-other-company'), false);
   assertNoPasswordHash(dashboard.body);
+});
+
+test('admin integrations encrypt secrets and return safe metadata only', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const created = await owner.post('/api/admin/integrations').send({
+    provider: 'BREVO',
+    displayName: 'Brevo production',
+    config: { senderName: 'Dispatch', senderEmail: 'dispatch@a.test', replyToEmail: 'help@a.test' },
+    secrets: { apiKey: 'brevo-secret-key' }
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.data.provider, 'BREVO');
+  assert.equal(created.body.data.config.senderEmail, 'dispatch@a.test');
+  assert.deepEqual(created.body.data.configuredSecrets, ['apiKey']);
+  assert.equal(JSON.stringify(created.body).includes('brevo-secret-key'), false);
+  assert.equal(JSON.stringify(created.body).includes('encryptedValue'), false);
+
+  const stored = app.locals.testDb.integrationSecrets[0];
+  assert.equal(stored.keyName, 'apiKey');
+  assert.notEqual(stored.encryptedValue, 'brevo-secret-key');
+  assert.ok(stored.iv);
+  assert.ok(stored.authTag);
+
+  const before = stored.encryptedValue;
+  const updated = await owner.patch('/api/admin/integrations/' + created.body.data.id).send({
+    displayName: 'Brevo edited',
+    config: { senderName: 'Dispatch 2', senderEmail: 'dispatch@a.test' },
+    secrets: { apiKey: '' }
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(app.locals.testDb.integrationSecrets[0].encryptedValue, before);
+
+  const list = await owner.get('/api/admin/integrations');
+  assert.equal(list.status, 200);
+  assert.equal(JSON.stringify(list.body).includes('brevo-secret-key'), false);
+  assert.equal(JSON.stringify(list.body).includes('authTag'), false);
+});
+
+test('integration records are company scoped', async () => {
+  const app = await buildApp();
+  const ownerA = await login(app, 'owner-a@test.local');
+  const ownerB = await login(app, 'admin-b@test.local');
+  const created = await ownerA.post('/api/admin/integrations').send({ provider: 'CLICKATELL', config: { senderId: 'A' }, secrets: { apiKey: 'clickatell-a' } });
+  assert.equal(created.status, 201);
+  assert.equal((await ownerB.get('/api/admin/integrations/' + created.body.data.id)).status, 404);
+  assert.equal((await ownerB.patch('/api/admin/integrations/' + created.body.data.id).send({ config: { senderId: 'B' } })).status, 404);
+  assert.equal((await ownerB.post('/api/admin/integrations/' + created.body.data.id + '/test').send({})).status, 404);
+});
+
+test('integration providers resolve and create provider message logs', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const providerPayloads = [
+    ['BREVO', { senderEmail: 'dispatch@a.test' }, { apiKey: 'brevo-key' }, 'EMAIL'],
+    ['META_WHATSAPP_CLOUD', { phoneNumberId: 'phone-a' }, { accessToken: 'meta-token', webhookVerifyToken: 'verify-token' }, 'WHATSAPP'],
+    ['CLICKATELL', { senderId: 'FIELD' }, { apiKey: 'click-key' }, 'SMS'],
+    ['AFRICAS_TALKING', { environment: 'sandbox', senderId: 'FIELD' }, { username: 'fieldcore', apiKey: 'at-key' }, 'SMS'],
+    ['CLOUDFLARE_R2', { bucket: 'fieldcore-a', endpoint: 'https://r2.example.test' }, { accessKeyId: 'r2-key', secretAccessKey: 'r2-secret' }, 'STORAGE']
+  ];
+  for (const [provider, config, secrets] of providerPayloads) {
+    const response = await owner.post('/api/admin/integrations').send({ provider, config, secrets });
+    assert.equal(response.status, 201);
+    const testResponse = await owner.post('/api/admin/integrations/' + response.body.data.id + '/test').send({});
+    assert.equal(testResponse.status, 200);
+    assert.equal(testResponse.body.data.test.ok, true);
+  }
+
+  const { resolveActiveConnection, sendViaIntegration } = require('../src/services/integrations/integrationConnections.service');
+  assert.equal((await resolveActiveConnection('company-a', 'EMAIL')).provider, 'BREVO');
+  assert.equal((await resolveActiveConnection('company-a', 'WHATSAPP')).provider, 'META_WHATSAPP_CLOUD');
+  assert.equal((await resolveActiveConnection('company-a', 'SMS', 'CLICKATELL')).provider, 'CLICKATELL');
+  assert.equal((await resolveActiveConnection('company-a', 'SMS', 'AFRICAS_TALKING')).provider, 'AFRICAS_TALKING');
+  assert.equal((await resolveActiveConnection('company-a', 'STORAGE')).provider, 'CLOUDFLARE_R2');
+
+  const result = await sendViaIntegration({ companyId: 'company-a', channel: 'EMAIL', message: { to: 'client@example.test', subject: 'Hello', text: 'Hi' }, relatedType: 'Job', relatedId: 'job-a' });
+  assert.equal(result.status, 'SENT');
+  assert.equal(app.locals.testDb.messageLogs.length, 1);
+  assert.equal(app.locals.testDb.messageLogs[0].recipientMasked, 'cl***@example.test');
+  assert.equal(JSON.stringify(app.locals.testDb.messageLogs).includes('brevo-key'), false);
+});
+
+test('storage objects update monthly usage rollups', async () => {
+  const app = await buildApp();
+  const { recordStorageObject } = require('../src/services/integrations/storageUsage.service');
+  await recordStorageObject({
+    companyId: 'company-a',
+    bucket: 'fieldcore-a',
+    objectKey: 'companies/company-a/jobs/job-a/photo.jpg',
+    fileName: 'photo.jpg',
+    mimeType: 'image/jpeg',
+    sizeBytes: 1234,
+    jobId: 'job-a',
+    uploadedById: 'admin-a'
+  });
+  assert.equal(app.locals.testDb.storageObjects.length, 1);
+  assert.equal(app.locals.testDb.storageUsageMonthly.length, 1);
+  assert.equal(Number(app.locals.testDb.storageUsageMonthly[0].totalBytes), 1234);
+  assert.equal(app.locals.testDb.storageUsageMonthly[0].objectCount, 1);
+});
+
+test('R2 proof uploads create storage object and monthly usage records', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const integration = await owner.post('/api/admin/integrations').send({
+    provider: 'CLOUDFLARE_R2',
+    config: { bucket: 'fieldcore-a', endpoint: 'https://account.r2.cloudflarestorage.com', publicDomain: 'https://files.a.test', region: 'auto' },
+    secrets: { accessKeyId: 'r2-key', secretAccessKey: 'r2-secret' }
+  });
+  assert.equal(integration.status, 201);
+  const upload = await owner
+    .post('/api/jobs/job-a/proof-photos')
+    .field('category', 'BEFORE')
+    .attach('photo', Buffer.from('fake-image'), { filename: 'before.jpg', contentType: 'image/jpeg' });
+  assert.equal(upload.status, 201);
+  assert.equal(app.locals.testDb.storageObjects.length, 1);
+  assert.equal(app.locals.testDb.storageObjects[0].bucket, 'fieldcore-a');
+  assert.equal(app.locals.testDb.storageObjects[0].jobId, 'job-a');
+  assert.equal(app.locals.testDb.storageObjects[0].objectKey.includes('company-a'), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(app.locals.testDb.storageObjects[0], 'secretAccessKey'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(app.locals.testDb.storageObjects[0], 'accessKeyId'), false);
+  assert.equal(app.locals.testDb.storageUsageMonthly[0].objectCount, 1);
+});
+
+test('SMS notification channel sends through configured SMS integration only when enabled', async () => {
+  const previous = process.env.NOTIFICATION_CHANNELS;
+  process.env.NOTIFICATION_CHANNELS = 'SMS';
+  try {
+    const app = await buildApp();
+    const owner = await login(app, 'owner-a@test.local');
+    const integration = await owner.post('/api/admin/integrations').send({ provider: 'CLICKATELL', config: { senderId: 'FIELD' }, secrets: { apiKey: 'clickatell-secret' } });
+    assert.equal(integration.status, 201);
+    const quote = await owner.post('/api/quotes').send({ customerId: 'customer-a', serviceId: 'service-a', title: 'SMS quote', amount: 100 });
+    assert.equal(quote.status, 201);
+    const sent = await owner.post('/api/quotes/' + quote.body.data.id + '/send').send({});
+    assert.equal(sent.status, 200);
+    const smsLog = app.locals.testDb.notificationLogs.find((item) => item.channel === 'SMS' && item.relatedId === quote.body.data.id);
+    assert.equal(Boolean(smsLog), true);
+    assert.equal(smsLog.status, 'SENT');
+    const providerLog = app.locals.testDb.messageLogs.find((item) => item.channel === 'SMS' && item.provider === 'CLICKATELL');
+    assert.equal(Boolean(providerLog), true);
+    assert.equal(providerLog.status, 'SENT');
+    assert.equal(JSON.stringify(app.locals.testDb.messageLogs).includes('clickatell-secret'), false);
+  } finally {
+    process.env.NOTIFICATION_CHANNELS = previous;
+  }
+});
+
+test('duplicate provider save updates the existing integration connection', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const first = await owner.post('/api/admin/integrations').send({ provider: 'BREVO', config: { senderEmail: 'first@a.test' }, secrets: { apiKey: 'first-secret' } });
+  const second = await owner.post('/api/admin/integrations').send({ provider: 'BREVO', config: { senderEmail: 'second@a.test' }, secrets: { apiKey: 'second-secret' } });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.equal(first.body.data.id, second.body.data.id);
+  assert.equal(app.locals.testDb.integrationConnections.filter((item) => item.provider === 'BREVO').length, 1);
+  assert.equal(second.body.data.config.senderEmail, 'second@a.test');
+});
+
+test('R2 provider test performs upload and cleanup outside test mode', async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousFetch = global.fetch;
+  const calls = [];
+  process.env.NODE_ENV = 'production';
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url, method: options.method, headers: options.headers });
+    return { ok: true, status: options.method === 'DELETE' ? 204 : 200 };
+  };
+  try {
+    const { testCloudflareR2 } = require('../src/services/integrations/providers/cloudflareR2Storage.provider');
+    const result = await testCloudflareR2({
+      connection: { config: { bucket: 'fieldcore-a', endpoint: 'https://account.r2.cloudflarestorage.com', region: 'auto' } },
+      secrets: { accessKeyId: 'r2-key', secretAccessKey: 'r2-secret' }
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'ACTIVE');
+    assert.deepEqual(calls.map((call) => call.method), ['PUT', 'DELETE']);
+    assert.equal(calls.every((call) => String(call.url).includes('/fieldcore-a/fieldcore-r2-test-')), true);
+  } finally {
+    process.env.NODE_ENV = previousNodeEnv;
+    global.fetch = previousFetch;
+  }
+});
+
+test('production env requires a valid integration encryption master key', () => {
+  const { validateEnv } = require('../src/config/env');
+  const base = {
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgresql://example',
+    JWT_SECRET: 'this-is-a-strong-secret-with-more-than-32-chars',
+    APP_BASE_URL: 'https://fieldcore.test',
+    EMAIL_PROVIDER: 'console'
+  };
+  const missing = validateEnv(base);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.errors.some((item) => item.includes('INTEGRATION_SECRET_MASTER_KEY_BASE64 is required')), true);
+  const invalid = validateEnv({ ...base, INTEGRATION_SECRET_MASTER_KEY_BASE64: Buffer.from('short').toString('base64') });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.errors.some((item) => item.includes('32 bytes')), true);
+  const valid = validateEnv({ ...base, INTEGRATION_SECRET_MASTER_KEY_BASE64: Buffer.alloc(32, 7).toString('base64') });
+  assert.equal(valid.ok, true);
 });

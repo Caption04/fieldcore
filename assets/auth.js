@@ -40,6 +40,11 @@
 
   async function redirectIfSignedIn() {
     try {
+      const client = await api('/client/auth/session');
+      if (client) {
+        window.location.href = 'client-portal.html';
+        return;
+      }
       const user = await api('/auth/session');
       if (user) window.location.href = returnUrl();
     } catch (error) {}

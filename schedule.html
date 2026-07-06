@@ -6,7 +6,7 @@
     <title>FieldCore Schedule</title>
     <link rel="stylesheet" href="assets/app.css">
     <script defer src="assets/layout.js"></script>
-    <script defer src="assets/api.js"></script>
+    <script defer src="assets/api.js?v=worker-activity-notes-1"></script>
   </head>
   <body data-page="schedule" data-title="Schedule">
     <section class="page">
@@ -28,7 +28,7 @@
         </div>
         <div class="toolbar-actions">
           <button class="icon-button" type="button" data-schedule-prev title="Previous period">&lt;</button>
-          <button class="secondary-button" type="button" data-schedule-today>Today</button>
+          <button class="secondary-button schedule-period-button" type="button" data-schedule-today data-schedule-toolbar-range title="Jump to today">Today</button>
           <button class="icon-button" type="button" data-schedule-next title="Next period">&gt;</button>
           <button class="secondary-button" type="button" data-schedule-filter>Filter</button>
         </div>

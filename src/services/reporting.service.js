@@ -196,6 +196,7 @@ function enrichGroups(groups, names) {
 async function reportData(companyId, query = {}) {
   const filters = await validateFilters(companyId, query);
   const range = filters.range;
+  const now = new Date();
   const [customers, services, workers, jobsRaw, invoicesRaw, paymentsRaw, quotesRaw, bookingsRaw] = await Promise.all([
     prisma.customer.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' } }),
     prisma.service.findMany({ where: { companyId }, orderBy: { name: 'asc' } }),
@@ -203,7 +204,7 @@ async function reportData(companyId, query = {}) {
     prisma.job.findMany({ where: { companyId }, include: { customer: true, service: true, worker: { include: { user: { select: { id: true, name: true, email: true, role: true } } } }, proofPhotos: true, signature: true, completionLocation: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
     prisma.invoice.findMany({ where: { companyId }, include: { customer: true, service: true, payments: true, receipts: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
     prisma.payment.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' }, take: 1000 }),
-    prisma.quote.findMany({ where: { companyId }, include: { customer: true, service: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
+    prisma.quote.findMany({ where: { companyId, deletedAt: null }, include: { customer: true, service: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
     prisma.bookingRequest.findMany({ where: { companyId }, include: { service: true, customer: true }, orderBy: { createdAt: 'desc' }, take: 1000 })
   ]);
 
@@ -219,20 +220,22 @@ async function reportData(companyId, query = {}) {
   });
   const quotes = applyOptionalFilters(quotesRaw, filters);
   const bookings = applyOptionalFilters(bookingsRaw, filters);
+
   const paidPayments = payments.filter((payment) => payment.status === 'CONFIRMED' && inRange(paidDate(payment), range));
   const periodInvoices = invoices.filter((invoice) => inRange(invoiceDate(invoice), range));
   const unpaidInvoices = invoices.filter(isUnpaid);
-  const overdueInvoices = unpaidInvoices.filter((invoice) => invoice.dueDate && new Date(invoice.dueDate) < new Date());
+  const overdueInvoices = unpaidInvoices.filter((invoice) => invoice.dueDate && new Date(invoice.dueDate) < now);
   const periodJobs = jobs.filter((job) => inRange(jobDate(job), range));
   const completedJobs = jobs.filter((job) => job.status === 'COMPLETED' && inRange(job.completedAt || job.updatedAt || job.createdAt, range));
   const scheduledJobs = jobs.filter((job) => job.scheduledStart && inRange(job.scheduledStart, range));
   const periodQuotes = quotes.filter((quote) => inRange(quoteDate(quote), range));
   const periodBookings = bookings.filter((booking) => inRange(booking.createdAt, range));
+
   const paidRevenue = paidPayments.reduce((sum, payment) => sum + number(payment.amount), MONEY_ZERO);
   const paidInvoiceTotal = periodInvoices.filter((invoice) => invoice.status === 'PAID').reduce((sum, invoice) => sum + number(invoice.total || invoice.amount), MONEY_ZERO);
   const unpaidTotal = unpaidInvoices.reduce((sum, invoice) => sum + number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total), MONEY_ZERO);
   const overdueTotal = overdueInvoices.reduce((sum, invoice) => sum + number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total), MONEY_ZERO);
-  const sentQuotes = periodQuotes.filter((quote) => ['SENT', 'ACCEPTED', 'REJECTED', 'EXPIRED'].includes(quote.status));
+  const sentQuotes = periodQuotes.filter((quote) => ['SENT', 'ACCEPTED', 'REJECTED', 'EXPIRED'].includes(String(quote.status || '').toUpperCase()));
   const acceptedQuotes = periodQuotes.filter((quote) => quote.status === 'ACCEPTED');
   const rejectedQuotes = periodQuotes.filter((quote) => quote.status === 'REJECTED');
   const completedOrCancelled = periodJobs.filter((job) => ['COMPLETED', 'CANCELLED'].includes(job.status));
@@ -242,15 +245,35 @@ async function reportData(companyId, query = {}) {
     return start && end && end >= start ? (end - start) / (60 * 1000) : null;
   }).filter((value) => value != null);
 
+  const daysOverdue = (invoice) => {
+    const due = dateOrNull(invoice.dueDate);
+    if (!due || due >= now) return 0;
+    return Math.floor((now - due) / (24 * 60 * 60 * 1000));
+  };
+
+  const invoiceBalance = (invoice) => number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total);
+  const invoiceTotal = (invoice) => number(invoice.total || invoice.amount);
+  const invoiceForPayment = (payment) => invoicesRaw.find((item) => item.id === payment.invoiceId);
+  const jobForInvoice = (invoice) => jobsRaw.find((job) => job.id === invoice.jobId);
+
   const revenueByService = enrichGroups(groupSum(paidPayments, (payment) => {
-    const invoice = invoicesRaw.find((item) => item.id === payment.invoiceId);
+    const invoice = invoiceForPayment(payment);
     return invoice && invoice.serviceId;
   }, (payment) => number(payment.amount)), serviceNames);
 
   const revenueByCustomer = enrichGroups(groupSum(paidPayments, (payment) => {
-    const invoice = invoicesRaw.find((item) => item.id === payment.invoiceId);
+    const invoice = invoiceForPayment(payment);
     return invoice && invoice.customerId;
   }, (payment) => number(payment.amount)), customerNames);
+
+  const revenueByPaymentMethod = groupSum(paidPayments, (payment) => String(payment.method || 'OTHER').replace(/_/g, ' '), (payment) => number(payment.amount)).map((item) => ({
+    name: item.key,
+    total: item.total,
+    count: item.count
+  }));
+
+  const proofRequiredJobs = completedJobs.filter((job) => job.requiresProofPhotos || job.requiresBeforePhotos || job.requiresAfterPhotos || job.requiresSignature || job.requiresLocation);
+  const proofComplianceRate = proofRequiredJobs.length ? pct(proofRequiredJobs.filter(proofComplete).length, proofRequiredJobs.length) : 0;
 
   const workersReport = workers.map((worker) => {
     const assigned = jobs.filter((job) => job.workerId === worker.id && inRange(job.createdAt, range));
@@ -262,6 +285,11 @@ async function reportData(companyId, query = {}) {
       return start && end && end >= start ? (end - start) / (60 * 1000) : null;
     }).filter((value) => value != null);
     const proofRequired = completed.filter((job) => job.requiresProofPhotos || job.requiresBeforePhotos || job.requiresAfterPhotos || job.requiresSignature || job.requiresLocation);
+    const revenueHandled = paidPayments.reduce((sum, payment) => {
+      const invoice = invoiceForPayment(payment);
+      const job = invoice && jobForInvoice(invoice);
+      return job && job.workerId === worker.id ? sum + number(payment.amount) : sum;
+    }, 0);
     return {
       id: worker.id,
       name: workerName(worker),
@@ -272,7 +300,8 @@ async function reportData(companyId, query = {}) {
       inProgress: inProgress.length,
       completionRate: pct(completed.length, assigned.length),
       averageDurationMinutes: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : null,
-      proofComplianceRate: proofRequired.length ? pct(proofRequired.filter(proofComplete).length, proofRequired.length) : null
+      proofComplianceRate: proofRequired.length ? pct(proofRequired.filter(proofComplete).length, proofRequired.length) : null,
+      revenueHandled
     };
   }).sort((a, b) => b.completed - a.completed || b.assigned - a.assigned).slice(0, TOP_LIMIT);
 
@@ -280,11 +309,13 @@ async function reportData(companyId, query = {}) {
     const serviceJobs = periodJobs.filter((job) => job.serviceId === service.id);
     const serviceQuotes = periodQuotes.filter((quote) => quote.serviceId === service.id);
     const servicePayments = paidPayments.filter((payment) => {
-      const invoice = invoicesRaw.find((item) => item.id === payment.invoiceId);
+      const invoice = invoiceForPayment(payment);
       return invoice && invoice.serviceId === service.id;
     });
     const serviceInvoices = periodInvoices.filter((invoice) => invoice.serviceId === service.id);
     const serviceBookings = periodBookings.filter((booking) => booking.serviceId === service.id);
+    const eligibleQuotes = serviceQuotes.filter((quote) => quote.status !== 'DRAFT');
+    const serviceAcceptedQuotes = serviceQuotes.filter((quote) => quote.status === 'ACCEPTED');
     return {
       id: service.id,
       name: service.name,
@@ -293,23 +324,23 @@ async function reportData(companyId, query = {}) {
       completedJobs: serviceJobs.filter((job) => job.status === 'COMPLETED').length,
       revenue: servicePayments.reduce((sum, payment) => sum + number(payment.amount), 0),
       quotes: serviceQuotes.length,
-      acceptedQuotes: serviceQuotes.filter((quote) => quote.status === 'ACCEPTED').length,
-      quoteAcceptanceRate: pct(serviceQuotes.filter((quote) => quote.status === 'ACCEPTED').length, serviceQuotes.filter((quote) => quote.status !== 'DRAFT').length),
-      averageInvoiceValue: serviceInvoices.length ? serviceInvoices.reduce((sum, invoice) => sum + number(invoice.total || invoice.amount), 0) / serviceInvoices.length : 0
+      acceptedQuotes: serviceAcceptedQuotes.length,
+      quoteAcceptanceRate: pct(serviceAcceptedQuotes.length, eligibleQuotes.length),
+      averageInvoiceValue: serviceInvoices.length ? serviceInvoices.reduce((sum, invoice) => sum + invoiceTotal(invoice), 0) / serviceInvoices.length : 0
     };
   }).sort((a, b) => b.revenue - a.revenue || b.jobs - a.jobs || b.bookingRequests - a.bookingRequests).slice(0, TOP_LIMIT);
 
-  const customerReport = customers.map((customer) => {
+  const customerHistory = customers.map((customer) => {
     const customerInvoices = invoices.filter((invoice) => invoice.customerId === customer.id);
     const customerPayments = paidPayments.filter((payment) => customerInvoices.some((invoice) => invoice.id === payment.invoiceId));
     const customerJobs = jobs.filter((job) => job.customerId === customer.id);
     const customerQuotes = quotes.filter((quote) => quote.customerId === customer.id);
-    const customerBookings = bookings.filter((booking) => booking.customerId === customer.id);
+    const customerBookings = bookings.filter((booking) => booking.customerId === customer.id || booking.customerEmail === customer.email || booking.customerPhone === customer.phone);
     return {
       id: customer.id,
       name: customer.name,
       revenue: customerPayments.reduce((sum, payment) => sum + number(payment.amount), 0),
-      unpaidTotal: customerInvoices.filter(isUnpaid).reduce((sum, invoice) => sum + number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total), 0),
+      unpaidTotal: customerInvoices.filter(isUnpaid).reduce((sum, invoice) => sum + invoiceBalance(invoice), 0),
       invoices: customerInvoices.length,
       jobs: customerJobs.length,
       completedJobs: customerJobs.filter((job) => job.status === 'COMPLETED').length,
@@ -318,7 +349,33 @@ async function reportData(companyId, query = {}) {
       lastJobDate: customerJobs.map((job) => dateOrNull(jobDate(job))).filter(Boolean).sort((a, b) => b - a)[0] || null,
       lastPaymentDate: customerPayments.map((payment) => dateOrNull(paidDate(payment))).filter(Boolean).sort((a, b) => b - a)[0] || null
     };
-  }).sort((a, b) => b.revenue - a.revenue || b.unpaidTotal - a.unpaidTotal).slice(0, TOP_LIMIT);
+  }).sort((a, b) => b.revenue - a.revenue || b.unpaidTotal - a.unpaidTotal || b.jobs - a.jobs);
+
+  const topCustomers = customerHistory.slice(0, TOP_LIMIT);
+  const customersWithUnpaidInvoices = customerHistory.filter((customer) => customer.unpaidTotal > 0).slice(0, TOP_LIMIT);
+
+  const ageBuckets = [
+    { name: 'Current', count: 0, total: 0 },
+    { name: '1-7 days overdue', count: 0, total: 0 },
+    { name: '8-30 days overdue', count: 0, total: 0 },
+    { name: '31+ days overdue', count: 0, total: 0 }
+  ];
+  unpaidInvoices.forEach((invoice) => {
+    const overdueDays = daysOverdue(invoice);
+    const bucket = overdueDays <= 0 ? ageBuckets[0] : overdueDays <= 7 ? ageBuckets[1] : overdueDays <= 30 ? ageBuckets[2] : ageBuckets[3];
+    bucket.count += 1;
+    bucket.total += invoiceBalance(invoice);
+  });
+
+  const recentCompletedJobs = completedJobs.slice().sort((a, b) => new Date(b.completedAt || b.updatedAt || b.createdAt) - new Date(a.completedAt || a.updatedAt || a.createdAt)).slice(0, TOP_LIMIT).map((job) => ({
+    id: job.id,
+    title: job.title,
+    customerName: job.customer && job.customer.name || customerNames.get(job.customerId) || 'Customer',
+    serviceName: job.service && job.service.name || serviceNames.get(job.serviceId) || 'Service',
+    workerName: job.worker && workerName(job.worker) || workerNames.get(job.workerId) || 'Unassigned',
+    completedAt: job.completedAt || job.updatedAt || job.createdAt,
+    proofComplete: proofComplete(job)
+  }));
 
   return {
     filters: { period: range.label, startDate: range.start, endDate: range.end, serviceId: filters.serviceId || null, workerId: filters.workerId || null, customerId: filters.customerId || null },
@@ -330,9 +387,18 @@ async function reportData(companyId, query = {}) {
     overview: {
       totalRevenue: paidRevenue,
       unpaidInvoiceTotal: unpaidTotal,
+      overdueInvoiceTotal: overdueTotal,
       completedJobs: completedJobs.length,
+      scheduledJobs: scheduledJobs.length,
       quoteAcceptanceRate: pct(acceptedQuotes.length, sentQuotes.length),
-      topService: serviceReport[0] || null
+      newCustomers: customers.filter((customer) => inRange(customer.createdAt, range)).length,
+      repeatCustomers: customers.filter((customer) => jobs.filter((job) => job.customerId === customer.id).length > 1).length,
+      topService: serviceReport[0] || null,
+      urgentItems: {
+        overdueUnpaidInvoices: overdueInvoices.length,
+        inProgressJobs: jobs.filter((job) => ['ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD'].includes(job.status)).length,
+        rejectedQuotes: rejectedQuotes.length
+      }
     },
     revenue: {
       totalRevenue: paidRevenue,
@@ -340,10 +406,12 @@ async function reportData(companyId, query = {}) {
       paymentsReceivedTotal: paidRevenue,
       unpaidInvoiceTotal: unpaidTotal,
       overdueInvoiceTotal: overdueTotal,
-      averageInvoiceValue: periodInvoices.length ? periodInvoices.reduce((sum, invoice) => sum + number(invoice.total || invoice.amount), 0) / periodInvoices.length : 0,
+      averageInvoiceValue: periodInvoices.length ? periodInvoices.reduce((sum, invoice) => sum + invoiceTotal(invoice), 0) / periodInvoices.length : 0,
       byPeriod: timeline(paidPayments, paidDate, (payment) => number(payment.amount)),
       byService: revenueByService,
-      byCustomer: revenueByCustomer
+      byCustomer: revenueByCustomer,
+      byPaymentMethod: revenueByPaymentMethod,
+      topRevenueCustomers: revenueByCustomer
     },
     invoices: {
       unpaidCount: unpaidInvoices.length,
@@ -352,7 +420,18 @@ async function reportData(companyId, query = {}) {
       overdueTotal,
       partiallyPaidCount: unpaidInvoices.filter((invoice) => invoice.status === 'PARTIALLY_PAID').length,
       oldestUnpaidInvoice: unpaidInvoices.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0] || null,
-      topUnpaidCustomers: enrichGroups(groupSum(unpaidInvoices, (invoice) => invoice.customerId, (invoice) => number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total)), customerNames)
+      ageBuckets,
+      topUnpaidCustomers: enrichGroups(groupSum(unpaidInvoices, (invoice) => invoice.customerId, (invoice) => invoiceBalance(invoice)), customerNames),
+      details: unpaidInvoices.slice().sort((a, b) => daysOverdue(b) - daysOverdue(a)).slice(0, 50).map((invoice) => ({
+        id: invoice.id,
+        number: invoice.number,
+        customerName: invoice.customer && invoice.customer.name || customerNames.get(invoice.customerId) || 'Customer',
+        status: invoice.status,
+        total: invoiceTotal(invoice),
+        balanceDue: invoiceBalance(invoice),
+        dueDate: invoice.dueDate,
+        daysOverdue: daysOverdue(invoice)
+      }))
     },
     jobs: {
       completedCount: completedJobs.length,
@@ -361,9 +440,11 @@ async function reportData(companyId, query = {}) {
       inProgressCount: jobs.filter((job) => ['ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD'].includes(job.status)).length,
       completionRate: pct(completedJobs.length, completedOrCancelled.length),
       averageCompletionMinutes: completedDurations.length ? Math.round(completedDurations.reduce((sum, value) => sum + value, 0) / completedDurations.length) : null,
+      proofComplianceRate,
       byPeriod: timeline(completedJobs, (job) => job.completedAt || job.updatedAt || job.createdAt, () => 1),
       byService: enrichGroups(groupCount(periodJobs, (job) => job.serviceId), serviceNames),
-      byWorker: enrichGroups(groupCount(periodJobs, (job) => job.workerId), workerNames)
+      byWorker: enrichGroups(groupCount(periodJobs, (job) => job.workerId), workerNames),
+      recentCompletedJobs
     },
     workers: workersReport,
     services: serviceReport,
@@ -382,14 +463,21 @@ async function reportData(companyId, query = {}) {
         const eligible = serviceQuotes.filter((quote) => quote.status !== 'DRAFT');
         return { id: service.id, name: service.name, quotes: serviceQuotes.length, sent: serviceQuotes.filter((quote) => quote.status === 'SENT').length, accepted: serviceQuotes.filter((quote) => quote.status === 'ACCEPTED').length, rejected: serviceQuotes.filter((quote) => quote.status === 'REJECTED').length, acceptanceRate: pct(serviceQuotes.filter((quote) => quote.status === 'ACCEPTED').length, eligible.length) };
       }).filter((item) => item.quotes > 0),
-      byPeriod: timeline(periodQuotes, quoteDate, () => 1)
+      byPeriod: timeline(periodQuotes, quoteDate, () => 1),
+      funnel: [
+        { name: 'Created', value: periodQuotes.length },
+        { name: 'Sent', value: sentQuotes.length },
+        { name: 'Accepted', value: acceptedQuotes.length },
+        { name: 'Rejected', value: rejectedQuotes.length }
+      ]
     },
     customers: {
       totalCustomers: customers.length,
       newCustomers: customers.filter((customer) => inRange(customer.createdAt, range)).length,
       repeatCustomers: customers.filter((customer) => jobs.filter((job) => job.customerId === customer.id).length > 1).length,
-      topCustomers: customerReport,
-      customersWithUnpaidInvoices: customerReport.filter((customer) => customer.unpaidTotal > 0)
+      topCustomers,
+      customersWithUnpaidInvoices,
+      customerHistory
     }
   };
 }

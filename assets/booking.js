@@ -10,6 +10,11 @@
   const photoInput = document.querySelector('#photos');
   const photoName = document.querySelector('[data-booking-photo-name]');
   const photoPreview = document.querySelector('[data-booking-photo-preview]');
+  const MAX_PHOTOS = 5;
+  const MAX_PHOTO_SIZE = 5 * 1024 * 1024;
+  const PHOTO_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+  let photoPreviewUrls = [];
+  let photoPreviewRenderToken = 0;
   let clientSession = null;
   async function publicApi(path, options){
     const opts = options || {};
@@ -86,16 +91,54 @@
       if (serviceSelect) serviceSelect.required = false;
     }
   }
-  function updatePhotoPreview(){
+  function readPhotoAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not preview ' + file.name + '.'));
+      reader.readAsDataURL(file);
+    });
+  }
+  async function updatePhotoPreview(){
     if (!photoInput) return;
+    const renderToken = ++photoPreviewRenderToken;
     const files = Array.from(photoInput.files || []);
-    if (photoName) photoName.textContent = files.length ? files.map((file) => file.name).join(', ') : 'No files selected';
+    const error = validatePhotoFiles(files);
+    if (error) {
+      photoInput.value = '';
+      clearPhotoPreviewUrls();
+      if (photoName) photoName.textContent = 'No files selected';
+      if (photoPreview) {
+        photoPreview.classList.remove('has-proof-previews', 'has-booking-photo-previews');
+        photoPreview.innerHTML = '<strong>No photos selected</strong>';
+      }
+      setMessage(error, false);
+      return;
+    }
+    if (message) message.hidden = true;
+    if (photoName) photoName.textContent = files.length ? files.length + ' photo' + (files.length === 1 ? '' : 's') + ' selected' : 'No files selected';
     if (!photoPreview) return;
+    clearPhotoPreviewUrls();
     if (!files.length) {
+      photoPreview.classList.remove('has-proof-previews', 'has-booking-photo-previews');
       photoPreview.innerHTML = '<strong>No photos selected</strong>';
       return;
     }
-    photoPreview.innerHTML = files.slice(0, 5).map((file) => '<span>' + escapeHtml(file.name) + '</span>').join('');
+    photoPreview.classList.add('has-proof-previews', 'has-booking-photo-previews');
+    photoPreview.innerHTML = '<strong>Loading previews...</strong>';
+    try {
+      const previews = await Promise.all(files.map((file) => readPhotoAsDataUrl(file)));
+      if (renderToken !== photoPreviewRenderToken) return;
+      photoPreview.innerHTML = previews.map((url, index) => {
+        const file = files[index];
+        return '<div class="proof-preview-item booking-photo-preview-item"><img src="' + escapeHtml(url) + '" alt="' + escapeHtml(file.name) + '"><span>' + escapeHtml(file.name) + '</span><button class="booking-photo-remove" type="button" data-remove-photo-index="' + index + '">Remove</button></div>';
+      }).join('');
+    } catch (error) {
+      if (renderToken !== photoPreviewRenderToken) return;
+      photoPreview.classList.remove('has-proof-previews', 'has-booking-photo-previews');
+      photoPreview.innerHTML = '<strong>No photos selected</strong>';
+      setMessage(error.message, false);
+    }
   }
   function showConfirmation(data){
     if (!confirmation) return;
@@ -108,12 +151,35 @@
   function renderTracking(data){
     if (!trackingResult) return;
     const preferred = [formatDate(data.preferredDate), data.preferredTimeWindow && String(data.preferredTimeWindow).replace(/_/g, ' ')].filter(Boolean).join(' / ');
-    trackingResult.innerHTML = '<div><span>Status</span><strong>' + escapeHtml(data.status) + '</strong></div><div><span>Service</span><strong>' + escapeHtml(data.service && data.service.name || '-') + '</strong></div><div><span>Submitted</span><strong>' + escapeHtml(formatDate(data.submittedAt)) + '</strong></div><div><span>Preferred</span><strong>' + escapeHtml(preferred || '-') + '</strong></div><p>' + escapeHtml(data.nextStep || '') + '</p>';
+    trackingResult.innerHTML = '<div class="tracking-result-grid"><div class="tracking-detail"><span>Status</span><strong>' + escapeHtml(data.status) + '</strong></div><div class="tracking-detail"><span>Service</span><strong>' + escapeHtml(data.service && data.service.name || '-') + '</strong></div><div class="tracking-detail"><span>Submitted</span><strong>' + escapeHtml(formatDate(data.submittedAt)) + '</strong></div><div class="tracking-detail"><span>Preferred</span><strong>' + escapeHtml(preferred || '-') + '</strong></div></div><p class="tracking-next-step">' + escapeHtml(data.nextStep || '') + '</p>';
     trackingResult.hidden = false;
+  }
+  function clearPhotoPreviewUrls(){
+    photoPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+    photoPreviewUrls = [];
+  }
+  function setPhotoFiles(files){
+    if (!photoInput) return;
+    const transfer = new DataTransfer();
+    files.forEach((file) => transfer.items.add(file));
+    photoInput.files = transfer.files;
+  }
+  function validatePhotoFiles(files){
+    if (files.length > MAX_PHOTOS) return 'Upload up to ' + MAX_PHOTOS + ' photos.';
+    const invalidType = files.find((file) => !PHOTO_TYPES.includes(file.type));
+    if (invalidType) return 'Only PNG, JPG, and WEBP photos are allowed.';
+    const oversized = files.find((file) => file.size > MAX_PHOTO_SIZE);
+    if (oversized) return oversized.name + ' is larger than 5MB.';
+    return '';
   }
   if (form) form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (message) { message.hidden = true; message.classList.remove('green'); }
+    const photoError = validatePhotoFiles(Array.from(photoInput && photoInput.files || []));
+    if (photoError) {
+      setMessage(photoError, false);
+      return;
+    }
     const body = new FormData(form);
     Array.from(body.entries()).forEach(([key, value]) => {
       if (value === '') body.delete(key);
@@ -147,9 +213,15 @@
     }
   });
   if (photoInput) photoInput.addEventListener('change', updatePhotoPreview);
+  if (photoPreview) photoPreview.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-remove-photo-index]');
+    if (!button) return;
+    const index = Number(button.dataset.removePhotoIndex);
+    const files = Array.from(photoInput && photoInput.files || []);
+    files.splice(index, 1);
+    setPhotoFiles(files);
+    updatePhotoPreview();
+  });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadPublicBooking);
   else loadPublicBooking();
 })();
-
-
-

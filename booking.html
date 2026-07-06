@@ -4,7 +4,7 @@
     <meta name=viewport content=width=device-width,initial-scale=1.0>
     <title>Book Service</title>
     <link rel=stylesheet href=assets/app.css>
-    <script defer src=assets/booking.js></script>
+    <script defer src=assets/booking.js?v=photo-preview-fix-1></script>
   </head>
   <body class=public-booking-page>
     <main class=public-booking>
@@ -19,13 +19,13 @@
           <div class=field><label for=customerPhone>Phone</label><input id=customerPhone name=customerPhone maxlength=60></div>
           <div class=field><label for=serviceId>Service</label><select id=serviceId name=serviceId data-service-select required><option value=>Loading services...</option></select></div>
           <div class=field><label for=serviceName>Other Service</label><input id=serviceName name=serviceName maxlength=160></div>
-          <div class=field span-2><label for=address>Address</label><input id=address name=address required maxlength=300></div>
+          <div class=field><label for=address>Address</label><input id=address name=address required maxlength=300></div>
           <div class=field><label for=city>City / Suburb</label><input id=city name=city maxlength=120></div>
           <div class=field><label for=propertyType>Property Type</label><select id=propertyType name=propertyType><option value=>Select type</option><option>House</option><option>Apartment</option><option>Office</option><option>Shop</option><option>Industrial site</option><option>Other</option></select></div>
-          <div class=field span-2><label for=accessNotes>Access Notes</label><textarea id=accessNotes name=accessNotes maxlength=1000></textarea></div>
+          <div class=field><label for=accessNotes>Access Notes</label><textarea id=accessNotes name=accessNotes maxlength=1000></textarea></div>
           <div class=field><label for=preferredDate>Preferred Date</label><input id=preferredDate name=preferredDate type=date></div>
           <div class=field><label for=preferredTimeWindow>Preferred Time</label><select id=preferredTimeWindow name=preferredTimeWindow><option value=ANY_TIME>Any time</option><option value=MORNING>Morning</option><option value=AFTERNOON>Afternoon</option><option value=EVENING>Evening</option></select></div>
-          <div class=field span-2><label for=photos>Photos</label><div class=evidence-upload><div class=proof-selected-preview data-booking-photo-preview><strong>No photos selected</strong></div><div class=logo-upload-controls><div class=file-upload-row><label class=file-upload-button for=photos>Choose photos</label><span class=file-name data-booking-photo-name>No files selected</span></div><input id=photos name=photos type=file accept="image/png,image/jpeg,image/webp" multiple hidden><small>Upload up to 5 PNG, JPG, or WEBP photos. Max 5MB each.</small></div></div></div>
+          <div class=field><label for=photos>Photos</label><div class=evidence-upload><div class=proof-selected-preview data-booking-photo-preview><strong>No photos selected</strong></div><div class=logo-upload-controls><div class=file-upload-row><label class=file-upload-button for=photos>Choose photos</label><span class=file-name data-booking-photo-name>No files selected</span></div><input id=photos name=photos type=file accept="image/png,image/jpeg,image/webp" multiple hidden><small>Upload up to 5 PNG, JPG, or WEBP photos. Max 5MB each.</small></div></div></div>
           <div class=field span-2><label for=notes>Issue Description</label><textarea id=notes name=notes maxlength=2000></textarea></div>
           <div class=fc-form-actions span-2><button class=primary-button type=submit>Submit Request</button></div>
           <p class=fc-form-error span-2 data-booking-message hidden></p>

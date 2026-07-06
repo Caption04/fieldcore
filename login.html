@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In | FieldCore</title>
     <link rel="stylesheet" href="assets/app.css">
-    <script defer src="assets/auth.js"></script>
+    <script defer src="assets/auth.js?v=session-boundary-guard-1"></script>
   </head>
   <body class="auth-page" data-auth-page="login">
     <main class="public-booking auth-wrap">
@@ -28,13 +28,16 @@
             <input id="password" name="password" type="password" autocomplete="current-password" required value="FieldCoreDemo2026!">
           </div>
           <div class="auth-demo span-2">
-            <strong>Demo accounts</strong>
+            <strong>Staff demo accounts</strong>
             <span>Owner: owner@fieldcore.test</span>
             <span>Admin: admin@fieldcore.test</span>
             <span>Worker: worker@fieldcore.test</span>
+            <strong>Client portal</strong>
+            <span>Client: client@fieldcore.test</span>
           </div>
           <div class="fc-form-actions span-2">
             <a class="secondary-button" href="register.html">Create Account</a>
+            <a class="secondary-button" href="client-login.html">Client Portal</a>
             <button class="primary-button" type="submit">Sign In</button>
           </div>
           <p class="fc-form-error span-2" data-auth-message hidden></p>

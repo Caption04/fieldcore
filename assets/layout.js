@@ -7,7 +7,7 @@
     ['schedule', 'Schedule', 'schedule.html', 'schedule'],
     ['map', 'Map', 'map.html', 'map'],
     ['booking-requests', 'Booking Requests', 'booking-requests.html', 'inbox'],
-    ['customers', 'Customers', 'customers.html', 'users'],
+    ['customers', 'People/Members', 'customers.html', 'users'],
     ['quotes', 'Quotes', 'quotes.html', 'file'],
     ['invoices', 'Invoices', 'invoices.html', 'receipt'],
     ['reports', 'Reports', 'reports.html', 'chart'],

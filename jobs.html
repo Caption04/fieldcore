@@ -6,7 +6,7 @@
     <title>FieldCore Jobs</title>
     <link rel="stylesheet" href="assets/app.css">
     <script defer src="assets/layout.js"></script>
-    <script defer src="assets/api.js"></script>
+    <script defer src="assets/api.js?v=worker-activity-notes-1"></script>
   </head>
   <body data-page="jobs" data-title="Jobs">
     <section class="page">
@@ -20,13 +20,13 @@
       <section class="stats">
         <article class="card stat-card">
           <div class="stat-label">
-            Open Jobs
+            Unscheduled
           </div>
           <div class="stat-value">
             0
           </div>
           <div class="trend">
-            Empty
+            Not on calendar
           </div>
         </article>
         <article class="card stat-card">
@@ -42,13 +42,13 @@
         </article>
         <article class="card stat-card">
           <div class="stat-label">
-            Completed
+            Scheduled
           </div>
           <div class="stat-value">
             0
           </div>
           <div class="trend">
-            Empty
+            On calendar
           </div>
         </article>
         <article class="card stat-card">
@@ -65,11 +65,12 @@
       </section>
       <div class="toolbar">
         <div class="tabs">
-          <button class="tab active" type="button">All Jobs</button>
-          <button class="tab" type="button">Scheduled</button>
-          <button class="tab" type="button">In Progress</button>
-          <button class="tab" type="button">On Hold</button>
-          <button class="tab" type="button">Completed</button>
+          <button class="tab active" type="button" data-status-filter="all">All Jobs</button>
+          <button class="tab" type="button" data-status-filter="NEW">Unscheduled</button>
+          <button class="tab" type="button" data-status-filter="SCHEDULED">Scheduled</button>
+          <button class="tab" type="button" data-status-filter="IN_PROGRESS">In Progress</button>
+          <button class="tab" type="button" data-status-filter="ON_HOLD">On Hold</button>
+          <button class="tab" type="button" data-status-filter="COMPLETED">Completed</button>
         </div>
         <div class="toolbar-actions">
           <span class="api-status" data-api-status>Connecting...</span>

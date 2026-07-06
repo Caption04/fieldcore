@@ -137,55 +137,97 @@ enum ClientAccountStatus {
   INVITED
 }
 
+enum IntegrationProvider {
+  BREVO
+  META_WHATSAPP_CLOUD
+  CLICKATELL
+  AFRICAS_TALKING
+  CLOUDFLARE_R2
+}
+
+enum IntegrationChannel {
+  EMAIL
+  WHATSAPP
+  SMS
+  STORAGE
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONFIGURED
+  ACTIVE
+  ERROR
+  DISABLED
+}
+
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  CANCELLED
+}
+
 model Company {
-  id                   String                 @id @default(cuid())
-  name                 String
-  legalName            String?
-  tradingName          String?
-  registrationNumber   String?
-  taxNumber            String?
-  address              String?
-  phone                String?
-  email                String?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  users                User[]
-  customers            Customer[]
-  workers              WorkerProfile[]
-  workerRoles          WorkerRole[]
-  services             Service[]
-  jobs                 Job[]
-  scheduleItems        ScheduleItem[]
-  quotes               Quote[]
-  invoices             Invoice[]
-  quoteLineItems       QuoteLineItem[]
-  invoiceLineItems     InvoiceLineItem[]
-  payments             Payment[]
-  receipts             Receipt[]
-  invoiceCounter       CompanyInvoiceCounter?
-  workerLocations      WorkerLocation[]
-  jobProofPhotos       JobProofPhoto[]
+  id                     String                     @id @default(cuid())
+  name                   String
+  legalName              String?
+  tradingName            String?
+  registrationNumber     String?
+  taxNumber              String?
+  address                String?
+  phone                  String?
+  email                  String?
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+  users                  User[]
+  customers              Customer[]
+  workers                WorkerProfile[]
+  workerRoles            WorkerRole[]
+  services               Service[]
+  jobs                   Job[]
+  scheduleItems          ScheduleItem[]
+  quotes                 Quote[]
+  invoices               Invoice[]
+  quoteLineItems         QuoteLineItem[]
+  invoiceLineItems       InvoiceLineItem[]
+  payments               Payment[]
+  receipts               Receipt[]
+  invoiceCounter         CompanyInvoiceCounter?
+  workerLocations        WorkerLocation[]
+  jobProofPhotos         JobProofPhoto[]
   jobCompletionLocations JobCompletionLocation[]
-  jobSignatures        JobSignature[]
-  auditLogs            AuditLog[]
-  jobActivities        JobActivity[]
-  quoteStatusHistory   QuoteStatusHistory[]
-  invoiceStatusHistory InvoiceStatusHistory[]
-  branding             CompanyBranding?
-  schedulingSettings   CompanySchedulingSettings?
-  workerAvailabilities WorkerAvailability[]
-  roleAvailabilities   RoleAvailability[]
-  workerTimeOff        WorkerTimeOff[]
-  scheduleConflicts    ScheduleConflict[]
-  recurringJobRules    RecurringJobRule[]
-  bookingRequests      BookingRequest[]
-  bookingRequestPhotos BookingRequestPhoto[]
-  clientAccounts       ClientAccount[]
-  customerProperties   CustomerProperty[]
-  notificationLogs     NotificationLog[]
-  securitySettings     CompanySecuritySettings?
-  subscription         CompanySubscription?
-  saasBillingEvents    SaaSBillingEvent[]
+  jobSignatures          JobSignature[]
+  auditLogs              AuditLog[]
+  jobActivities          JobActivity[]
+  quoteStatusHistory     QuoteStatusHistory[]
+  invoiceStatusHistory   InvoiceStatusHistory[]
+  branding               CompanyBranding?
+  schedulingSettings     CompanySchedulingSettings?
+  workerAvailabilities   WorkerAvailability[]
+  roleAvailabilities     RoleAvailability[]
+  workerTimeOff          WorkerTimeOff[]
+  scheduleConflicts      ScheduleConflict[]
+  recurringJobRules      RecurringJobRule[]
+  bookingRequests        BookingRequest[]
+  bookingRequestPhotos   BookingRequestPhoto[]
+  clientAccounts         ClientAccount[]
+  customerProperties     CustomerProperty[]
+  notificationLogs       NotificationLog[]
+  integrationConnections IntegrationConnection[]
+  integrationSecrets     IntegrationSecret[]
+  messageLogs            MessageLog[]
+  storageObjects         StorageObject[]
+  storageUsageMonthly    StorageUsageMonthly[]
+  securitySettings       CompanySecuritySettings?
+  subscription           CompanySubscription?
+  saasBillingEvents      SaaSBillingEvent[]
 }
 
 model SaaSPlan {
@@ -269,48 +311,51 @@ model CompanyBranding {
 }
 
 model User {
-  id                   String                 @id @default(cuid())
-  companyId            String
-  email                String                 @unique
-  name                 String
-  phone                String?
-  passwordHash         String
-  role                 Role                   @default(WORKER)
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  worker               WorkerProfile?
-  auditLogs            AuditLog[]
-  quoteStatusChanges   QuoteStatusHistory[]
-  invoiceStatusChanges InvoiceStatusHistory[]
-  paymentsCreated      Payment[]
-  jobActivities        JobActivity[]
-  proofPhotosUploaded  JobProofPhoto[]       @relation("JobProofPhotoUploadedBy")
-  signaturesCaptured   JobSignature[]        @relation("JobSignatureCapturedBy")
-  jobsCompleted        Job[]                 @relation("JobCompletedBy")
+  id                          String                  @id @default(cuid())
+  companyId                   String
+  email                       String                  @unique
+  name                        String
+  phone                       String?
+  passwordHash                String
+  role                        Role                    @default(WORKER)
+  createdAt                   DateTime                @default(now())
+  updatedAt                   DateTime                @updatedAt
+  company                     Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker                      WorkerProfile?
+  auditLogs                   AuditLog[]
+  quoteStatusChanges          QuoteStatusHistory[]
+  invoiceStatusChanges        InvoiceStatusHistory[]
+  paymentsCreated             Payment[]
+  jobActivities               JobActivity[]
+  proofPhotosUploaded         JobProofPhoto[]         @relation("JobProofPhotoUploadedBy")
+  signaturesCaptured          JobSignature[]          @relation("JobSignatureCapturedBy")
+  jobsCompleted               Job[]                   @relation("JobCompletedBy")
   completionLocationsCaptured JobCompletionLocation[]
+  storageObjectsUploaded      StorageObject[]
 
   @@index([companyId])
 }
 
 model Customer {
-  id        String    @id @default(cuid())
-  companyId String
-  name      String
-  email     String?
-  phone     String?
-  address   String?
-  notes     String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  jobs      Job[]
-  quotes    Quote[]
-  invoices  Invoice[]
+  id                String             @id @default(cuid())
+  companyId         String
+  name              String
+  email             String?
+  phone             String?
+  address           String?
+  notes             String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobs              Job[]
+  quotes            Quote[]
+  invoices          Invoice[]
   recurringJobRules RecurringJobRule[]
-  bookingRequests BookingRequest[]
-  clientAccounts ClientAccount[]
-  properties CustomerProperty[]
+  bookingRequests   BookingRequest[]
+  clientAccounts    ClientAccount[]
+  properties        CustomerProperty[]
+  messageLogs       MessageLog[]
+  storageObjects    StorageObject[]
 
   @@index([companyId])
 }
@@ -375,18 +420,18 @@ model WorkerRole {
 }
 
 model WorkerProfile {
-  id              String           @id @default(cuid())
+  id              String               @id @default(cuid())
   companyId       String
-  userId          String           @unique
+  userId          String               @unique
   roleId          String?
   title           String?
   phone           String?
-  active          Boolean          @default(true)
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role            WorkerRole?      @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  active          Boolean              @default(true)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role            WorkerRole?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
   jobs            Job[]
   jobActivities   JobActivity[]
   proofPhotos     JobProofPhoto[]
@@ -402,35 +447,35 @@ model WorkerProfile {
 }
 
 model Service {
-  id               String            @id @default(cuid())
-  companyId        String
-  name             String
-  description      String?
-  price            Decimal           @default(0) @db.Decimal(12, 2)
-  active           Boolean           @default(true)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  company          Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  jobs             Job[]
-  quotes           Quote[]
-  invoices         Invoice[]
-  quoteLineItems   QuoteLineItem[]
-  invoiceLineItems InvoiceLineItem[]
+  id                String             @id @default(cuid())
+  companyId         String
+  name              String
+  description       String?
+  price             Decimal            @default(0) @db.Decimal(12, 2)
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobs              Job[]
+  quotes            Quote[]
+  invoices          Invoice[]
+  quoteLineItems    QuoteLineItem[]
+  invoiceLineItems  InvoiceLineItem[]
   recurringJobRules RecurringJobRule[]
-  bookingRequests BookingRequest[]
+  bookingRequests   BookingRequest[]
 
   @@index([companyId])
 }
 
 model Job {
-  id                   String         @id @default(cuid())
+  id                   String                 @id @default(cuid())
   companyId            String
   customerId           String
   serviceId            String?
   workerId             String?
   title                String
   description          String?
-  status               JobStatus      @default(NEW)
+  status               JobStatus              @default(NEW)
   scheduledStart       DateTime?
   scheduledEnd         DateTime?
   durationMinutes      Int?
@@ -445,22 +490,22 @@ model Job {
   completedById        String?
   completionNotes      String?
   customerSignatureUrl String?
-  requiresProofPhotos  Boolean        @default(false)
-  minimumProofPhotos   Int            @default(0)
-  requiresBeforePhotos Boolean        @default(false)
-  requiresAfterPhotos  Boolean        @default(false)
-  requiresSignature    Boolean        @default(false)
-  requiresLocation     Boolean        @default(false)
+  requiresProofPhotos  Boolean                @default(false)
+  minimumProofPhotos   Int                    @default(0)
+  requiresBeforePhotos Boolean                @default(false)
+  requiresAfterPhotos  Boolean                @default(false)
+  requiresSignature    Boolean                @default(false)
+  requiresLocation     Boolean                @default(false)
   proofCompletedAt     DateTime?
   signatureCompletedAt DateTime?
-  total                Decimal        @default(0) @db.Decimal(12, 2)
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
-  company              Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  customer             Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  service              Service?       @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  worker               WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  completedBy          User?          @relation("JobCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  total                Decimal                @default(0) @db.Decimal(12, 2)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer             Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service              Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  worker               WorkerProfile?         @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  completedBy          User?                  @relation("JobCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
   scheduleItems        ScheduleItem[]
   quotes               Quote[]
   invoices             Invoice[]
@@ -470,11 +515,12 @@ model Job {
   scheduleConflicts    ScheduleConflict[]
   activities           JobActivity[]
   bookingRequest       BookingRequest?
+  messageLogs          MessageLog[]
+  storageObjects       StorageObject[]
 
   @@index([companyId])
   @@index([companyId, customerId])
 }
-
 
 model JobActivity {
   id        String          @id @default(cuid())
@@ -520,35 +566,38 @@ model ScheduleItem {
 }
 
 model Quote {
-  id            String               @id @default(cuid())
-  companyId     String
-  customerId    String
-  serviceId     String?
-  jobId         String?
-  title         String
-  description   String?
-  status        QuoteStatus          @default(DRAFT)
-  amount        Decimal              @default(0) @db.Decimal(12, 2)
-  subtotal      Decimal              @default(0) @db.Decimal(12, 2)
-  discountTotal Decimal              @default(0) @db.Decimal(12, 2)
-  taxTotal      Decimal              @default(0) @db.Decimal(12, 2)
-  total         Decimal              @default(0) @db.Decimal(12, 2)
-  validUntil    DateTime?
-  sentAt        DateTime?
-  acceptedAt    DateTime?
-  rejectedAt    DateTime?
-  expiredAt     DateTime?
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
-  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  customer      Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  service       Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  job           Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
-  invoices      Invoice[]
-  lineItems     QuoteLineItem[]
-  statusHistory QuoteStatusHistory[]
+  id              String               @id @default(cuid())
+  companyId       String
+  customerId      String
+  serviceId       String?
+  jobId           String?
+  title           String
+  description     String?
+  status          QuoteStatus          @default(DRAFT)
+  amount          Decimal              @default(0) @db.Decimal(12, 2)
+  subtotal        Decimal              @default(0) @db.Decimal(12, 2)
+  discountTotal   Decimal              @default(0) @db.Decimal(12, 2)
+  taxTotal        Decimal              @default(0) @db.Decimal(12, 2)
+  total           Decimal              @default(0) @db.Decimal(12, 2)
+  validUntil      DateTime?
+  sentAt          DateTime?
+  acceptedAt      DateTime?
+  rejectedAt      DateTime?
+  expiredAt       DateTime?
+  deletedAt       DateTime?
+  deleteExpiresAt DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer        Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service         Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  job             Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  invoices        Invoice[]
+  lineItems       QuoteLineItem[]
+  statusHistory   QuoteStatusHistory[]
 
   @@index([companyId])
+  @@index([companyId, deletedAt])
 }
 
 model QuoteLineItem {
@@ -629,6 +678,7 @@ model Invoice {
   receipts      Receipt[]
   lineItems     InvoiceLineItem[]
   statusHistory InvoiceStatusHistory[]
+  messageLogs   MessageLog[]
 
   @@unique([companyId, number])
   @@index([companyId])
@@ -725,24 +775,24 @@ model WorkerLocation {
 }
 
 model CompanySchedulingSettings {
-  id                       String   @id @default(cuid())
-  companyId                String   @unique
-  defaultJobDurationMinutes Int     @default(60)
-  defaultTravelBufferMinutes Int    @default(0)
-  allowOverbooking          Boolean @default(false)
-  defaultJobStatus          JobStatus @default(NEW)
-  requireCompletionNotes    Boolean @default(true)
-  requireProofPhotos        Boolean @default(true)
-  requireBeforePhotos       Boolean @default(false)
-  requireAfterPhotos        Boolean @default(false)
-  requireLocation           Boolean @default(false)
-  autoCreateScheduleOnAssign Boolean @default(false)
-  timezone                 String   @default("UTC")
-  workingDayStart          String   @default("08:00")
-  workingDayEnd            String   @default("17:00")
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
-  company                  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                         String    @id @default(cuid())
+  companyId                  String    @unique
+  defaultJobDurationMinutes  Int       @default(60)
+  defaultTravelBufferMinutes Int       @default(0)
+  allowOverbooking           Boolean   @default(false)
+  defaultJobStatus           JobStatus @default(NEW)
+  requireCompletionNotes     Boolean   @default(true)
+  requireProofPhotos         Boolean   @default(true)
+  requireBeforePhotos        Boolean   @default(false)
+  requireAfterPhotos         Boolean   @default(false)
+  requireLocation            Boolean   @default(false)
+  autoCreateScheduleOnAssign Boolean   @default(false)
+  timezone                   String    @default("UTC")
+  workingDayStart            String    @default("08:00")
+  workingDayEnd              String    @default("17:00")
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+  company                    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
 }
@@ -843,35 +893,37 @@ model RecurringJobRule {
 }
 
 model BookingRequest {
-  id                  String               @id @default(cuid())
-  companyId           String
-  customerId          String?
-  clientAccountId     String?
-  serviceId           String?
-  status              BookingRequestStatus @default(NEW)
-  publicReference     String?              @unique
-  customerName        String
-  customerEmail       String?
-  customerPhone       String?
-  address             String?
-  city                String?
-  propertyType        String?
-  accessNotes         String?
-  serviceName         String?
-  preferredDate       DateTime?
-  preferredTimeWindow String?
-  notes               String?
-  source              String?
+  id                    String                @id @default(cuid())
+  companyId             String
+  customerId            String?
+  clientAccountId       String?
+  serviceId             String?
+  status                BookingRequestStatus  @default(NEW)
+  publicReference       String?               @unique
+  customerName          String
+  customerEmail         String?
+  customerPhone         String?
+  address               String?
+  city                  String?
+  propertyType          String?
+  accessNotes           String?
+  serviceName           String?
+  preferredDate         DateTime?
+  preferredTimeWindow   String?
+  notes                 String?
+  source                String?
   customerFacingMessage String?
-  convertedJobId      String?              @unique
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  company             Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  customer            Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  clientAccount       ClientAccount?       @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
-  service             Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  convertedJob        Job?                 @relation(fields: [convertedJobId], references: [id], onDelete: SetNull)
-  photos              BookingRequestPhoto[]
+  convertedJobId        String?               @unique
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  company               Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer              Customer?             @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  clientAccount         ClientAccount?        @relation(fields: [clientAccountId], references: [id], onDelete: SetNull)
+  service               Service?              @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  convertedJob          Job?                  @relation(fields: [convertedJobId], references: [id], onDelete: SetNull)
+  photos                BookingRequestPhoto[]
+  messageLogs           MessageLog[]
+  storageObjects        StorageObject[]
 
   @@index([companyId, status, createdAt])
   @@index([companyId, publicReference])
@@ -896,8 +948,9 @@ model BookingRequestPhoto {
 
   @@index([companyId, bookingRequestId])
 }
+
 model JobProofPhoto {
-  id           String         @id @default(cuid())
+  id           String             @id @default(cuid())
   companyId    String
   jobId        String
   workerId     String?
@@ -908,11 +961,11 @@ model JobProofPhoto {
   sizeBytes    Int
   category     ProofPhotoCategory @default(GENERAL)
   caption      String?
-  createdAt    DateTime       @default(now())
-  company      Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job          Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  worker       WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  uploadedBy   User?          @relation("JobProofPhotoUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime           @default(now())
+  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job          Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker       WorkerProfile?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  uploadedBy   User?              @relation("JobProofPhotoUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, jobId])
   @@index([companyId, workerId])
@@ -920,19 +973,19 @@ model JobProofPhoto {
 }
 
 model JobCompletionLocation {
-  id         String   @id @default(cuid())
-  companyId  String
-  jobId      String   @unique
+  id           String   @id @default(cuid())
+  companyId    String
+  jobId        String   @unique
   capturedById String?
-  latitude   Float
-  longitude  Float
-  accuracy   Float?
-  source     String?
-  capturedAt DateTime @default(now())
-  createdAt  DateTime @default(now())
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job        Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  capturedBy User?    @relation(fields: [capturedById], references: [id], onDelete: SetNull)
+  latitude     Float
+  longitude    Float
+  accuracy     Float?
+  source       String?
+  capturedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  capturedBy   User?    @relation(fields: [capturedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, jobId])
   @@index([companyId, capturedById])
@@ -972,7 +1025,7 @@ model AuditLog {
 }
 
 model NotificationLog {
-  id          String    @id @default(cuid())
+  id          String       @id @default(cuid())
   companyId   String
   eventType   String
   channel     String
@@ -982,13 +1035,160 @@ model NotificationLog {
   error       String?
   relatedType String?
   relatedId   String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime     @default(now())
   sentAt      DateTime?
-  company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  messageLogs MessageLog[]
 
   @@index([companyId, createdAt])
   @@index([companyId, eventType, relatedType, relatedId])
   @@index([companyId, recipient])
+}
+
+model IntegrationConnection {
+  id             String              @id @default(cuid())
+  companyId      String
+  provider       IntegrationProvider
+  channel        IntegrationChannel
+  displayName    String?
+  status         IntegrationStatus   @default(DISCONNECTED)
+  config         Json?
+  lastTestedAt   DateTime?
+  lastTestStatus String?
+  lastTestError  String?
+  lastUsedAt     DateTime?
+  createdById    String?
+  updatedById    String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secrets        IntegrationSecret[]
+  messageLogs    MessageLog[]
+  storageObjects StorageObject[]
+
+  @@unique([companyId, provider])
+  @@index([companyId])
+  @@index([provider])
+  @@index([channel])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model IntegrationSecret {
+  id                      String                @id @default(cuid())
+  companyId               String
+  integrationConnectionId String
+  keyName                 String
+  encryptedValue          String
+  iv                      String
+  authTag                 String
+  keyVersion              String
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  company                 Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integrationConnection   IntegrationConnection @relation(fields: [integrationConnectionId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationConnectionId, keyName])
+  @@index([companyId])
+  @@index([integrationConnectionId])
+}
+
+model MessageLog {
+  id                      String                 @id @default(cuid())
+  companyId               String
+  integrationConnectionId String?
+  provider                IntegrationProvider
+  channel                 IntegrationChannel
+  direction               MessageDirection       @default(OUTBOUND)
+  status                  MessageStatus          @default(QUEUED)
+  bookingId               String?
+  jobId                   String?
+  customerId              String?
+  invoiceId               String?
+  notificationLogId       String?
+  recipientMasked         String?
+  recipientHash           String?
+  senderMasked            String?
+  providerMessageId       String?
+  providerStatus          String?
+  errorCode               String?
+  errorMessageSanitized   String?
+  templateName            String?
+  metadata                Json?
+  queuedAt                DateTime?
+  sentAt                  DateTime?
+  deliveredAt             DateTime?
+  failedAt                DateTime?
+  readAt                  DateTime?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  company                 Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integrationConnection   IntegrationConnection? @relation(fields: [integrationConnectionId], references: [id], onDelete: SetNull)
+  booking                 BookingRequest?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  job                     Job?                   @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  customer                Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  invoice                 Invoice?               @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  notificationLog         NotificationLog?       @relation(fields: [notificationLogId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([provider])
+  @@index([channel])
+  @@index([status])
+  @@index([bookingId])
+  @@index([jobId])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+model StorageObject {
+  id                      String                 @id @default(cuid())
+  companyId               String
+  integrationConnectionId String?
+  provider                IntegrationProvider    @default(CLOUDFLARE_R2)
+  bucket                  String
+  objectKey               String
+  safeUrl                 String?
+  fileName                String?
+  mimeType                String?
+  sizeBytes               BigInt
+  checksum                String?
+  bookingId               String?
+  jobId                   String?
+  customerId              String?
+  uploadedById            String?
+  createdAt               DateTime               @default(now())
+  deletedAt               DateTime?
+  company                 Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integrationConnection   IntegrationConnection? @relation(fields: [integrationConnectionId], references: [id], onDelete: SetNull)
+  booking                 BookingRequest?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  job                     Job?                   @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  customer                Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  uploadedBy              User?                  @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([provider])
+  @@index([bucket])
+  @@index([jobId])
+  @@index([bookingId])
+  @@index([customerId])
+  @@index([createdAt])
+}
+
+model StorageUsageMonthly {
+  id          String              @id @default(cuid())
+  companyId   String
+  provider    IntegrationProvider @default(CLOUDFLARE_R2)
+  year        Int
+  month       Int
+  totalBytes  BigInt              @default(0)
+  objectCount Int                 @default(0)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  company     Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, provider, year, month])
+  @@index([companyId])
+  @@index([provider])
 }
 
 model CompanySecuritySettings {
@@ -1004,4 +1204,3 @@ model CompanySecuritySettings {
 
   @@index([companyId])
 }
-
