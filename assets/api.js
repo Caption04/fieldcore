@@ -3,7 +3,7 @@
   const page = document.body.dataset.page || 'dashboard';
   const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, reports: null, activeReportTab: 'overview' };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], assets: [], serviceContracts: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, reports: null, activeReportTab: 'overview' };
 
   const tableConfigs = {
     customers: {
@@ -19,10 +19,22 @@
       row: (item) => [item.user && item.user.name || 'Worker', [item.user && item.user.email, item.phone].filter(Boolean).join(' / ') || '-', item.title || '-', badge(item.active === false ? 'INACTIVE' : 'ACTIVE'), formatDate(item.createdAt)]
     },
     jobs: {
-      columns: ['Job', 'Customer', 'Worker', 'Status', 'Scheduled', 'Total', 'Actions'],
+      columns: ['Job', 'Customer', 'Worker', 'Status', 'SLA', 'Assets', 'Scheduled', 'Total', 'Actions'],
       emptyTitle: 'No jobs yet',
       emptyText: 'Create your first job to populate operations.',
-      row: (item) => [item.title, item.customer && item.customer.name || '-', item.worker && item.worker.user && item.worker.user.name || '-', badge(item.status), formatDate(item.scheduledStart), money.format(Number(item.total || 0)), rowActions('jobs', item)]
+      row: (item) => [item.title, item.customer && item.customer.name || '-', item.worker && item.worker.user && item.worker.user.name || '-', badge(item.status), item.slaStatus ? badge(item.slaStatus) : '-', (item.jobAssets || item.assets || []).length || '-', formatDate(item.scheduledStart), money.format(Number(item.total || 0)), rowActions('jobs', item)]
+    },
+    assets: {
+      columns: ['Asset', 'Customer', 'Type', 'Tag', 'Warranty', 'Status'],
+      emptyTitle: 'No assets yet',
+      emptyText: 'Create serviceable equipment records for customer sites.',
+      row: (item) => [item.name, item.customer && item.customer.name || '-', item.assetType || '-', item.assetTag || item.serialNumber || '-', item.warrantyStatus || warrantyLabel(item), badge(item.status)]
+    },
+    'service-contracts': {
+      columns: ['Contract', 'Customer', 'Status', 'SLA', 'Assets', 'Due Work'],
+      emptyTitle: 'No contracts yet',
+      emptyText: 'Create maintenance contracts and recurring service entitlements.',
+      row: (item) => [item.contractNumber || item.name, item.customer && item.customer.name || '-', badge(item.status), [item.responseSlaHours && item.responseSlaHours + 'h response', item.completionSlaHours && item.completionSlaHours + 'h complete'].filter(Boolean).join(' / ') || '-', (item.assets || []).length || 0, (item.upcomingDueWork || []).length || 0]
     },
     quotes: {
       columns: ['Quote', 'Customer', 'Status', 'Total', 'Valid Until', 'Actions'],
@@ -273,6 +285,11 @@
     return `<span class="badge ${color}">${escapeHtml(String(value || '-').replace(/_/g, ' '))}</span>`;
   }
 
+  function warrantyLabel(item) {
+    if (!item || !item.warrantyEndAt) return '-';
+    return new Date(item.warrantyEndAt) >= new Date() ? 'Active until ' + formatDate(item.warrantyEndAt) : 'Expired';
+  }
+
 
   function rowActionItems(resource, item) {
     if (isWorker()) {
@@ -486,6 +503,9 @@
   }
 
   function eventTone(item) {
+    const sla = String(item.job && item.job.slaStatus || '').toLowerCase();
+    if (sla.includes('breach')) return 'red';
+    if (sla.includes('risk')) return 'orange';
     const status = String(item.conflictStatus || item.status || '').toLowerCase();
     if (status.includes('conflict') || status.includes('override')) return 'orange';
     if (status.includes('complete')) return 'green';
@@ -1109,6 +1129,8 @@
       setStats([{ label: 'Total Workers', value: data.length, trend: 'Team members' }, { label: 'Active Workers', value: active, trend: 'Available for work' }, { label: 'Inactive Workers', value: data.length - active, trend: 'Not active' }, { label: 'With Titles', value: titled, trend: 'Role assigned' }]);
     }
     if (resource === 'jobs') setStats(countStatuses(data, ['NEW', 'IN_PROGRESS', 'SCHEDULED', 'ON_HOLD'], ['Not on calendar', 'Active work', 'On calendar', 'Paused or held']));
+    if (resource === 'assets') setStats([{ label: 'Active', value: data.filter((item) => item.status === 'ACTIVE').length, trend: 'Assets in service' }, { label: 'Under Repair', value: data.filter((item) => item.status === 'UNDER_REPAIR').length, trend: 'Needs attention' }, { label: 'Retired', value: data.filter((item) => item.status === 'RETIRED').length, trend: 'Out of service' }, { label: 'Warranty', value: data.filter((item) => item.warrantyEndAt).length, trend: 'Tracked warranties' }]);
+    if (resource === 'service-contracts') setStats([{ label: 'Active', value: data.filter((item) => item.status === 'ACTIVE').length, trend: 'Live agreements' }, { label: 'Suspended', value: data.filter((item) => item.status === 'SUSPENDED').length, trend: 'Paused service' }, { label: 'Draft', value: data.filter((item) => item.status === 'DRAFT').length, trend: 'In setup' }, { label: 'Due Work', value: data.reduce((sum, item) => sum + ((item.upcomingDueWork || []).length), 0), trend: 'Upcoming visits' }]);
     if (resource === 'quotes') setStats(countStatuses(data, ['SENT', 'ACCEPTED', 'SENT', 'DRAFT'], ['Open quotes', 'Accepted', 'Sent', 'Drafts']));
     if (resource === 'invoices') setStats(countStatuses(data, ['ALL', 'PAID', 'SENT', 'OVERDUE', 'DRAFT'], ['Total invoices', 'Paid', 'Unpaid', 'Overdue', 'Drafts']));
     if (resource === 'booking-requests') updateBookingRequestStats(data);
@@ -1178,9 +1200,13 @@
 
   async function preloadLookups() {
     const requests = [];
-    if (['jobs', 'quotes', 'invoices', 'schedule'].includes(page)) requests.push(api('/customers').then((d) => state.customers = d).catch(() => []));
-    if (['jobs', 'quotes', 'invoices'].includes(page)) requests.push(api('/services').then((d) => state.services = d).catch(() => []));
+    if (['jobs', 'quotes', 'invoices', 'schedule', 'assets', 'service-contracts'].includes(page)) requests.push(api('/customers').then((d) => state.customers = d).catch(() => []));
+    if (['jobs', 'quotes', 'invoices', 'assets', 'service-contracts'].includes(page)) requests.push(api('/services').then((d) => state.services = d).catch(() => []));
     if (['jobs', 'schedule'].includes(page)) requests.push(api('/workers').then((d) => state.workers = d).catch(() => []));
+    if (page === 'jobs' && !isWorker()) {
+      requests.push(api('/assets').then((d) => state.assets = d).catch(() => []));
+      requests.push(api('/service-contracts').then((d) => state.serviceContracts = d).catch(() => []));
+    }
     if (['quotes', 'invoices', 'schedule'].includes(page)) requests.push(api('/jobs').then((d) => state.jobs = d).catch(() => []));
     if (['jobs', 'schedule'].includes(page) && !isWorker()) requests.push(api('/company/scheduling-settings').then((d) => state.scheduleSettings = d).catch(() => null));
     await Promise.all(requests);
@@ -1227,11 +1253,12 @@
     field('title', 'Title', 'text', 'required') +
     select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) +
     select('serviceId', 'Service', optionList(state.services, 'No service'), false) +
+    select('contractId', 'Service Contract', optionList(state.serviceContracts, 'No contract'), false) +
+    select('assetId', 'Primary Asset', optionList(state.assets, 'No linked asset'), false) +
     select('workerId', 'Worker', optionList(state.workers, 'No worker'), false) +
     field('scheduledStart', 'Scheduled Start', 'datetime-local') +
     field('durationMinutes', 'Duration Minutes', 'number', 'min="1" value="' + escapeHtml(duration) + '"') +
     field('travelBufferMinutes', 'Travel Buffer Minutes', 'number', 'min="0" value="' + escapeHtml(buffer) + '"') +
-    field('total', 'Total', 'number', 'min="0" step="0.01"') +
     formSection('Completion Requirements') +
     checkboxField('requiresProofPhotos', 'Require proof of work photo', settings.requireProofPhotos !== false) +
     checkboxField('requiresBeforePhotos', 'Require before photo', Boolean(settings.requireBeforePhotos)) +
@@ -1240,6 +1267,8 @@
     checkboxField('requiresLocation', 'Require completion location', Boolean(settings.requireLocation))
       };
     }
+    if (resource === 'assets') return { title: 'New Asset', action: '/assets', fields: field('name', 'Asset Name', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Default Service', optionList(state.services, 'No service'), false) + field('assetType', 'Asset Type', 'text', 'required') + field('assetTag', 'Asset Tag') + field('serialNumber', 'Serial Number') + field('manufacturer', 'Manufacturer') + field('modelNumber', 'Model Number') + field('locationLabel', 'Location') + field('warrantyEndAt', 'Warranty Ends', 'date') };
+    if (resource === 'service-contracts') return { title: 'New Service Contract', action: '/service-contracts', fields: field('contractNumber', 'Contract Number', 'text', 'required') + field('name', 'Contract Name', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + field('startDate', 'Start Date', 'date', 'required') + field('endDate', 'End Date', 'date') + field('currency', 'Currency', 'text', 'maxlength="3" value="USD"') + field('contractValue', 'Contract Value', 'number', 'min="0" step="0.01"') + field('responseSlaHours', 'Response SLA Hours', 'number', 'min="1"') + field('completionSlaHours', 'Completion SLA Hours', 'number', 'min="1"') + field('includedVisits', 'Included Visits', 'number', 'min="0"') };
     if (resource === 'quotes') return { title: 'New Quote', action: '/quotes', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('validUntil', 'Valid Until', 'date') };
     if (resource === 'invoices') return { title: 'New Invoice', action: '/invoices', fields: field('number', 'Number') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('jobId', 'Job', optionList(state.jobs, 'No job'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('dueDate', 'Due Date', 'date') };
   }
@@ -1265,6 +1294,8 @@
       Object.keys(body).forEach((key) => { if (body[key] === '') delete body[key]; });
       if (config.action === '/jobs') {
         const form = event.currentTarget;
+        body.primaryAssetId = body.assetId;
+        delete body.assetId;
         body.requiresProofPhotos = Boolean(form.elements.requiresProofPhotos && form.elements.requiresProofPhotos.checked);
         body.requiresBeforePhotos = Boolean(form.elements.requiresBeforePhotos && form.elements.requiresBeforePhotos.checked);
         body.requiresAfterPhotos = Boolean(form.elements.requiresAfterPhotos && form.elements.requiresAfterPhotos.checked);
@@ -1304,7 +1335,12 @@
               }
             }
 
-            await api(config.action, { method: 'POST', body: JSON.stringify(body) });
+            const primaryAssetId = body.primaryAssetId;
+            delete body.primaryAssetId;
+            const saved = await api(config.action, { method: 'POST', body: JSON.stringify(body) });
+            if (config.action === '/jobs' && primaryAssetId && saved && saved.id) {
+              await api('/jobs/' + encodeURIComponent(saved.id) + '/assets', { method: 'POST', body: JSON.stringify({ assetId: primaryAssetId, primaryAsset: true }) });
+            }
             closeModal();
             await load();
             showToast('Saved.', true);
@@ -1621,6 +1657,12 @@
 
   function detailItem(label, value) {
     return `<div class="job-detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '-')}</strong></div>`;
+  }
+
+  function renderJobAssetSummary(job) {
+    const assets = (job.jobAssets || job.assets || []).map((item) => item.asset || item).filter(Boolean);
+    if (!assets.length) return '<section class="job-evidence-section"><h4>Linked Assets</h4><div class="empty-state"><div><strong>No linked assets.</strong></div></div></section>';
+    return '<section class="job-evidence-section"><h4>Linked Assets</h4><div class="list">' + assets.map((asset) => '<div class="list-item"><span class="initials">' + escapeHtml(String(asset.name || 'AS').slice(0, 2).toUpperCase()) + '</span><div><strong>' + escapeHtml(asset.name || 'Asset') + '</strong><small>' + escapeHtml([asset.assetType, asset.assetTag || asset.serialNumber, asset.locationLabel].filter(Boolean).join(' - ')) + '</small></div>' + badge(asset.status || 'ACTIVE') + '</div>').join('') + '</div></section>';
   }
 
   function lifecycleActions(job) {
@@ -1959,7 +2001,7 @@
     const noteForm = editableEvidence ? '<form class="job-note-form"><div class="field"><label for="fc-job-note">Worker Activity Note</label><textarea id="fc-job-note" name="note" maxlength="2000"></textarea></div><div class="fc-form-actions"><button class="secondary-button compact" type="submit">Add Note</button></div><p class="fc-form-error" hidden></p></form>' : '';
     const modal = document.createElement('div');
     modal.className = 'fc-modal';
-    modal.innerHTML = `<div class="fc-dialog job-detail-dialog ${editableEvidence ? 'worker-job-detail-dialog' : 'admin-job-detail-dialog'}"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}${detailItem('Completed', formatDateTime(job.completedAt))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}${lifecycle}${renderCompletionRequirements(job)}${renderProofPhotos(job, { editable: editableEvidence })}${renderSignature(job, { editable: editableEvidence })}${renderCompletionLocation(job, { editable: editableEvidence })}${noteForm}<section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
+    modal.innerHTML = `<div class="fc-dialog job-detail-dialog ${editableEvidence ? 'worker-job-detail-dialog' : 'admin-job-detail-dialog'}"><div class="panel-head"><div><h3>${escapeHtml(job.title || 'Job')}</h3><p class="modal-copy">${escapeHtml(job.customer && job.customer.name || 'No customer')}</p></div><button class="icon-button" type="button" data-close>&times;</button></div><div class="job-detail-grid">${detailItem('Customer', job.customer && job.customer.name)}${detailItem('Worker', job.worker && job.worker.user && job.worker.user.name)}${detailItem('Contract', job.contract && (job.contract.contractNumber || job.contract.name))}${detailItem('Scheduled', formatDateTime(job.scheduledStart))}${detailItem('Response Due', formatDateTime(job.responseDueAt))}${detailItem('Completion Due', formatDateTime(job.completionDueAt))}${detailItem('Completed', formatDateTime(job.completedAt))}<div class="job-detail-item"><span>Status</span>${badge(job.status)}</div><div class="job-detail-item"><span>SLA</span>${badge(job.slaStatus || 'NOT_APPLICABLE')}</div></div>${job.completionNotes ? `<div class="job-notes"><span>Completion Notes</span><p>${escapeHtml(job.completionNotes)}</p></div>` : ''}${lifecycle}${renderJobAssetSummary(job)}${renderCompletionRequirements(job)}${renderProofPhotos(job, { editable: editableEvidence })}${renderSignature(job, { editable: editableEvidence })}${renderCompletionLocation(job, { editable: editableEvidence })}${noteForm}<section class="job-activity-section"><h4>Activity Timeline</h4>${renderActivityTimeline(activity || [])}</section></div>`;
     modal.addEventListener('click', async (event) => {
       if (event.target === modal || event.target.closest('[data-close]')) return closeModal();
       const proofDelete = event.target.closest('[data-proof-delete]');

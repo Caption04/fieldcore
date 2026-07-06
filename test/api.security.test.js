@@ -41,6 +41,10 @@ function matchesWhere(record, where = {}) {
     }
 
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+      if (!(key in record)) {
+        return Object.entries(expected).every(([compoundKey, compoundValue]) => record[compoundKey] === compoundValue);
+      }
+
       if ('not' in expected) {
         if (expected.not === null) return actual !== null && actual !== undefined;
         return actual !== expected.not;
@@ -81,9 +85,12 @@ function createMockPrisma(seed) {
   function customerById(customerId) { return db.customers.find((item) => item.id === customerId); }
   function clientAccountById(accountId) { return db.clientAccounts.find((item) => item.id === accountId); }
   function serviceById(serviceId) { return db.services.find((item) => item.id === serviceId); }
+  function propertyById(propertyId) { return db.customerProperties.find((item) => item.id === propertyId); }
   function workerById(workerId) { return db.workerProfiles.find((item) => item.id === workerId); }
   function roleById(roleId) { return db.workerRoles.find((item) => item.id === roleId); }
   function jobById(jobId) { return db.jobs.find((item) => item.id === jobId); }
+  function assetById(assetId) { return db.assets.find((item) => item.id === assetId); }
+  function contractById(contractId) { return db.serviceContracts.find((item) => item.id === contractId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
   function quoteLineItems(quoteId) { return db.quoteLineItems.filter((item) => item.quoteId === quoteId); }
   function invoiceLineItems(invoiceId) { return db.invoiceLineItems.filter((item) => item.invoiceId === invoiceId); }
@@ -123,11 +130,58 @@ function createMockPrisma(seed) {
     const result = { ...job };
     if (include && include.customer) result.customer = clone(customerById(job.customerId));
     if (include && include.service) result.service = clone(serviceById(job.serviceId));
+    if (include && include.contract) result.contract = clone(contractById(job.contractId)) || null;
     if (include && include.worker) result.worker = enrichWorker(workerById(job.workerId), include.worker.include);
+    if (include && include.jobAssets) result.jobAssets = db.jobAssets.filter((item) => item.jobId === job.id).map((item) => enrichJobAsset(item, include.jobAssets.include));
     if (include && include.proofPhotos) result.proofPhotos = db.jobProofPhotos.filter((photo) => photo.jobId === job.id);
     if (include && include.signature) result.signature = db.jobSignatures.find((signature) => signature.jobId === job.id) || null;
     if (include && include.completionLocation) result.completionLocation = clone(completionLocationByJobId(job.id)) || null;
     if (include && include.completedBy) result.completedBy = include.completedBy.select ? applySelect(userById(job.completedById), include.completedBy.select) : clone(userById(job.completedById));
+    return result;
+  }
+
+  function enrichAsset(asset, include) {
+    if (!asset) return null;
+    const result = { ...asset };
+    if (include && include.customer) result.customer = clone(customerById(asset.customerId));
+    if (include && include.property) result.property = clone(propertyById(asset.propertyId)) || null;
+    if (include && include.service) result.service = clone(serviceById(asset.serviceId)) || null;
+    if (include && include.jobAssets) result.jobAssets = db.jobAssets.filter((item) => item.assetId === asset.id).map((item) => enrichJobAsset(item, include.jobAssets.include));
+    if (include && include.serviceContractAssets) result.serviceContractAssets = db.serviceContractAssets.filter((item) => item.assetId === asset.id).map((item) => enrichServiceContractAsset(item, include.serviceContractAssets.include));
+    return result;
+  }
+
+  function enrichJobAsset(link, include) {
+    if (!link) return null;
+    const result = { ...link };
+    if (include && include.asset) result.asset = enrichAsset(assetById(link.assetId), include.asset.include);
+    if (include && include.job) result.job = enrichJob(jobById(link.jobId), include.job.include);
+    return result;
+  }
+
+  function enrichServiceContract(contract, include) {
+    if (!contract) return null;
+    const result = { ...contract };
+    if (include && include.customer) result.customer = clone(customerById(contract.customerId));
+    if (include && include.property) result.property = clone(propertyById(contract.propertyId)) || null;
+    if (include && include.assets) result.assets = db.serviceContractAssets.filter((item) => item.contractId === contract.id).map((item) => enrichServiceContractAsset(item, include.assets.include));
+    if (include && include.serviceLines) result.serviceLines = db.contractServiceLines.filter((item) => item.contractId === contract.id).map((item) => enrichContractServiceLine(item, include.serviceLines.include));
+    if (include && include.jobs) result.jobs = db.jobs.filter((item) => item.contractId === contract.id).map((item) => enrichJob(item, include.jobs.include));
+    return result;
+  }
+
+  function enrichServiceContractAsset(link, include) {
+    if (!link) return null;
+    const result = { ...link };
+    if (include && include.asset) result.asset = enrichAsset(assetById(link.assetId), include.asset.include);
+    if (include && include.contract) result.contract = clone(contractById(link.contractId));
+    return result;
+  }
+
+  function enrichContractServiceLine(line, include) {
+    if (!line) return null;
+    const result = { ...line };
+    if (include && include.service) result.service = clone(serviceById(line.serviceId)) || null;
     return result;
   }
 
@@ -372,6 +426,11 @@ function createMockPrisma(seed) {
       return result;
     }),
     auditLog: makeModel('auditLogs'),
+    asset: makeModel('assets', enrichAsset),
+    jobAsset: makeModel('jobAssets', enrichJobAsset),
+    serviceContract: makeModel('serviceContracts', enrichServiceContract),
+    serviceContractAsset: makeModel('serviceContractAssets', enrichServiceContractAsset),
+    contractServiceLine: makeModel('contractServiceLines', enrichContractServiceLine),
     $queryRaw: () => Promise.resolve([{ ok: 1 }]),
     $transaction: (fn) => fn(createMockPrisma(db)),
     $disconnect: () => Promise.resolve()
@@ -461,6 +520,11 @@ async function buildApp() {
     bookingRequests: [],
     clientAccounts: [],
     customerProperties: [],
+    assets: [],
+    jobAssets: [],
+    serviceContracts: [],
+    serviceContractAssets: [],
+    contractServiceLines: [],
     notificationLogs: [],
     integrationConnections: [],
     integrationSecrets: [],
@@ -2168,6 +2232,104 @@ test('client dashboard summarizes only client owned records', async () => {
   assert.equal(Object.prototype.hasOwnProperty.call(dashboard.body.data.stats, 'revenueMonthToDate'), false);
   assert.equal(JSON.stringify(dashboard.body).includes('invoice-other-company'), false);
   assertNoPasswordHash(dashboard.body);
+});
+
+test('admin can manage assets contracts due work and link jobs safely', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const asset = await owner.post('/api/assets').send({
+    customerId: 'customer-a',
+    serviceId: 'service-a',
+    name: 'Rooftop HVAC Unit',
+    assetType: 'HVAC',
+    assetTag: 'HVAC-001',
+    serialNumber: 'SN-001',
+    warrantyEndAt: '2027-01-01T00:00:00.000Z'
+  });
+  assert.equal(asset.status, 201);
+  assert.equal(asset.body.data.warrantyStatus, 'ACTIVE');
+
+  const contract = await owner.post('/api/service-contracts').send({
+    customerId: 'customer-a',
+    contractNumber: 'SLA-001',
+    name: 'Quarterly Maintenance',
+    status: 'ACTIVE',
+    startDate: '2026-01-01T00:00:00.000Z',
+    responseSlaHours: 4,
+    completionSlaHours: 24,
+    includedVisits: 4
+  });
+  assert.equal(contract.status, 201);
+  assert.equal((await owner.post('/api/service-contracts/' + contract.body.data.id + '/assets').send({ assetId: asset.body.data.id })).status, 201);
+
+  const line = await owner.post('/api/service-contracts/' + contract.body.data.id + '/service-lines').send({
+    serviceId: 'service-a',
+    title: 'Quarterly HVAC PM',
+    frequency: 'QUARTERLY',
+    interval: 1,
+    nextDueAt: '2026-01-15T09:00:00.000Z',
+    defaultDurationMinutes: 90,
+    requiresProofPhotos: true,
+    requiresSignature: true,
+    requiresLocation: true
+  });
+  assert.equal(line.status, 201);
+
+  const preview = await owner.post('/api/service-contracts/' + contract.body.data.id + '/preview-jobs').send({ through: '2026-02-01T00:00:00.000Z' });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.data.dueWork.length, 1);
+
+  const generated = await owner.post('/api/service-contracts/' + contract.body.data.id + '/generate-due-jobs').send({ through: '2026-02-01T00:00:00.000Z' });
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.data.generated[0].contractId, contract.body.data.id);
+  assert.equal(generated.body.data.generated[0].slaStatus, 'ON_TRACK');
+
+  const patchedJob = await owner.patch('/api/jobs/job-a').send({ contractId: contract.body.data.id, slaStatus: 'ON_TRACK', responseDueAt: '2026-01-02T04:00:00.000Z' });
+  assert.equal(patchedJob.status, 200);
+  assert.equal(patchedJob.body.data.contractId, contract.body.data.id);
+
+  const jobAsset = await owner.post('/api/jobs/job-a/assets').send({ assetId: asset.body.data.id, primaryAsset: true, notes: 'Serviced during visit' });
+  assert.equal(jobAsset.status, 201);
+  assert.equal(jobAsset.body.data.asset.id, asset.body.data.id);
+
+  const history = await owner.get('/api/assets/' + asset.body.data.id + '/history');
+  assert.equal(history.status, 200);
+  assert.equal(history.body.data.jobs.some((job) => job.id === 'job-a'), true);
+  assert.equal(app.locals.testDb.auditLogs.some((log) => log.entity === 'Asset' && log.action === 'CREATE'), true);
+});
+
+test('asset contract access is scoped for workers clients and other companies', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const ownerB = await login(app, 'admin-b@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const client = await loginClient(app);
+  const asset = await owner.post('/api/assets').send({ customerId: 'customer-a', name: 'Generator A', assetType: 'Generator' });
+  assert.equal(asset.status, 201);
+  const hiddenAsset = await ownerB.post('/api/assets').send({ customerId: 'customer-b', name: 'Generator B', assetType: 'Generator' });
+  assert.equal(hiddenAsset.status, 201);
+  const contract = await owner.post('/api/service-contracts').send({ customerId: 'customer-a', contractNumber: 'SLA-CLIENT', name: 'Client Visible Contract', status: 'ACTIVE', startDate: '2026-01-01T00:00:00.000Z' });
+  assert.equal(contract.status, 201);
+  assert.equal((await owner.post('/api/service-contracts/' + contract.body.data.id + '/assets').send({ assetId: asset.body.data.id })).status, 201);
+  assert.equal((await owner.post('/api/jobs/job-a/assets').send({ assetId: asset.body.data.id })).status, 201);
+
+  const workerAssets = await worker.get('/api/worker/jobs/job-a/assets');
+  assert.equal(workerAssets.status, 200);
+  assert.equal(workerAssets.body.data.length, 1);
+  assert.equal((await worker.get('/api/assets')).status, 403);
+  assert.equal((await worker.get('/api/worker/jobs/job-other-worker/assets')).status, 404);
+
+  const clientAssets = await client.get('/api/client/assets');
+  assert.equal(clientAssets.status, 200);
+  assert.equal(clientAssets.body.data.some((item) => item.id === asset.body.data.id), true);
+  assert.equal(clientAssets.body.data.some((item) => item.id === hiddenAsset.body.data.id), false);
+  assert.equal((await client.get('/api/client/assets/' + hiddenAsset.body.data.id)).status, 404);
+  const clientContracts = await client.get('/api/client/service-contracts');
+  assert.equal(clientContracts.status, 200);
+  assert.equal(clientContracts.body.data.some((item) => item.id === contract.body.data.id), true);
+
+  assert.equal((await ownerB.get('/api/assets/' + asset.body.data.id)).status, 404);
+  assert.equal((await owner.post('/api/jobs/job-a/assets').send({ assetId: hiddenAsset.body.data.id })).status, 404);
 });
 
 test('admin integrations encrypt secrets and return safe metadata only', async () => {

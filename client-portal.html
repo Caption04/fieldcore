@@ -5,7 +5,7 @@
     <meta name=viewport content=width=device-width,initial-scale=1.0>
     <title>Client Portal</title>
     <link rel=stylesheet href=assets/app.css>
-    <script defer src=assets/client-portal.js?v=property-summary-fix-1></script>
+    <script defer src=assets/client-portal.js?v=assets-contracts-1></script>
   </head>
   <body class=client-portal-page data-client-page=portal>
     <div class=client-shell>
@@ -16,6 +16,8 @@
           <button class=client-nav-item data-client-tab-button=requests type=button><span>My Requests</span><small>Book and track</small></button>
           <button class=client-nav-item data-client-tab-button=quotes type=button><span>My Quotes</span><small>Review work</small></button>
           <button class=client-nav-item data-client-tab-button=jobs type=button><span>My Jobs</span><small>Progress</small></button>
+          <button class=client-nav-item data-client-tab-button=assets type=button><span>Assets</span><small>Equipment</small></button>
+          <button class=client-nav-item data-client-tab-button=contracts type=button><span>Contracts</span><small>Coverage</small></button>
           <button class=client-nav-item data-client-tab-button=invoices type=button><span>My Invoices</span><small>Balances</small></button>
           <button class=client-nav-item data-client-tab-button=receipts type=button><span>Receipts</span><small>Payments</small></button>
           <button class=client-nav-item data-client-tab-button=profile type=button><span>Profile</span><small>Account details</small></button>
@@ -54,6 +56,8 @@
 
         <section data-client-tab=quotes hidden><div class=client-section-head><h2>My Quotes</h2></div><div class=client-list data-client-quotes></div></section>
         <section data-client-tab=jobs hidden><div class=client-section-head><h2>My Jobs</h2></div><div class=client-list data-client-jobs></div></section>
+        <section data-client-tab=assets hidden><div class=client-section-head><h2>Assets</h2></div><div class=client-list data-client-assets></div></section>
+        <section data-client-tab=contracts hidden><div class=client-section-head><h2>Service Contracts</h2></div><div class=client-list data-client-contracts></div></section>
         <section data-client-tab=invoices hidden><div class=client-section-head><h2>My Invoices</h2></div><div class=client-list data-client-invoices></div></section>
         <section data-client-tab=receipts hidden><div class=client-section-head><h2>Receipts</h2></div><div class=client-list data-client-receipts></div></section>
 

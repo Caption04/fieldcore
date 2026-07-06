@@ -8,6 +8,8 @@
     ['map', 'Map', 'map.html', 'map'],
     ['booking-requests', 'Booking Requests', 'booking-requests.html', 'inbox'],
     ['customers', 'People/Members', 'customers.html', 'users'],
+    ['assets', 'Assets', 'assets.html', 'briefcase'],
+    ['service-contracts', 'Contracts', 'service-contracts.html', 'file'],
     ['quotes', 'Quotes', 'quotes.html', 'file'],
     ['invoices', 'Invoices', 'invoices.html', 'receipt'],
     ['reports', 'Reports', 'reports.html', 'chart'],

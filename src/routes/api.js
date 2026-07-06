@@ -75,6 +75,11 @@ const proofCategoryValues = ['BEFORE', 'AFTER', 'GENERAL', 'DAMAGE', 'ISSUE', 'E
 const bookingRequestStatusValues = ['NEW', 'REVIEWED', 'CONVERTED', 'DECLINED', 'CANCELLED'];
 const integrationProviderValues = ['BREVO', 'META_WHATSAPP_CLOUD', 'CLICKATELL', 'AFRICAS_TALKING', 'CLOUDFLARE_R2'];
 const integrationChannelValues = ['EMAIL', 'WHATSAPP', 'SMS', 'STORAGE'];
+const assetStatusValues = ['ACTIVE', 'INACTIVE', 'UNDER_REPAIR', 'RETIRED'];
+const serviceContractStatusValues = ['DRAFT', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 'CANCELLED'];
+const billingIntervalValues = ['MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL', 'ON_DEMAND'];
+const slaStatusValues = ['NOT_APPLICABLE', 'ON_TRACK', 'AT_RISK', 'BREACHED', 'MET', 'WAIVED'];
+const recurrenceValues = ['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -135,6 +140,31 @@ async function requireService(req, id) {
   return record;
 }
 
+async function requireCustomerProperty(req, id, customerId) {
+  if (!id) return null;
+  const record = await prisma.customerProperty.findFirst({ where: { id, companyId: req.companyId, ...(customerId ? { customerId } : {}) } });
+  if (!record) throw notFound('Customer property not found');
+  return record;
+}
+
+async function requireAsset(req, id) {
+  const record = await prisma.asset.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Asset not found');
+  return record;
+}
+
+async function requireServiceContract(req, id) {
+  const record = await prisma.serviceContract.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Service contract not found');
+  return record;
+}
+
+async function requireContractServiceLine(req, contractId, lineId) {
+  const record = await prisma.contractServiceLine.findFirst({ where: { id: lineId, contractId, companyId: req.companyId } });
+  if (!record) throw notFound('Contract service line not found');
+  return record;
+}
+
 async function requireWorker(req, id) {
   if (!id) return null;
   const record = await prisma.workerProfile.findFirst({ where: { id, companyId: req.companyId }, include: SAFE_WORKER_INCLUDE });
@@ -179,6 +209,10 @@ async function validateJobRelations(req, body) {
   if (body.customerId) await requireCustomer(req, body.customerId);
   if (body.serviceId) await requireService(req, body.serviceId);
   if (body.workerId) await requireWorker(req, body.workerId);
+  if (body.contractId) {
+    const contract = await requireServiceContract(req, body.contractId);
+    if (body.customerId && contract.customerId !== body.customerId) throw new AppError(400, 'Contract must belong to the selected customer');
+  }
 }
 
 async function validateQuoteRelations(req, body) {
@@ -193,9 +227,11 @@ async function validateInvoiceRelations(req, body) {
   if (body.jobId) await requireJob(req, body.jobId, { assignedOnly: false });
 }
 
-const jobInclude = { customer: true, service: true, worker: { include: SAFE_WORKER_INCLUDE } };
+const jobInclude = { customer: true, service: true, contract: true, worker: { include: SAFE_WORKER_INCLUDE }, jobAssets: { include: { asset: true } } };
 const jobDetailInclude = { ...jobInclude, completedBy: { select: { id: true, companyId: true, name: true, email: true, role: true } }, proofPhotos: { orderBy: { createdAt: 'desc' } }, signature: true, completionLocation: true };
 const jobActivityInclude = { worker: { include: SAFE_WORKER_INCLUDE }, user: { select: { id: true, companyId: true, email: true, name: true, role: true, createdAt: true, updatedAt: true } } };
+const assetInclude = { customer: true, property: true, service: true, jobAssets: { include: { job: { include: { service: true, invoices: true, proofPhotos: true } } }, orderBy: { createdAt: 'desc' } }, serviceContractAssets: { include: { contract: true } } };
+const contractInclude = { customer: true, property: true, assets: { include: { asset: true } }, serviceLines: { include: { service: true }, orderBy: { nextDueAt: 'asc' } }, jobs: { include: { service: true, jobAssets: { include: { asset: true } } }, orderBy: { createdAt: 'desc' } } };
 
 const integrationConfigSchema = z.record(z.union([z.string().trim().max(500), z.boolean(), z.number()])).default({});
 const integrationSecretsSchema = z.record(z.string().max(4000).optional().or(z.literal(''))).default({});
@@ -586,7 +622,6 @@ const scheduleInclude = { job: { include: { customer: true, service: true } }, w
 const activeScheduleStatuses = ['SCHEDULED', 'DISPATCHED', 'IN_PROGRESS'];
 const scheduleStatusValues = ['SCHEDULED', 'DISPATCHED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'RESCHEDULED'];
 const conflictTypeValues = ['OVERLAP', 'TIME_OFF', 'OUTSIDE_AVAILABILITY', 'OUTSIDE_WORKING_HOURS', 'INVALID_TIME', 'JOB_NOT_SCHEDULABLE'];
-const recurrenceValues = ['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'];
 
 const schedulingSettingsSchema = z.object({
   defaultJobDurationMinutes: z.coerce.number().int().positive().optional(),
@@ -1268,7 +1303,9 @@ function clientQuote(quote) { return quote && { id: quote.id, quoteNumber: quote
 function clientPayment(payment) { return payment && { id: payment.id, invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, status: payment.status, reference: payment.reference, receivedAt: payment.receivedAt, confirmedAt: payment.confirmedAt, createdAt: payment.createdAt }; }
 function clientReceipt(receipt) { return receipt && { id: receipt.id, receiptNumber: receipt.receiptNumber, invoiceId: receipt.invoiceId, paymentId: receipt.paymentId, amount: receipt.amount, issuedAt: receipt.issuedAt, createdAt: receipt.createdAt, invoice: receipt.invoice && { id: receipt.invoice.id, number: receipt.invoice.number, status: receipt.invoice.status }, payment: clientPayment(receipt.payment) }; }
 function clientInvoice(invoice) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
-function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresBeforePhotos: job.requiresBeforePhotos, requiresAfterPhotos: job.requiresAfterPhotos, requiresSignature: job.requiresSignature, requiresLocation: job.requiresLocation, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature), proofSummary: proofSummary(jobWithEvidenceStatus(job), true) }; }
+function clientAsset(asset) { return asset && { id: asset.id, customerId: asset.customerId, propertyId: asset.propertyId, serviceId: asset.serviceId, name: asset.name, assetType: asset.assetType, assetTag: asset.assetTag, serialNumber: asset.serialNumber, manufacturer: asset.manufacturer, modelNumber: asset.modelNumber, locationLabel: asset.locationLabel, installedAt: asset.installedAt, warrantyStartAt: asset.warrantyStartAt, warrantyEndAt: asset.warrantyEndAt, warrantyStatus: warrantyStatus(asset), status: asset.status, notes: asset.notes, service: asset.service && { id: asset.service.id, name: asset.service.name }, property: asset.property && { id: asset.property.id, label: asset.property.label, address: asset.property.address }, jobHistory: (asset.jobAssets || []).map((item) => clientJobSummary(item.job)).filter(Boolean) }; }
+function clientContract(contract) { return contract && { id: contract.id, customerId: contract.customerId, propertyId: contract.propertyId, contractNumber: contract.contractNumber, name: contract.name, status: contract.status, startDate: contract.startDate, endDate: contract.endDate, currency: contract.currency, responseSlaHours: contract.responseSlaHours, completionSlaHours: contract.completionSlaHours, includedVisits: contract.includedVisits, notes: contract.notes, assets: (contract.assets || []).map((item) => clientAsset(item.asset)).filter(Boolean), serviceLines: (contract.serviceLines || []).map((line) => ({ id: line.id, title: line.title, service: line.service && { id: line.service.id, name: line.service.name }, frequency: line.frequency, interval: line.interval, visitsPerPeriod: line.visitsPerPeriod, nextDueAt: line.nextDueAt, defaultDurationMinutes: line.defaultDurationMinutes, requiresProofPhotos: line.requiresProofPhotos, requiresSignature: line.requiresSignature, requiresLocation: line.requiresLocation })), upcomingDueWork: contractDueItems(contract, new Date()) }; }
+function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresBeforePhotos: job.requiresBeforePhotos, requiresAfterPhotos: job.requiresAfterPhotos, requiresSignature: job.requiresSignature, requiresLocation: job.requiresLocation, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, contract: job.contract && { id: job.contract.id, contractNumber: job.contract.contractNumber, name: job.contract.name, status: job.contract.status }, responseDueAt: job.responseDueAt, completionDueAt: job.completionDueAt, slaStatus: job.slaStatus, slaBreachedAt: job.slaBreachedAt, assets: (job.jobAssets || []).map((item) => clientAsset(item.asset)).filter(Boolean), total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature), proofSummary: proofSummary(jobWithEvidenceStatus(job), true) }; }
 function clientStorageUrl(url) { return String(url || '').replace(/^\/api\/storage\/objects\//, '/api/client/storage/objects/'); }
 function clientProofPhoto(photo) { return photo && { id: photo.id, jobId: photo.jobId, url: clientStorageUrl(photo.url), category: photo.category || 'GENERAL', caption: photo.caption, createdAt: photo.createdAt }; }
 function clientSignature(signature) { return signature && { id: signature.id, jobId: signature.jobId, signatureUrl: clientStorageUrl(signature.signatureUrl), signedByName: signature.signerName, createdAt: signature.createdAt }; }
@@ -1284,9 +1321,35 @@ function clientQuoteWhere(account, extra) { return account.customerId ? { compan
 function clientInvoiceWhere(account, extra) { return account.customerId ? { companyId: account.companyId, customerId: account.customerId, status: { in: clientVisibleInvoiceStatuses }, ...(extra || {}) } : null; }
 async function clientOwnedQuote(account, id) { const where = clientQuoteWhere(account, { id: id }); if (!where) return null; return prisma.quote.findFirst({ where, include: quoteInclude }); }
 async function clientOwnedInvoice(account, id) { const where = clientInvoiceWhere(account, { id: id }); if (!where) return null; return prisma.invoice.findFirst({ where, include: invoiceInclude }); }
-async function clientOwnedJob(account, id) { if (!account.customerId) return null; return prisma.job.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true, completionLocation: true } }); }
+async function clientOwnedJob(account, id) { if (!account.customerId) return null; return prisma.job.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: { customer: true, service: true, contract: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true, completionLocation: true, jobAssets: { include: { asset: { include: { service: true, property: true } } } } } }); }
+async function clientOwnedAsset(account, id) { if (!account.customerId) return null; return prisma.asset.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: assetInclude }); }
+async function clientOwnedContract(account, id) { if (!account.customerId) return null; return prisma.serviceContract.findFirst({ where: { id: id, companyId: account.companyId, customerId: account.customerId }, include: contractInclude }); }
 async function clientInvoiceIds(account) { const where = clientInvoiceWhere(account); if (!where) return []; const rows = await prisma.invoice.findMany({ where, select: { id: true } }); return rows.map(function(row) { return row.id; }); }
 async function clientOwnedReceipt(account, id) { const invoiceIds = await clientInvoiceIds(account); if (!invoiceIds.length) return null; return prisma.receipt.findFirst({ where: { id: id, companyId: account.companyId, invoiceId: { in: invoiceIds } }, include: { invoice: true, payment: true } }); }
+
+router.get("/client/assets", requireClientAuth, asyncHandler(async (req, res) => {
+  if (!req.clientAccount.customerId) return sendData(res, []);
+  const data = await prisma.asset.findMany({ where: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId, status: { not: 'RETIRED' } }, include: assetInclude, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientAsset)));
+}));
+
+router.get("/client/assets/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const asset = await clientOwnedAsset(req.clientAccount, req.params.id);
+  if (!asset) throw notFound("Asset not found");
+  sendData(res, normalize(clientAsset(asset)));
+}));
+
+router.get("/client/service-contracts", requireClientAuth, asyncHandler(async (req, res) => {
+  if (!req.clientAccount.customerId) return sendData(res, []);
+  const data = await prisma.serviceContract.findMany({ where: { companyId: req.clientAccount.companyId, customerId: req.clientAccount.customerId, status: { in: ['ACTIVE', 'SUSPENDED', 'EXPIRED'] } }, include: contractInclude, orderBy: { createdAt: "desc" } });
+  sendData(res, normalize(data.map(clientContract)));
+}));
+
+router.get("/client/service-contracts/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const contract = await clientOwnedContract(req.clientAccount, req.params.id);
+  if (!contract || !['ACTIVE', 'SUSPENDED', 'EXPIRED'].includes(contract.status)) throw notFound("Service contract not found");
+  sendData(res, normalize(clientContract(contract)));
+}));
 
 router.get("/client/quotes", requireClientAuth, asyncHandler(async (req, res) => {
   const where = clientQuoteWhere(req.clientAccount);
@@ -1377,7 +1440,7 @@ router.get("/client/receipts/:id", requireClientAuth, validate(idParam, "params"
 router.get("/client/jobs", requireClientAuth, asyncHandler(async (req, res) => {
   const where = clientCustomerWhere(req.clientAccount);
   if (!where) return sendData(res, []);
-  const data = await prisma.job.findMany({ where, include: { customer: true, service: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true, completionLocation: true }, orderBy: { createdAt: "desc" } });
+  const data = await prisma.job.findMany({ where, include: { customer: true, service: true, contract: true, quotes: true, invoices: true, proofPhotos: { orderBy: { createdAt: "desc" } }, signature: true, completionLocation: true, jobAssets: { include: { asset: { include: { service: true, property: true } } } } }, orderBy: { createdAt: "desc" } });
   sendData(res, normalize(data.map(clientJob)));
 }));
 
@@ -1781,6 +1844,391 @@ router.delete('/customers/:id', requireRole(...adminRoles), validate(idParam, 'p
   sendData(res, { deleted: true });
 }));
 
+const assetSchema = z.object({
+  customerId: z.string().min(1),
+  propertyId: optionalText(80),
+  serviceId: optionalText(80),
+  name: z.string().trim().min(2).max(200),
+  assetType: z.string().trim().min(2).max(120),
+  assetTag: optionalText(120),
+  serialNumber: optionalText(120),
+  manufacturer: optionalText(120),
+  modelNumber: optionalText(120),
+  locationLabel: optionalText(200),
+  installedAt: optionalDate,
+  warrantyStartAt: optionalDate,
+  warrantyEndAt: optionalDate,
+  status: z.enum(assetStatusValues).optional(),
+  notes: optionalText(2000),
+  customFields: z.record(z.any()).optional()
+});
+
+const contractSchema = z.object({
+  customerId: z.string().min(1),
+  propertyId: optionalText(80),
+  contractNumber: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(2).max(200),
+  status: z.enum(serviceContractStatusValues).optional(),
+  startDate: z.coerce.date(),
+  endDate: optionalDate,
+  currency: z.string().trim().min(3).max(3).optional(),
+  contractValue: amount.optional(),
+  billingInterval: z.enum(billingIntervalValues).optional(),
+  responseSlaHours: z.coerce.number().int().positive().max(8760).optional(),
+  completionSlaHours: z.coerce.number().int().positive().max(8760).optional(),
+  includedVisits: z.coerce.number().int().min(0).optional(),
+  notes: optionalText(2000)
+});
+
+const contractAssetSchema = z.object({ assetId: z.string().min(1) });
+const contractServiceLineParam = z.object({ id: z.string().min(1), lineId: z.string().min(1) });
+const contractAssetParam = z.object({ id: z.string().min(1), assetId: z.string().min(1) });
+const jobAssetParam = z.object({ id: z.string().min(1), assetId: z.string().min(1) });
+const jobAssetSchema = z.object({ assetId: z.string().min(1), primaryAsset: z.boolean().optional(), notes: optionalText(1000) });
+const contractLineSchema = z.object({
+  serviceId: optionalText(80),
+  title: z.string().trim().min(2).max(200),
+  frequency: z.enum(recurrenceValues),
+  interval: z.coerce.number().int().positive().max(120).optional(),
+  visitsPerPeriod: z.coerce.number().int().positive().max(365).optional(),
+  nextDueAt: optionalDate,
+  defaultDurationMinutes: z.coerce.number().int().positive().max(1440).optional(),
+  requiresProofPhotos: z.boolean().optional(),
+  requiresSignature: z.boolean().optional(),
+  requiresLocation: z.boolean().optional(),
+  notes: optionalText(2000)
+});
+const dueWorkSchema = z.object({ through: optionalDate, limit: z.coerce.number().int().min(1).max(100).optional() });
+
+async function validateAssetRelations(req, body) {
+  await requireCustomer(req, body.customerId);
+  if (body.propertyId) await requireCustomerProperty(req, body.propertyId, body.customerId);
+  if (body.serviceId) await requireService(req, body.serviceId);
+}
+
+async function validateContractRelations(req, body) {
+  await requireCustomer(req, body.customerId);
+  if (body.propertyId) await requireCustomerProperty(req, body.propertyId, body.customerId);
+}
+
+async function validateContractLineRelations(req, body) {
+  if (body.serviceId) await requireService(req, body.serviceId);
+}
+
+function addHours(date, hours) {
+  return hours ? new Date(new Date(date).getTime() + hours * 60 * 60 * 1000) : null;
+}
+
+function advanceDueDate(date, frequency, interval = 1) {
+  const next = new Date(date);
+  if (frequency === 'DAILY') next.setDate(next.getDate() + interval);
+  else if (frequency === 'WEEKLY') next.setDate(next.getDate() + 7 * interval);
+  else if (frequency === 'BIWEEKLY') next.setDate(next.getDate() + 14 * interval);
+  else if (frequency === 'MONTHLY') next.setMonth(next.getMonth() + interval);
+  else if (frequency === 'QUARTERLY') next.setMonth(next.getMonth() + 3 * interval);
+  else if (frequency === 'YEARLY') next.setFullYear(next.getFullYear() + interval);
+  return next;
+}
+
+function warrantyStatus(asset) {
+  const today = new Date();
+  if (asset.warrantyEndAt && new Date(asset.warrantyEndAt) < today) return 'EXPIRED';
+  if (asset.warrantyStartAt && new Date(asset.warrantyStartAt) > today) return 'PENDING';
+  if (asset.warrantyEndAt) return 'ACTIVE';
+  return 'UNKNOWN';
+}
+
+function assetResponse(asset) {
+  return asset && { ...asset, warrantyStatus: warrantyStatus(asset), history: (asset.jobAssets || []).map((item) => item.job).filter(Boolean) };
+}
+
+function contractDueItems(contract, through = new Date(), limit = 50) {
+  const until = new Date(through);
+  return (contract.serviceLines || [])
+    .filter((line) => line.nextDueAt && new Date(line.nextDueAt) <= until)
+    .slice(0, limit)
+    .map((line) => ({
+      contractId: contract.id,
+      lineId: line.id,
+      title: line.title,
+      service: line.service || null,
+      nextDueAt: line.nextDueAt,
+      defaultDurationMinutes: line.defaultDurationMinutes,
+      requiresProofPhotos: line.requiresProofPhotos,
+      requiresSignature: line.requiresSignature,
+      requiresLocation: line.requiresLocation
+    }));
+}
+
+router.get('/assets', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.customerId) where.customerId = String(req.query.customerId);
+  if (req.query.status) where.status = String(req.query.status);
+  const result = await paged(prisma.asset, req, { where, include: assetInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data.map(assetResponse)), 200, result.meta);
+}));
+
+router.post('/assets', requireRole(...adminRoles), validate(assetSchema), asyncHandler(async (req, res) => {
+  await validateAssetRelations(req, req.body);
+  const data = await prisma.$transaction(async (tx) => {
+    const asset = await tx.asset.create({ data: { ...req.body, status: req.body.status || 'ACTIVE', companyId: req.companyId }, include: assetInclude });
+    await addAuditLog(tx, req, 'CREATE', 'Asset', asset.id, { customerId: asset.customerId, assetType: asset.assetType });
+    return asset;
+  });
+  sendData(res, normalize(assetResponse(data)), 201);
+}));
+
+router.get('/assets/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireAsset(req, req.params.id);
+  const data = await prisma.asset.findUnique({ where: { id: req.params.id }, include: assetInclude });
+  sendData(res, normalize(assetResponse(data)));
+}));
+
+router.patch('/assets/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(assetSchema.partial()), asyncHandler(async (req, res) => {
+  const existing = await requireAsset(req, req.params.id);
+  const body = { ...req.body, customerId: req.body.customerId || existing.customerId };
+  await validateAssetRelations(req, body);
+  const data = await prisma.$transaction(async (tx) => {
+    const asset = await tx.asset.update({ where: { id: existing.id }, data: req.body, include: assetInclude });
+    await addAuditLog(tx, req, 'UPDATE', 'Asset', asset.id, { status: asset.status });
+    return asset;
+  });
+  sendData(res, normalize(assetResponse(data)));
+}));
+
+router.post('/assets/:id/retire', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireAsset(req, req.params.id);
+  const data = await prisma.$transaction(async (tx) => {
+    const asset = await tx.asset.update({ where: { id: existing.id }, data: { status: 'RETIRED' }, include: assetInclude });
+    await addAuditLog(tx, req, 'RETIRE', 'Asset', asset.id, { fromStatus: existing.status });
+    return asset;
+  });
+  sendData(res, normalize(assetResponse(data)));
+}));
+
+router.delete('/assets/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireAsset(req, req.params.id);
+  const data = await prisma.$transaction(async (tx) => {
+    const asset = await tx.asset.update({ where: { id: existing.id }, data: { status: 'RETIRED' }, include: assetInclude });
+    await addAuditLog(tx, req, 'RETIRE', 'Asset', asset.id, { fromStatus: existing.status, via: 'DELETE' });
+    return asset;
+  });
+  sendData(res, normalize(assetResponse(data)));
+}));
+
+router.get('/assets/:id/history', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const asset = await prisma.asset.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: assetInclude });
+  if (!asset) throw notFound('Asset not found');
+  const history = (asset.jobAssets || []).map((item) => item.job).filter(Boolean);
+  sendData(res, normalize({ asset: assetResponse(asset), jobs: history, proofPhotos: history.flatMap((job) => job.proofPhotos || []), invoices: history.flatMap((job) => job.invoices || []) }));
+}));
+
+router.get('/service-contracts', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.customerId) where.customerId = String(req.query.customerId);
+  if (req.query.status) where.status = String(req.query.status);
+  const result = await paged(prisma.serviceContract, req, { where, include: contractInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data.map((contract) => ({ ...contract, upcomingDueWork: contractDueItems(contract, req.query.through || new Date()) }))), 200, result.meta);
+}));
+
+router.post('/service-contracts', requireRole(...adminRoles), validate(contractSchema), asyncHandler(async (req, res) => {
+  await validateContractRelations(req, req.body);
+  const data = await prisma.$transaction(async (tx) => {
+    const contract = await tx.serviceContract.create({ data: { ...req.body, status: req.body.status || 'DRAFT', currency: req.body.currency || 'USD', companyId: req.companyId }, include: contractInclude });
+    await addAuditLog(tx, req, 'CREATE', 'ServiceContract', contract.id, { customerId: contract.customerId, contractNumber: contract.contractNumber });
+    return contract;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.get('/service-contracts/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireServiceContract(req, req.params.id);
+  const data = await prisma.serviceContract.findUnique({ where: { id: req.params.id }, include: contractInclude });
+  sendData(res, normalize({ ...data, upcomingDueWork: contractDueItems(data, req.query.through || new Date()) }));
+}));
+
+router.patch('/service-contracts/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(contractSchema.partial()), asyncHandler(async (req, res) => {
+  const existing = await requireServiceContract(req, req.params.id);
+  const body = { ...req.body, customerId: req.body.customerId || existing.customerId };
+  await validateContractRelations(req, body);
+  const data = await prisma.$transaction(async (tx) => {
+    const contract = await tx.serviceContract.update({ where: { id: existing.id }, data: req.body, include: contractInclude });
+    await addAuditLog(tx, req, 'UPDATE', 'ServiceContract', contract.id, { status: contract.status });
+    return contract;
+  });
+  sendData(res, normalize(data));
+}));
+
+async function setContractStatus(req, status, action) {
+  const existing = await requireServiceContract(req, req.params.id);
+  const data = await prisma.$transaction(async (tx) => {
+    const contract = await tx.serviceContract.update({ where: { id: existing.id }, data: { status }, include: contractInclude });
+    await addAuditLog(tx, req, action, 'ServiceContract', contract.id, { fromStatus: existing.status, toStatus: status });
+    return contract;
+  });
+  return data;
+}
+
+router.post('/service-contracts/:id/activate', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await setContractStatus(req, 'ACTIVE', 'ACTIVATE')));
+}));
+
+router.post('/service-contracts/:id/suspend', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await setContractStatus(req, 'SUSPENDED', 'SUSPEND')));
+}));
+
+router.post('/service-contracts/:id/cancel', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await setContractStatus(req, 'CANCELLED', 'CANCEL')));
+}));
+
+router.get('/service-contracts/:id/assets', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const data = await prisma.serviceContractAsset.findMany({ where: { companyId: req.companyId, contractId: contract.id }, include: { asset: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/service-contracts/:id/assets', requireRole(...adminRoles), validate(idParam, 'params'), validate(contractAssetSchema), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const asset = await requireAsset(req, req.body.assetId);
+  if (asset.customerId !== contract.customerId) throw new AppError(409, 'Asset must belong to the contract customer');
+  const data = await prisma.$transaction(async (tx) => {
+    const link = await tx.serviceContractAsset.upsert({ where: { companyId_contractId_assetId: { companyId: req.companyId, contractId: contract.id, assetId: asset.id } }, update: {}, create: { companyId: req.companyId, contractId: contract.id, assetId: asset.id }, include: { asset: true } });
+    await addAuditLog(tx, req, 'LINK_ASSET', 'ServiceContract', contract.id, { assetId: asset.id });
+    return link;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.delete('/service-contracts/:id/assets/:assetId', requireRole(...adminRoles), validate(contractAssetParam, 'params'), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const asset = await requireAsset(req, req.params.assetId);
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceContractAsset.deleteMany({ where: { companyId: req.companyId, contractId: contract.id, assetId: asset.id } });
+    await addAuditLog(tx, req, 'UNLINK_ASSET', 'ServiceContract', contract.id, { assetId: asset.id });
+  });
+  sendData(res, { deleted: true });
+}));
+
+router.get('/service-contracts/:id/service-lines', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const data = await prisma.contractServiceLine.findMany({ where: { companyId: req.companyId, contractId: contract.id }, include: { service: true }, orderBy: { nextDueAt: 'asc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/service-contracts/:id/service-lines', requireRole(...adminRoles), validate(idParam, 'params'), validate(contractLineSchema), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  await validateContractLineRelations(req, req.body);
+  const data = await prisma.$transaction(async (tx) => {
+    const line = await tx.contractServiceLine.create({ data: { ...req.body, interval: req.body.interval || 1, companyId: req.companyId, contractId: contract.id }, include: { service: true } });
+    await addAuditLog(tx, req, 'CREATE', 'ContractServiceLine', line.id, { contractId: contract.id });
+    return line;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/service-contracts/:id/service-lines/:lineId', requireRole(...adminRoles), validate(contractServiceLineParam, 'params'), validate(contractLineSchema.partial()), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const line = await requireContractServiceLine(req, contract.id, req.params.lineId);
+  await validateContractLineRelations(req, req.body);
+  const data = await prisma.$transaction(async (tx) => {
+    const updated = await tx.contractServiceLine.update({ where: { id: line.id }, data: req.body, include: { service: true } });
+    await addAuditLog(tx, req, 'UPDATE', 'ContractServiceLine', updated.id, { contractId: contract.id });
+    return updated;
+  });
+  sendData(res, normalize(data));
+}));
+
+router.delete('/service-contracts/:id/service-lines/:lineId', requireRole(...adminRoles), validate(contractServiceLineParam, 'params'), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const line = await requireContractServiceLine(req, contract.id, req.params.lineId);
+  await prisma.$transaction(async (tx) => {
+    await tx.contractServiceLine.delete({ where: { id: line.id } });
+    await addAuditLog(tx, req, 'DELETE', 'ContractServiceLine', line.id, { contractId: contract.id });
+  });
+  sendData(res, { deleted: true });
+}));
+
+router.post('/service-contracts/:id/preview-jobs', requireRole(...adminRoles), validate(idParam, 'params'), validate(dueWorkSchema), asyncHandler(async (req, res) => {
+  await requireServiceContract(req, req.params.id);
+  const contract = await prisma.serviceContract.findUnique({ where: { id: req.params.id }, include: contractInclude });
+  sendData(res, normalize({ contractId: contract.id, dueWork: contractDueItems(contract, req.body.through || new Date(), req.body.limit || 50) }));
+}));
+
+router.post('/service-contracts/:id/generate-due-jobs', requireRole(...adminRoles), validate(idParam, 'params'), validate(dueWorkSchema), asyncHandler(async (req, res) => {
+  await requireServiceContract(req, req.params.id);
+  const contract = await prisma.serviceContract.findUnique({ where: { id: req.params.id }, include: contractInclude });
+  if (contract.status !== 'ACTIVE') throw new AppError(409, 'Only active contracts can generate due jobs');
+  const dueWork = contractDueItems(contract, req.body.through || new Date(), req.body.limit || 50);
+  const generated = await prisma.$transaction(async (tx) => {
+    const jobs = [];
+    for (const item of dueWork) {
+      const dueAt = new Date(item.nextDueAt);
+      const job = await tx.job.create({
+        data: {
+          companyId: req.companyId,
+          customerId: contract.customerId,
+          serviceId: item.service && item.service.id || undefined,
+          contractId: contract.id,
+          title: item.title,
+          description: 'Generated from service contract ' + contract.contractNumber,
+          status: 'NEW',
+          scheduledStart: dueAt,
+          durationMinutes: item.defaultDurationMinutes || 60,
+          responseDueAt: addHours(new Date(), contract.responseSlaHours),
+          completionDueAt: addHours(dueAt, contract.completionSlaHours),
+          slaStatus: contract.responseSlaHours || contract.completionSlaHours ? 'ON_TRACK' : 'NOT_APPLICABLE',
+          requiresProofPhotos: Boolean(item.requiresProofPhotos),
+          requiresSignature: Boolean(item.requiresSignature),
+          requiresLocation: Boolean(item.requiresLocation)
+        }
+      });
+      for (const [assetIndex, link] of (contract.assets || []).entries()) {
+        await tx.jobAsset.create({ data: { companyId: req.companyId, jobId: job.id, assetId: link.assetId, primaryAsset: assetIndex === 0 } }).catch(() => null);
+      }
+      await tx.contractServiceLine.update({ where: { id: item.lineId }, data: { lastGeneratedJobAt: new Date(), nextDueAt: advanceDueDate(dueAt, contract.serviceLines.find((line) => line.id === item.lineId).frequency, contract.serviceLines.find((line) => line.id === item.lineId).interval || 1) } });
+      await addAuditLog(tx, req, 'GENERATE_DUE_JOB', 'ServiceContract', contract.id, { jobId: job.id, lineId: item.lineId });
+      jobs.push(job);
+    }
+    return jobs;
+  });
+  sendData(res, normalize({ generated }), 201);
+}));
+
+router.get('/jobs/:id/assets', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: req.user.role === 'WORKER' });
+  const data = await prisma.jobAsset.findMany({ where: { companyId: req.companyId, jobId: job.id }, include: { asset: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/jobs/:id/assets', requireRole(...adminRoles), validate(idParam, 'params'), validate(jobAssetSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const asset = await requireAsset(req, req.body.assetId);
+  if (asset.customerId !== job.customerId) throw new AppError(409, 'Asset must belong to the job customer');
+  const data = await prisma.$transaction(async (tx) => {
+    if (req.body.primaryAsset) await tx.jobAsset.updateMany({ where: { companyId: req.companyId, jobId: job.id }, data: { primaryAsset: false } });
+    const link = await tx.jobAsset.upsert({ where: { companyId_jobId_assetId: { companyId: req.companyId, jobId: job.id, assetId: asset.id } }, update: { primaryAsset: Boolean(req.body.primaryAsset), notes: req.body.notes }, create: { companyId: req.companyId, jobId: job.id, assetId: asset.id, primaryAsset: Boolean(req.body.primaryAsset), notes: req.body.notes }, include: { asset: true } });
+    await addAuditLog(tx, req, 'LINK_ASSET', 'Job', job.id, { assetId: asset.id });
+    return link;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.delete('/jobs/:id/assets/:assetId', requireRole(...adminRoles), validate(jobAssetParam, 'params'), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const asset = await requireAsset(req, req.params.assetId);
+  await prisma.$transaction(async (tx) => {
+    await tx.jobAsset.deleteMany({ where: { companyId: req.companyId, jobId: job.id, assetId: asset.id } });
+    await addAuditLog(tx, req, 'UNLINK_ASSET', 'Job', job.id, { assetId: asset.id });
+  });
+  sendData(res, { deleted: true });
+}));
+
+router.get('/worker/jobs/:id/assets', requireRole('WORKER'), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: true });
+  const data = await prisma.jobAsset.findMany({ where: { companyId: req.companyId, jobId: job.id }, include: { asset: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
 
 async function requireBookingRequest(req, id, db = prisma) {
   const record = await db.bookingRequest.findFirst({ where: { id, companyId: req.companyId }, include: bookingRequestInclude });
@@ -1992,11 +2440,16 @@ const jobSchema = z.object({
   customerId: z.string().min(1),
   serviceId: z.string().optional(),
   workerId: z.string().optional(),
+  contractId: z.string().optional(),
   title: z.string().min(2),
   description: z.string().optional(),
   status: z.enum(jobStatusValues).optional(),
   scheduledStart: optionalDate,
   scheduledEnd: optionalDate,
+  responseDueAt: optionalDate,
+  completionDueAt: optionalDate,
+  slaStatus: z.enum(slaStatusValues).optional(),
+  slaBreachedAt: optionalDate,
   durationMinutes: z.coerce.number().int().positive().optional(),
   travelBufferMinutes: z.coerce.number().int().min(0).optional(),
   requiresProofPhotos: z.boolean().optional(),
@@ -2005,7 +2458,6 @@ const jobSchema = z.object({
   requiresAfterPhotos: z.boolean().optional(),
   requiresSignature: z.boolean().optional(),
   requiresLocation: z.boolean().optional(),
-  total: amount.optional(),
   adminOverride: z.boolean().optional()
 });
 
@@ -2033,7 +2485,8 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
     await requireFeature(req.companyId, 'proofOfWork');
   }
   await validateJobRelations(req, req.body);
-
+  const trustedService = req.body.serviceId ? await requireService(req, req.body.serviceId) : null;
+  const trustedJobTotal = trustedService ? trustedService.price : 0;
   const wantsSchedule = Boolean(req.body.scheduledStart);
 
   if (wantsSchedule && !req.body.workerId) {
@@ -2081,6 +2534,7 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
       ...proofDefaults,
       durationMinutes: jobData.durationMinutes || settings.defaultJobDurationMinutes,
       travelBufferMinutes: jobData.travelBufferMinutes ?? settings.defaultTravelBufferMinutes,
+      total: trustedJobTotal,
       companyId: req.companyId,
       status: wantsSchedule ? 'NEW' : (jobData.status || settings.defaultJobStatus || 'NEW')
     },
@@ -2129,8 +2583,8 @@ router.get('/worker/jobs/:id', requireRole('WORKER'), validate(idParam, 'params'
 }));
 
 router.patch('/jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(jobSchema.partial()), asyncHandler(async (req, res) => {
-  await requireJob(req, req.params.id, { assignedOnly: false });
-  await validateJobRelations(req, req.body);
+  const existing = await requireJob(req, req.params.id, { assignedOnly: false });
+  await validateJobRelations(req, { ...req.body, customerId: req.body.customerId || existing.customerId });
   const data = await prisma.job.update({ where: { id: req.params.id }, data: req.body, include: jobDetailInclude });
   await audit(req, 'UPDATE', 'Job', data.id);
   sendData(res, normalize(jobWithEvidenceStatus(data)));
@@ -2807,7 +3261,6 @@ function scheduleWhere(req, extra = {}) {
   return {
     companyId: req.companyId,
     status: { in: activeScheduleStatuses },
-    job: { scheduledStart: { not: null } },
     ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}),
     ...extra
   };

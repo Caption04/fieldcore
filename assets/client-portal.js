@@ -1,6 +1,6 @@
 const API = "/api";
 const page = document.body.dataset.clientPage;
-const state = { dashboard: null, requests: [], quotes: [], jobs: [], invoices: [], receipts: [], payments: [], properties: [], profile: null };
+const state = { dashboard: null, requests: [], quotes: [], jobs: [], assets: [], contracts: [], invoices: [], receipts: [], payments: [], properties: [], profile: null };
 
 async function api(path, options) {
   const response = await fetch(API + path, { credentials: "include", headers: { "Content-Type": "application/json" }, ...(options || {}) });
@@ -111,6 +111,8 @@ const sectionCopy = {
   requests: { label: "Service Requests", title: "My Requests" },
   quotes: { label: "Quotes", title: "My Quotes" },
   jobs: { label: "Jobs", title: "My Jobs" },
+  assets: { label: "Assets", title: "Assets" },
+  contracts: { label: "Contracts", title: "Service Contracts" },
   invoices: { label: "Invoices", title: "My Invoices" },
   receipts: { label: "Receipts", title: "Receipts" },
   profile: { label: "Account", title: "Profile" },
@@ -236,6 +238,22 @@ function renderJobs() {
   }).join("");
 }
 
+function renderAssets() {
+  const container = document.querySelector("[data-client-assets]");
+  if (!state.assets.length) { container.innerHTML = empty("No linked assets yet."); return; }
+  container.innerHTML = state.assets.map(function(item) {
+    return listCard({ id: item.id, title: item.name || "Asset", meta: [item.assetType, item.assetTag || item.serialNumber, item.locationLabel].filter(Boolean).join(" - "), badge: badge(item.status || "ACTIVE"), action: "asset-detail" });
+  }).join("");
+}
+
+function renderContracts() {
+  const container = document.querySelector("[data-client-contracts]");
+  if (!state.contracts.length) { container.innerHTML = empty("No service contracts yet."); return; }
+  container.innerHTML = state.contracts.map(function(item) {
+    return listCard({ id: item.id, title: item.name || item.contractNumber || "Contract", meta: [item.contractNumber, "Assets " + ((item.assets || []).length), "Due " + ((item.upcomingDueWork || []).length)].filter(Boolean).join(" - "), badge: badge(item.status), action: "contract-detail" });
+  }).join("");
+}
+
 function renderInvoices() {
   const container = document.querySelector("[data-client-invoices]");
   if (!state.invoices.length) { container.innerHTML = empty("No invoices yet."); return; }
@@ -292,19 +310,30 @@ function receiptDetail(item) {
   return '<div class="client-detail-stack">' + badge("PAID") + '<div class="client-detail-lines"><div><span>Receipt</span><strong>' + escapeHtml(item.receiptNumber || item.id) + '</strong><small>' + date(item.issuedAt || item.createdAt) + '</small></div><div><span>Invoice</span><strong>' + escapeHtml(item.invoice && (item.invoice.number || item.invoice.invoiceNumber) || item.invoiceId) + '</strong></div><div><span>Amount</span><strong>' + money(item.amount) + '</strong></div></div></div>';
 }
 
+function assetDetail(item) {
+  const history = item.jobHistory || [];
+  return '<div class="client-detail-stack">' + badge(item.status || "ACTIVE") + '<div class="client-detail-lines"><div><span>Type</span><strong>' + escapeHtml(item.assetType || "-") + '</strong><small>' + escapeHtml(item.assetTag || item.serialNumber || "") + '</small></div><div><span>Warranty</span><strong>' + escapeHtml(item.warrantyStatus || "UNKNOWN") + '</strong><small>' + date(item.warrantyEndAt) + '</small></div><div><span>Location</span><strong>' + escapeHtml(item.locationLabel || item.property && item.property.address || "Not set") + '</strong></div></div><h3>Service History</h3>' + (history.length ? history.map(function(job) { return listCard({ title: job.title || "Job", meta: dateTime(job.completedAt || job.scheduledStart), badge: badge(job.status) }); }).join("") : empty("No linked service history yet.")) + "</div>";
+}
+
+function contractDetail(item) {
+  return '<div class="client-detail-stack">' + badge(item.status) + '<div class="client-detail-lines"><div><span>Contract</span><strong>' + escapeHtml(item.contractNumber || item.id) + '</strong><small>' + date(item.startDate) + " - " + date(item.endDate) + '</small></div><div><span>Response SLA</span><strong>' + escapeHtml(item.responseSlaHours ? item.responseSlaHours + " hours" : "Not set") + '</strong></div><div><span>Completion SLA</span><strong>' + escapeHtml(item.completionSlaHours ? item.completionSlaHours + " hours" : "Not set") + '</strong></div></div><h3>Covered Assets</h3>' + ((item.assets || []).length ? item.assets.map(function(asset) { return listCard({ title: asset.name || "Asset", meta: asset.assetType || "", badge: badge(asset.status || "ACTIVE") }); }).join("") : empty("No covered assets listed.")) + '<h3>Upcoming Due Work</h3>' + ((item.upcomingDueWork || []).length ? item.upcomingDueWork.map(function(work) { return listCard({ title: work.title || "Due work", meta: dateTime(work.nextDueAt), badge: badge("DUE") }); }).join("") : empty("No upcoming due work.")) + "</div>";
+}
+
 async function loadAll() {
-  const [dashboard, requests, quotes, jobs, invoices, receipts, payments, properties, profile] = await Promise.all([
+  const [dashboard, requests, quotes, jobs, assets, contracts, invoices, receipts, payments, properties, profile] = await Promise.all([
     api("/client/dashboard"),
     api("/client/booking-requests"),
     api("/client/quotes"),
     api("/client/jobs"),
+    api("/client/assets"),
+    api("/client/service-contracts"),
     api("/client/invoices"),
     api("/client/receipts"),
     api("/client/payments"),
     api("/client/properties"),
     api("/client/profile")
   ]);
-  Object.assign(state, { dashboard, requests, quotes, jobs, invoices, receipts, payments, properties, profile });
+  Object.assign(state, { dashboard, requests, quotes, jobs, assets, contracts, invoices, receipts, payments, properties, profile });
 }
 
 function fillProfile(profile) {
@@ -338,6 +367,8 @@ function renderAll() {
   renderRequests(document.querySelector("[data-client-requests]"), state.requests);
   renderQuotes();
   renderJobs();
+  renderAssets();
+  renderContracts();
   renderInvoices();
   renderReceipts();
   renderProperties();
@@ -436,6 +467,14 @@ document.addEventListener("click", async function(event) {
   if (button.dataset.action === "job-detail") {
     const item = await api("/client/jobs/" + id);
     openDetail(item.title || "Job", jobDetail(item));
+  }
+  if (button.dataset.action === "asset-detail") {
+    const item = await api("/client/assets/" + id);
+    openDetail(item.name || "Asset", assetDetail(item));
+  }
+  if (button.dataset.action === "contract-detail") {
+    const item = await api("/client/service-contracts/" + id);
+    openDetail(item.name || "Contract", contractDetail(item));
   }
   if (button.dataset.action === "receipt-detail") {
     const item = await api("/client/receipts/" + id);

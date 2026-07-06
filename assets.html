@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Assets</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js?v=assets-contracts-1"></script>
+  </head>
+  <body data-page="assets" data-title="Assets">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Assets</h2>
+          <p>Track customer equipment, warranty status, linked jobs, and service history.</p>
+        </div>
+        <button class="primary-button" type="button" data-create-resource="assets">+ New Asset</button>
+      </div>
+      <section class="stats">
+        <article class="card stat-card"><div class="stat-label">Active</div><div class="stat-value">0</div><div class="trend">Assets in service</div></article>
+        <article class="card stat-card"><div class="stat-label">Under Repair</div><div class="stat-value">0</div><div class="trend">Needs attention</div></article>
+        <article class="card stat-card"><div class="stat-label">Retired</div><div class="stat-value">0</div><div class="trend">Out of service</div></article>
+        <article class="card stat-card"><div class="stat-label">Warranty</div><div class="stat-value">0</div><div class="trend">Tracked warranties</div></article>
+      </section>
+      <div class="toolbar">
+        <span class="api-status" data-api-status>Connecting...</span>
+      </div>
+      <section class="table-card">
+        <div class="empty-state"><div><strong>No assets yet</strong><span>Create serviceable asset records for customer sites.</span></div></div>
+        <footer class="table-footer"><span>Showing 0 assets</span><div class="pager"><span class="page-dot active">1</span></div></footer>
+      </section>
+    </section>
+  </body>
+</html>
