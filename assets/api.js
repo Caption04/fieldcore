@@ -1,9 +1,9 @@
 (function(){
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
   const page = document.body.dataset.page || 'dashboard';
-  const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-  const receiptMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], assets: [], serviceContracts: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, reports: null, activeReportTab: 'overview' };
+  const money = { format(value) { const currency = state.financeSettings && state.financeSettings.defaultCurrency || 'USD'; return new Intl.NumberFormat('en-US', { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(value || 0)); } };
+  const receiptMoney = { format(value) { const currency = state.financeSettings && state.financeSettings.defaultCurrency || 'USD'; return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0)); } };
+  const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], assets: [], serviceContracts: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, financeSettings: null, financeIntegrations: [], financeExportLogs: [], reports: null, activeReportTab: 'overview' };
 
   const tableConfigs = {
     customers: {
@@ -1208,6 +1208,7 @@
       requests.push(api('/service-contracts').then((d) => state.serviceContracts = d).catch(() => []));
     }
     if (['quotes', 'invoices', 'schedule'].includes(page)) requests.push(api('/jobs').then((d) => state.jobs = d).catch(() => []));
+    if (['quotes', 'invoices', 'reports', 'settings'].includes(page)) requests.push(api('/company/finance-settings').then((d) => state.financeSettings = d).catch(() => null));
     if (['jobs', 'schedule'].includes(page) && !isWorker()) requests.push(api('/company/scheduling-settings').then((d) => state.scheduleSettings = d).catch(() => null));
     await Promise.all(requests);
   }
@@ -2667,6 +2668,103 @@
     if (cancel) cancel.onclick = () => run(() => api('/billing/cancel', { method: 'POST', body: JSON.stringify({}) }));
   }
 
+  function financePayload(form) {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const allowedRaw = String(data.allowedCurrencies || '').trim();
+    return {
+      defaultCurrency: data.defaultCurrency ? String(data.defaultCurrency).toUpperCase() : undefined,
+      allowedCurrencies: allowedRaw ? allowedRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
+      taxName: data.taxName || undefined,
+      taxRate: data.taxRate === '' ? undefined : Number(data.taxRate),
+      pricesIncludeTax: Boolean(form.querySelector('[name="pricesIncludeTax"]') && form.querySelector('[name="pricesIncludeTax"]').checked),
+      invoicePrefix: data.invoicePrefix || undefined,
+      receiptPrefix: data.receiptPrefix || undefined,
+      fiscalYearStartMonth: data.fiscalYearStartMonth === '' ? undefined : Number(data.fiscalYearStartMonth),
+      invoiceFooter: data.invoiceFooter || undefined
+    };
+  }
+
+  function fillFinanceForm(settings) {
+    document.querySelectorAll('[data-finance-field]').forEach((field) => {
+      const value = settings && settings[field.dataset.financeField];
+      if (field.name === 'allowedCurrencies') field.value = Array.isArray(value) ? value.join(',') : '';
+      else if (field.type === 'checkbox') field.checked = Boolean(value);
+      else field.value = value == null ? '' : value;
+    });
+  }
+
+  function renderFinanceIntegrations(items) {
+    const card = document.querySelector('[data-finance-integrations-card]');
+    if (!card) return;
+    const providers = ['MANUAL_CSV', 'XERO', 'QUICKBOOKS', 'SAGE', 'ZOHO_BOOKS', 'CUSTOM'];
+    const byProvider = new Map((items || []).map((item) => [item.provider, item]));
+    const rows = providers.map((provider) => {
+      const item = byProvider.get(provider);
+      return '<div class="list-item"><span class="initials">' + escapeHtml(provider.split('_').map((part) => part[0]).join('').slice(0, 3)) + '</span><div><strong>' + escapeHtml(provider.replace(/_/g, ' ')) + '</strong><small>' + escapeHtml(item ? 'Configured placeholder - live sync not implemented' : 'Not configured') + '</small></div><span class="badge gray">' + escapeHtml(item && item.status || 'DISCONNECTED') + '</span><button class="secondary-button small" type="button" data-finance-test="' + escapeHtml(item && item.id || '') + '" ' + (item ? '' : 'disabled') + '>Test</button></div>';
+    }).join('');
+    card.innerHTML = '<div class="panel-head"><h3>Accounting Integrations</h3><span class="badge gray">Placeholders only</span></div><form class="form-grid" data-finance-integration-form><div class="field"><label for="financeProvider">Provider</label><select id="financeProvider" name="provider">' + providers.map((provider) => '<option value="' + provider + '">' + provider.replace(/_/g, ' ') + '</option>').join('') + '</select></div><div class="field"><label for="financeExternalTenantId">External Tenant ID</label><input id="financeExternalTenantId" name="externalTenantId" placeholder="Optional"></div><div class="field span-2"><label for="financeConfigNote">Config Note</label><input id="financeConfigNote" name="note" placeholder="Manual CSV export, Xero tenant note, etc."></div><div class="form-actions span-2"><button class="secondary-button" type="submit">Save Placeholder</button></div><p class="fc-form-error span-2" data-finance-integration-message hidden></p></form><div class="settings-list">' + rows + '</div>';
+    bindFinanceIntegrationActions();
+  }
+
+  function renderFinanceExportLogs(logs) {
+    const card = document.querySelector('[data-finance-export-logs-card]');
+    if (!card) return;
+    const rows = (logs || []).slice(0, 20).map((item) => '<tr><td>' + escapeHtml(item.exportType || '-') + '</td><td>' + escapeHtml(item.provider || '-') + '</td><td>' + escapeHtml(item.fileName || '-') + '</td><td>' + escapeHtml(item.recordCount || 0) + '</td><td>' + escapeHtml(item.status || '-') + '</td><td>' + escapeHtml(formatDateTime(item.createdAt)) + '</td></tr>').join('');
+    card.innerHTML = '<div class="panel-head card"><h3>Export Logs</h3><span class="badge gray">' + (logs || []).length + '</span></div>' + (rows ? '<div class="table-scroll"><table><thead><tr><th>Type</th><th>Provider</th><th>File</th><th>Records</th><th>Status</th><th>Created</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<div class="empty-state"><div><strong>No export logs yet.</strong><span>Export CSV files to create logs.</span></div></div>');
+  }
+
+  async function loadFinanceSettings() {
+    if (!document.querySelector('[data-finance-settings-form]')) return;
+    try {
+      const [settings, integrations, logs] = await Promise.all([
+        api('/company/finance-settings'),
+        api('/finance/integrations').catch(() => []),
+        api('/finance/export-logs').catch(() => [])
+      ]);
+      state.financeSettings = settings;
+      state.financeIntegrations = integrations;
+      state.financeExportLogs = logs;
+      fillFinanceForm(settings);
+      renderFinanceIntegrations(integrations);
+      renderFinanceExportLogs(logs);
+    } catch (error) {
+      setFormMessage('[data-finance-message]', error.message, false);
+    }
+  }
+
+  function bindFinanceIntegrationActions() {
+    const form = document.querySelector('[data-finance-integration-form]');
+    const message = document.querySelector('[data-finance-integration-message]');
+    if (form && !form.dataset.bound) {
+      form.dataset.bound = 'true';
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (message) { message.hidden = true; message.classList.remove('green'); }
+        const data = Object.fromEntries(new FormData(form).entries());
+        try {
+          await api('/finance/integrations', { method: 'POST', body: JSON.stringify({ provider: data.provider, externalTenantId: data.externalTenantId || undefined, config: data.note ? { note: data.note } : {} }) });
+          if (message) { message.textContent = 'Finance integration placeholder saved.'; message.classList.add('green'); message.hidden = false; }
+          form.reset();
+          await loadFinanceSettings();
+        } catch (error) {
+          if (message) { message.textContent = error.message; message.hidden = false; }
+        }
+      });
+    }
+    document.querySelectorAll('[data-finance-test]').forEach((button) => {
+      button.onclick = async () => {
+        if (!button.dataset.financeTest) return;
+        try {
+          const result = await api('/finance/integrations/' + button.dataset.financeTest + '/test', { method: 'POST', body: JSON.stringify({}) });
+          showToast(result.test && result.test.message || 'Finance integration checked.', true);
+          await loadFinanceSettings();
+        } catch (error) {
+          showToast(error.message, false);
+        }
+      };
+    });
+  }
+
   function renderSystemStatus(status) {
     const card = document.querySelector('[data-system-status-card]');
     if (!card) return;
@@ -2708,6 +2806,7 @@
           panel.hidden = !active;
         });
         if (target === 'billing') loadBilling();
+        if (target === 'finance') loadFinanceSettings();
         if (target === 'notifications') loadNotificationLogs();
         if (target === 'integrations') loadIntegrations();
         if (target === 'admin-tools') loadAdminTools();
@@ -2718,6 +2817,22 @@
     document.querySelectorAll('[data-branding-field], [data-profile-field]').forEach((field) => {
       field.addEventListener('input', updateBrandingPreview);
     });
+
+    const financeForm = document.querySelector('[data-finance-settings-form]');
+    if (financeForm && !financeForm.dataset.bound) {
+      financeForm.dataset.bound = 'true';
+      financeForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          const settings = await api('/company/finance-settings', { method: 'PATCH', body: JSON.stringify(financePayload(financeForm)) });
+          state.financeSettings = settings;
+          fillFinanceForm(settings);
+          setFormMessage('[data-finance-message]', 'Finance settings saved.', true);
+        } catch (error) {
+          setFormMessage('[data-finance-message]', error.message, false);
+        }
+      });
+    }
 
     const input = document.querySelector('[data-logo-input]');
     const preview = document.querySelector('[data-logo-preview]');
@@ -2871,6 +2986,7 @@
       if (page === 'settings' && !isWorker()) {
         await loadSchedulingSettings();
         await loadNotificationLogs();
+        await loadFinanceSettings();
       }
     } catch (error) {
       setStatus('Log in to load company data.', false);

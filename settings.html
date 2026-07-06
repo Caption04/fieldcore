@@ -24,6 +24,7 @@
           <button class="settings-tab" type="button" data-settings-target="jobs">Job Defaults</button>
           <button class="settings-tab" type="button" data-settings-target="scheduling">Scheduling</button>
           <button class="settings-tab" type="button" data-settings-target="billing">Billing</button>
+          <button class="settings-tab" type="button" data-settings-target="finance">Finance &amp; Exports</button>
           <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
           <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
           <button class="settings-tab" type="button" data-settings-target="admin-tools">Admin Tools</button>
@@ -317,6 +318,71 @@
                 <span class="badge gray">Loading</span>
               </div>
               <div class="empty-state"><div><strong>Subscription status unavailable.</strong><span>Open this panel to load SaaS billing details.</span></div></div>
+            </div>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="finance" hidden>
+            <div class="panel-head">
+              <h2>Finance &amp; Exports</h2>
+              <span class="badge gray">Accounting foundation</span>
+            </div>
+            <form class="form-grid" data-finance-settings-form>
+              <div class="field">
+                <label for="financeDefaultCurrency">Default Currency</label>
+                <input id="financeDefaultCurrency" name="defaultCurrency" maxlength="3" placeholder="USD" data-finance-field="defaultCurrency">
+              </div>
+              <div class="field">
+                <label for="financeAllowedCurrencies">Allowed Currencies</label>
+                <input id="financeAllowedCurrencies" name="allowedCurrencies" placeholder="USD,ZAR,ZiG" data-finance-field="allowedCurrencies">
+              </div>
+              <div class="field">
+                <label for="financeTaxName">Tax/VAT Label</label>
+                <input id="financeTaxName" name="taxName" placeholder="VAT" data-finance-field="taxName">
+              </div>
+              <div class="field">
+                <label for="financeTaxRate">Tax Rate %</label>
+                <input id="financeTaxRate" name="taxRate" type="number" min="0" max="100" step="0.01" data-finance-field="taxRate">
+              </div>
+              <div class="field">
+                <label for="financeInvoicePrefix">Invoice Prefix</label>
+                <input id="financeInvoicePrefix" name="invoicePrefix" maxlength="20" placeholder="INV" data-finance-field="invoicePrefix">
+              </div>
+              <div class="field">
+                <label for="financeReceiptPrefix">Receipt Prefix</label>
+                <input id="financeReceiptPrefix" name="receiptPrefix" maxlength="20" placeholder="RCT" data-finance-field="receiptPrefix">
+              </div>
+              <div class="field">
+                <label for="financeFiscalYearStartMonth">Fiscal Year Start Month</label>
+                <input id="financeFiscalYearStartMonth" name="fiscalYearStartMonth" type="number" min="1" max="12" data-finance-field="fiscalYearStartMonth">
+              </div>
+              <div class="field checkbox-field">
+                <label><input type="checkbox" name="pricesIncludeTax" data-finance-field="pricesIncludeTax"> Prices include tax</label>
+              </div>
+              <div class="field span-2">
+                <label for="financeInvoiceFooter">Invoice Footer</label>
+                <textarea id="financeInvoiceFooter" name="invoiceFooter" data-finance-field="invoiceFooter" placeholder="Payment instructions or legal footer."></textarea>
+              </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="submit">Save Finance Settings</button>
+              </div>
+              <p class="fc-form-error span-2" data-finance-message hidden></p>
+            </form>
+            <div class="settings-subform span-2" data-finance-integrations-card>
+              <div class="panel-head"><h3>Accounting Integrations</h3><span class="badge gray">Placeholders only</span></div>
+              <div class="empty-state"><div><strong>No finance integrations loaded.</strong><span>Open this panel to load accounting placeholders.</span></div></div>
+            </div>
+            <div class="table-card span-2" data-finance-export-card>
+              <div class="panel-head card"><h3>CSV Exports</h3><span class="badge gray">Manual accounting</span></div>
+              <div class="settings-list">
+                <a class="list-item" href="/api/finance/export/invoices.csv"><span class="initials">INV</span><div><strong>Export invoices</strong><small>Invoice numbers, customers, tax, totals, balances.</small></div><span class="badge gray">CSV</span></a>
+                <a class="list-item" href="/api/finance/export/payments.csv"><span class="initials">PAY</span><div><strong>Export payments</strong><small>Confirmed and pending payment records.</small></div><span class="badge gray">CSV</span></a>
+                <a class="list-item" href="/api/finance/export/receipts.csv"><span class="initials">RCT</span><div><strong>Export receipts</strong><small>Receipt numbers and issued amounts.</small></div><span class="badge gray">CSV</span></a>
+                <a class="list-item" href="/api/finance/export/customers.csv"><span class="initials">CUS</span><div><strong>Export customers</strong><small>Company-scoped customer directory.</small></div><span class="badge gray">CSV</span></a>
+              </div>
+            </div>
+            <div class="table-card span-2" data-finance-export-logs-card>
+              <div class="panel-head card"><h3>Export Logs</h3><span class="badge gray">Audit</span></div>
+              <div class="empty-state"><div><strong>No export logs loaded.</strong><span>CSV exports will appear here.</span></div></div>
             </div>
           </div>
 

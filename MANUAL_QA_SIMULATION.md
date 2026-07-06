@@ -1264,3 +1264,22 @@ Ready for launch polish
 ```
 
 Do not treat manual QA as optional. Automated tests prove code paths; this simulation proves the product works as a real operating system.
+
+## TASK3 Finance and Local Accounting QA
+
+1. Log in as OWNER or ADMIN.
+2. Open Settings → Finance & Exports.
+3. Save finance settings:
+   - default currency
+   - allowed currencies
+   - tax/VAT name
+   - tax rate
+   - invoice prefix
+   - receipt prefix
+4. Create a new invoice and confirm the invoice number uses the configured prefix.
+5. Confirm a payment and confirm the generated receipt uses the configured prefix.
+6. Export invoices, payments, receipts, and customers as CSV.
+7. Confirm finance export logs appear in Settings → Finance & Exports.
+8. Create a Xero/Sage/QuickBooks placeholder and press Test.
+9. Confirm the test result says it is configured only and live sync is not implemented.
+10. Log in as a worker and confirm finance settings/export endpoints are blocked.

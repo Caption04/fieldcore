@@ -87,6 +87,11 @@ const stockMovementTypeValues = ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'RESERVED', 
 const jobPartStatusValues = ['PLANNED', 'RESERVED', 'USED', 'SHORT', 'RETURNED', 'CANCELLED'];
 const purchaseRequestStatusValues = ['DRAFT', 'REQUESTED', 'APPROVED', 'REJECTED', 'ORDERED', 'CLOSED'];
 const purchaseOrderStatusValues = ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
+const financeProviderValues = ['MANUAL_CSV', 'XERO', 'QUICKBOOKS', 'SAGE', 'ZOHO_BOOKS', 'CUSTOM'];
+const financeIntegrationStatusValues = ['DISCONNECTED', 'CONFIGURED', 'ACTIVE', 'ERROR', 'DISABLED'];
+const financeExportTypeValues = ['INVOICES', 'PAYMENTS', 'RECEIPTS', 'CUSTOMERS'];
+const financeExportStatusValues = ['COMPLETED', 'FAILED'];
+const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -321,6 +326,111 @@ async function requireInvoice(req, id) {
   return record;
 }
 
+function financeSettingsDefaults(companyId) {
+  return {
+    id: null,
+    companyId,
+    defaultCurrency: 'USD',
+    allowedCurrencies: ['USD', 'ZAR'],
+    taxName: 'Tax',
+    taxRate: 0,
+    pricesIncludeTax: false,
+    invoicePrefix: 'INV',
+    receiptPrefix: 'RCT',
+    fiscalYearStartMonth: 1,
+    invoiceFooter: null,
+    createdAt: null,
+    updatedAt: null
+  };
+}
+
+async function getCompanyFinanceSettings(companyId, tx = prisma) {
+  const record = await tx.companyFinanceSettings.findUnique({ where: { companyId } });
+  return record || financeSettingsDefaults(companyId);
+}
+
+async function requireFinanceIntegration(req, id) {
+  const record = await prisma.financeIntegration.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Finance integration not found');
+  return record;
+}
+
+function safeFinanceIntegration(record) {
+  if (!record) return record;
+  return {
+    id: record.id,
+    companyId: record.companyId,
+    provider: record.provider,
+    status: record.status,
+    externalTenantId: record.externalTenantId || null,
+    lastSyncAt: record.lastSyncAt || null,
+    config: record.config || {},
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+
+function financeDateWhere(query, field = 'createdAt') {
+  const where = {};
+  if (query.startDate || query.endDate) {
+    where[field] = {};
+    if (query.startDate) where[field].gte = query.startDate;
+    if (query.endDate) where[field].lte = query.endDate;
+  }
+  return where;
+}
+
+function csvCell(value) {
+  if (value == null) return '';
+  let text = value instanceof Date ? value.toISOString() : String(value);
+  if (/^[=+\-@]/.test(text)) text = "'" + text;
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+function csvDocument(headers, rows) {
+  return headers.map(csvCell).join(',') + '\n' + rows.map((row) => headers.map((header) => csvCell(row[header])).join(',')).join('\n') + '\n';
+}
+
+async function recordFinanceExport(req, exportType, fileName, recordCount, status = 'COMPLETED', error) {
+  const log = await prisma.financeExportLog.create({
+    data: {
+      companyId: req.companyId,
+      exportType,
+      provider: 'MANUAL_CSV',
+      status,
+      fileName,
+      recordCount,
+      createdById: req.user && req.user.id,
+      error
+    }
+  });
+  await audit(req, status === 'COMPLETED' ? 'EXPORT' : 'EXPORT_FAILED', 'FinanceExportLog', log.id, { exportType, fileName, recordCount });
+  return log;
+}
+
+async function sendFinanceCsv(req, res, exportType, fileName, headers, rows) {
+  await recordFinanceExport(req, exportType, fileName, rows.length);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="' + fileName + '"');
+  return res.send(csvDocument(headers, rows));
+}
+
+async function requireFinanceLocalRecord(req, localType, localId) {
+  const map = {
+    INVOICE: ['invoice', 'Invoice'],
+    PAYMENT: ['payment', 'Payment'],
+    RECEIPT: ['receipt', 'Receipt'],
+    CUSTOMER: ['customer', 'Customer'],
+    QUOTE: ['quote', 'Quote'],
+    JOB: ['job', 'Job']
+  };
+  const entry = map[localType];
+  if (!entry) throw new AppError(400, 'Unsupported local record type');
+  const record = await prisma[entry[0]].findFirst({ where: { id: localId, companyId: req.companyId } });
+  if (!record) throw notFound(entry[1] + ' not found');
+  return record;
+}
+
 async function validateJobRelations(req, body) {
   if (body.customerId) await requireCustomer(req, body.customerId);
   if (body.serviceId) await requireService(req, body.serviceId);
@@ -368,6 +478,42 @@ const messageLogQuerySchema = z.object({
   status: z.string().trim().max(40).optional(),
   page: z.string().optional(),
   limit: z.string().optional()
+});
+
+const currencyCode = z.string().trim().transform((value) => value.toUpperCase()).refine((value) => /^[A-Z]{3}$/.test(value), 'Currency must be a 3-letter ISO code');
+const financeSettingsSchema = z.object({
+  defaultCurrency: currencyCode.optional(),
+  allowedCurrencies: z.array(currencyCode).max(20).optional(),
+  taxName: optionalText(40),
+  taxRate: z.coerce.number().min(0).max(100).optional(),
+  pricesIncludeTax: z.boolean().optional(),
+  invoicePrefix: optionalText(20),
+  receiptPrefix: optionalText(20),
+  fiscalYearStartMonth: z.coerce.number().int().min(1).max(12).optional(),
+  invoiceFooter: optionalText(1000)
+});
+const financeIntegrationConfigSchema = z.record(z.union([z.string().trim().max(500), z.boolean(), z.number()])).default({});
+const financeIntegrationCreateSchema = z.object({
+  provider: z.enum(financeProviderValues),
+  status: z.enum(financeIntegrationStatusValues).optional(),
+  externalTenantId: optionalText(160),
+  config: financeIntegrationConfigSchema
+});
+const financeIntegrationPatchSchema = z.object({
+  status: z.enum(financeIntegrationStatusValues).optional(),
+  externalTenantId: optionalText(160),
+  config: financeIntegrationConfigSchema.optional()
+});
+const financeExportQuerySchema = z.object({
+  startDate: optionalDate,
+  endDate: optionalDate
+});
+const financeMarkExportedSchema = z.object({
+  provider: z.enum(financeProviderValues).default('MANUAL_CSV'),
+  localType: z.enum(externalLocalTypeValues),
+  ids: z.array(z.string().min(1)).min(1).max(500),
+  externalIds: z.record(z.string().trim().min(1).max(250)).optional(),
+  exportedAt: optionalDate
 });
 
 function lifecycleWorkerId(req, job) {
@@ -716,9 +862,11 @@ async function addInvoiceStatusHistory(tx, req, invoice, toStatus, note) {
 
 async function nextInvoiceNumber(tx, companyId) {
   const counter = await tx.companyInvoiceCounter.upsert({ where: { companyId }, update: {}, create: { companyId } });
+  const settings = await getCompanyFinanceSettings(companyId, tx);
+  const prefix = settings.invoicePrefix || counter.prefix || 'INV';
   let nextNumber = counter.nextNumber;
   for (let attempt = 0; attempt < 1000; attempt += 1) {
-    const number = counter.prefix + '-' + String(nextNumber).padStart(counter.padding, '0');
+    const number = prefix + '-' + String(nextNumber).padStart(counter.padding, '0');
     const existingCount = await tx.invoice.count({ where: { companyId, number } });
     await tx.companyInvoiceCounter.update({ where: { companyId }, data: { nextNumber: nextNumber + 1 } });
     nextNumber += 1;
@@ -731,7 +879,9 @@ async function createReceiptForPayment(tx, payment, invoice) {
   const existing = await tx.receipt.findUnique({ where: { paymentId: payment.id } });
   if (existing) return existing;
   const count = await tx.receipt.count({ where: { companyId: payment.companyId } });
-  return tx.receipt.create({ data: { companyId: payment.companyId, invoiceId: invoice.id, paymentId: payment.id, receiptNumber: 'RCT-' + String(count + 1).padStart(4, '0'), amount: payment.amount } });
+  const settings = await getCompanyFinanceSettings(payment.companyId, tx);
+  const prefix = settings.receiptPrefix || 'RCT';
+  return tx.receipt.create({ data: { companyId: payment.companyId, invoiceId: invoice.id, paymentId: payment.id, receiptNumber: prefix + '-' + String(count + 1).padStart(4, '0'), amount: payment.amount } });
 }
 
 const scheduleInclude = { job: { include: { customer: true, service: true } }, worker: { include: SAFE_WORKER_INCLUDE } };
@@ -1641,6 +1791,106 @@ router.get('/storage/objects/:id', validate(idParam, 'params'), asyncHandler(asy
 router.get('/company/profile', asyncHandler(async (req, res) => {
   const company = await getCompanyWithBranding(req.companyId);
   sendData(res, profileResponse(company));
+}));
+
+
+router.get('/company/finance-settings', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await getCompanyFinanceSettings(req.companyId)));
+}));
+
+router.patch('/company/finance-settings', requireRole(...adminRoles), validate(financeSettingsSchema), asyncHandler(async (req, res) => {
+  const update = { ...req.body };
+  const data = await prisma.companyFinanceSettings.upsert({
+    where: { companyId: req.companyId },
+    update,
+    create: { ...financeSettingsDefaults(req.companyId), ...update, id: undefined, createdAt: undefined, updatedAt: undefined }
+  });
+  await audit(req, 'UPDATE', 'CompanyFinanceSettings', data.id, { section: 'finance' });
+  sendData(res, normalize(data));
+}));
+
+router.get('/finance/integrations', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await prisma.financeIntegration.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data.map(safeFinanceIntegration)));
+}));
+
+router.post('/finance/integrations', requireRole(...adminRoles), validate(financeIntegrationCreateSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.financeIntegration.upsert({
+    where: { companyId_provider: { companyId: req.companyId, provider: req.body.provider } },
+    update: { status: req.body.status || 'CONFIGURED', externalTenantId: req.body.externalTenantId, config: req.body.config || {} },
+    create: { companyId: req.companyId, provider: req.body.provider, status: req.body.status || 'CONFIGURED', externalTenantId: req.body.externalTenantId, config: req.body.config || {} }
+  });
+  await audit(req, 'UPSERT', 'FinanceIntegration', data.id, { provider: data.provider });
+  sendData(res, normalize(safeFinanceIntegration(data)), 201);
+}));
+
+router.patch('/finance/integrations/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(financeIntegrationPatchSchema), asyncHandler(async (req, res) => {
+  const existing = await requireFinanceIntegration(req, req.params.id);
+  const data = await prisma.financeIntegration.update({ where: { id: existing.id }, data: req.body });
+  await audit(req, 'UPDATE', 'FinanceIntegration', data.id, { provider: data.provider });
+  sendData(res, normalize(safeFinanceIntegration(data)));
+}));
+
+router.post('/finance/integrations/:id/test', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireFinanceIntegration(req, req.params.id);
+  const test = { ok: true, verified: false, status: existing.status || 'CONFIGURED', message: existing.provider === 'MANUAL_CSV' ? 'Manual CSV export is available.' : 'Provider record is configured only. Live accounting sync is not implemented yet.' };
+  const data = await prisma.financeIntegration.update({ where: { id: existing.id }, data: { status: existing.status === 'DISABLED' ? 'DISABLED' : 'CONFIGURED' } });
+  await audit(req, 'TEST', 'FinanceIntegration', data.id, { provider: data.provider, verified: false });
+  sendData(res, normalize({ integration: safeFinanceIntegration(data), test }));
+}));
+
+router.get('/finance/export/invoices.csv', requireRole(...adminRoles), validate(financeExportQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  const invoices = await prisma.invoice.findMany({ where: { companyId: req.companyId, ...financeDateWhere(req.query) }, include: { customer: true, service: true, job: true }, orderBy: { createdAt: 'desc' } });
+  const headers = ['id', 'number', 'customer', 'service', 'status', 'subtotal', 'taxTotal', 'total', 'balanceDue', 'dueDate', 'createdAt'];
+  const rows = invoices.map((item) => ({ id: item.id, number: item.number, customer: item.customer && item.customer.name || '', service: item.service && item.service.name || '', status: item.status, subtotal: item.subtotal || 0, taxTotal: item.taxTotal || 0, total: item.total || item.amount || 0, balanceDue: item.balanceDue || 0, dueDate: item.dueDate || '', createdAt: item.createdAt || '' }));
+  return sendFinanceCsv(req, res, 'INVOICES', 'fieldcore-invoices.csv', headers, rows);
+}));
+
+router.get('/finance/export/payments.csv', requireRole(...adminRoles), validate(financeExportQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  const payments = await prisma.payment.findMany({ where: { companyId: req.companyId, ...financeDateWhere(req.query) }, orderBy: { createdAt: 'desc' } });
+  const invoices = payments.length ? await prisma.invoice.findMany({ where: { companyId: req.companyId, id: { in: payments.map((item) => item.invoiceId) } }, include: { customer: true } }) : [];
+  const invoiceMap = new Map(invoices.map((item) => [item.id, item]));
+  const headers = ['id', 'invoiceNumber', 'customer', 'amount', 'method', 'status', 'reference', 'receivedAt', 'confirmedAt', 'createdAt'];
+  const rows = payments.map((item) => { const invoice = invoiceMap.get(item.invoiceId) || {}; return { id: item.id, invoiceNumber: invoice.number || '', customer: invoice.customer && invoice.customer.name || '', amount: item.amount || 0, method: item.method, status: item.status, reference: item.reference || '', receivedAt: item.receivedAt || '', confirmedAt: item.confirmedAt || '', createdAt: item.createdAt || '' }; });
+  return sendFinanceCsv(req, res, 'PAYMENTS', 'fieldcore-payments.csv', headers, rows);
+}));
+
+router.get('/finance/export/receipts.csv', requireRole(...adminRoles), validate(financeExportQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  const receipts = await prisma.receipt.findMany({ where: { companyId: req.companyId, ...financeDateWhere(req.query, 'issuedAt') }, orderBy: { issuedAt: 'desc' } });
+  const invoices = receipts.length ? await prisma.invoice.findMany({ where: { companyId: req.companyId, id: { in: receipts.map((item) => item.invoiceId) } }, include: { customer: true } }) : [];
+  const invoiceMap = new Map(invoices.map((item) => [item.id, item]));
+  const headers = ['id', 'receiptNumber', 'invoiceNumber', 'customer', 'paymentId', 'amount', 'issuedAt'];
+  const rows = receipts.map((item) => { const invoice = invoiceMap.get(item.invoiceId) || {}; return { id: item.id, receiptNumber: item.receiptNumber, invoiceNumber: invoice.number || '', customer: invoice.customer && invoice.customer.name || '', paymentId: item.paymentId, amount: item.amount || 0, issuedAt: item.issuedAt || '' }; });
+  return sendFinanceCsv(req, res, 'RECEIPTS', 'fieldcore-receipts.csv', headers, rows);
+}));
+
+router.get('/finance/export/customers.csv', requireRole(...adminRoles), validate(financeExportQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  const customers = await prisma.customer.findMany({ where: { companyId: req.companyId, ...financeDateWhere(req.query) }, orderBy: { createdAt: 'desc' } });
+  const headers = ['id', 'name', 'email', 'phone', 'address', 'createdAt'];
+  const rows = customers.map((item) => ({ id: item.id, name: item.name, email: item.email || '', phone: item.phone || '', address: item.address || '', createdAt: item.createdAt || '' }));
+  return sendFinanceCsv(req, res, 'CUSTOMERS', 'fieldcore-customers.csv', headers, rows);
+}));
+
+router.post('/finance/export/mark-exported', requireRole(...adminRoles), validate(financeMarkExportedSchema), asyncHandler(async (req, res) => {
+  const syncedAt = req.body.exportedAt || new Date();
+  const links = [];
+  for (const localId of req.body.ids) {
+    await requireFinanceLocalRecord(req, req.body.localType, localId);
+    const externalId = req.body.externalIds && req.body.externalIds[localId] || [req.body.provider, req.body.localType, localId].join(':');
+    const link = await prisma.externalRecordLink.upsert({
+      where: { companyId_provider_localType_localId: { companyId: req.companyId, provider: req.body.provider, localType: req.body.localType, localId } },
+      update: { externalId, lastSyncedAt: syncedAt },
+      create: { companyId: req.companyId, provider: req.body.provider, localType: req.body.localType, localId, externalId, lastSyncedAt: syncedAt }
+    });
+    links.push(link);
+  }
+  await audit(req, 'MARK_EXPORTED', 'ExternalRecordLink', req.body.localType, { provider: req.body.provider, localType: req.body.localType, count: links.length });
+  sendData(res, normalize({ marked: links.length, links }));
+}));
+
+router.get('/finance/export-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.financeExportLog, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
 }));
 
 router.patch('/company/profile', requireRole(...adminRoles), validate(companyProfileSchema), asyncHandler(async (req, res) => {

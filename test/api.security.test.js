@@ -413,6 +413,10 @@ function createMockPrisma(seed) {
         return clone(db.companyBrandings[index]);
       }
     },
+    companyFinanceSettings: makeModel('companyFinanceSettings'),
+    financeIntegration: makeModel('financeIntegrations'),
+    externalRecordLink: makeModel('externalRecordLinks'),
+    financeExportLog: makeModel('financeExportLogs'),
     customer: makeModel('customers'),
     workerProfile: makeModel('workerProfiles', enrichWorker),
     service: makeModel('services'),
@@ -547,6 +551,10 @@ async function buildApp() {
       { id: 'branding-a', companyId: 'company-a', brandName: 'Brand A', primaryColor: '#111111', secondaryColor: '#222222', accentColor: '#333333', supportEmail: 'support@a.test', supportPhone: '+1 A', invoiceFooter: 'Footer A', invoiceTerms: 'Terms A' },
       { id: 'branding-b', companyId: 'company-b', brandName: 'Brand B', primaryColor: '#444444', secondaryColor: '#555555', accentColor: '#666666', supportEmail: 'support@b.test', supportPhone: '+1 B', invoiceFooter: 'Footer B', invoiceTerms: 'Terms B' }
     ],
+    companyFinanceSettings: [],
+    financeIntegrations: [],
+    externalRecordLinks: [],
+    financeExportLogs: [],
     users: [
       { id: 'owner-a', companyId: 'company-a', email: 'owner-a@test.local', phone: '+12025550100', name: 'Owner A', role: 'OWNER', passwordHash: hash },
       { id: 'admin-a', companyId: 'company-a', email: 'admin-a@test.local', phone: '+12025550101', name: 'Admin A', role: 'ADMIN', passwordHash: hash },
@@ -2711,4 +2719,91 @@ test('task2 purchase order receiving increases stock', async () => {
 
   const stock = await admin.get(`/api/inventory/items/${item.body.data.id}/stock`);
   assert.equal(Number(stock.body.data[0].quantityOnHand), 6);
+});
+
+
+test('task3 admin can configure finance settings and prefixes are used safely', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const forbidden = await worker.get('/api/company/finance-settings');
+  assert.equal(forbidden.status, 403);
+
+  const saved = await admin.patch('/api/company/finance-settings').send({
+    defaultCurrency: 'zar',
+    allowedCurrencies: ['ZAR', 'USD'],
+    taxName: 'VAT',
+    taxRate: 15,
+    pricesIncludeTax: true,
+    invoicePrefix: 'FCINV',
+    receiptPrefix: 'FCRCT',
+    fiscalYearStartMonth: 3,
+    invoiceFooter: 'Pay within terms.'
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.data.defaultCurrency, 'ZAR');
+  assert.equal(saved.body.data.taxName, 'VAT');
+
+  const invoice = await admin.post('/api/invoices').send({ customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', amount: 100 });
+  assert.equal(invoice.status, 201);
+  assert.equal(invoice.body.data.number.startsWith('FCINV-'), true);
+
+  const paid = await admin.post('/api/invoices/' + invoice.body.data.id + '/payments').send({ amount: 100, method: 'CASH', status: 'CONFIRMED' });
+  assert.equal(paid.status, 201);
+  const receipts = await admin.get('/api/invoices/' + invoice.body.data.id + '/receipts');
+  assert.equal(receipts.status, 200);
+  assert.equal(receipts.body.data[0].receiptNumber.startsWith('FCRCT-'), true);
+});
+
+test('task3 finance CSV exports are company scoped and create export logs', async () => {
+  const app = await buildApp();
+  const adminA = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+
+  const invoices = await adminA.get('/api/finance/export/invoices.csv');
+  assert.equal(invoices.status, 200);
+  assert.equal(invoices.headers['content-type'].includes('text/csv'), true);
+  assert.equal(invoices.text.includes('INV-A'), true);
+  assert.equal(invoices.text.includes('Company B'), false);
+
+  const customers = await adminA.get('/api/finance/export/customers.csv');
+  assert.equal(customers.status, 200);
+  assert.equal(customers.text.includes('Customer A'), true);
+  assert.equal(customers.text.includes('Customer B'), false);
+
+  const logsA = await adminA.get('/api/finance/export-logs');
+  assert.equal(logsA.status, 200);
+  assert.equal(logsA.body.data.length, 2);
+  assert.equal(logsA.body.data.every((log) => log.companyId === 'company-a'), true);
+
+  const logsB = await adminB.get('/api/finance/export-logs');
+  assert.equal(logsB.status, 200);
+  assert.equal(logsB.body.data.length, 0);
+});
+
+test('task3 finance integrations are placeholders and export links are scoped', async () => {
+  const app = await buildApp();
+  const adminA = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+
+  const created = await adminA.post('/api/finance/integrations').send({ provider: 'XERO', externalTenantId: 'tenant-a', config: { tenantName: 'A Books' } });
+  assert.equal(created.status, 201);
+  assert.equal(JSON.stringify(created.body).includes('clientSecret'), false);
+
+  const tested = await adminA.post('/api/finance/integrations/' + created.body.data.id + '/test').send({});
+  assert.equal(tested.status, 200);
+  assert.equal(tested.body.data.test.verified, false);
+  assert.equal(tested.body.data.test.message.includes('not implemented'), true);
+
+  assert.equal((await adminB.patch('/api/finance/integrations/' + created.body.data.id).send({ status: 'ACTIVE' })).status, 404);
+  assert.equal((await adminB.post('/api/finance/integrations/' + created.body.data.id + '/test').send({})).status, 404);
+
+  const mark = await adminA.post('/api/finance/export/mark-exported').send({ provider: 'XERO', localType: 'INVOICE', ids: ['invoice-a'], externalIds: { 'invoice-a': 'xero-invoice-1' } });
+  assert.equal(mark.status, 200);
+  assert.equal(mark.body.data.marked, 1);
+  assert.equal(app.locals.testDb.externalRecordLinks[0].externalId, 'xero-invoice-1');
+
+  const blocked = await adminB.post('/api/finance/export/mark-exported').send({ provider: 'XERO', localType: 'INVOICE', ids: ['invoice-a'] });
+  assert.equal(blocked.status, 404);
 });

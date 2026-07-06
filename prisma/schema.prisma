@@ -253,6 +253,44 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+enum FinanceProvider {
+  MANUAL_CSV
+  XERO
+  QUICKBOOKS
+  SAGE
+  ZOHO_BOOKS
+  CUSTOM
+}
+
+enum FinanceIntegrationStatus {
+  DISCONNECTED
+  CONFIGURED
+  ACTIVE
+  ERROR
+  DISABLED
+}
+
+enum FinanceExportType {
+  INVOICES
+  PAYMENTS
+  RECEIPTS
+  CUSTOMERS
+}
+
+enum FinanceExportStatus {
+  COMPLETED
+  FAILED
+}
+
+enum ExternalLocalType {
+  INVOICE
+  PAYMENT
+  RECEIPT
+  CUSTOMER
+  QUOTE
+  JOB
+}
+
 model Company {
   id                     String                     @id @default(cuid())
   name                   String
@@ -321,6 +359,10 @@ model Company {
   purchaseRequests       PurchaseRequest[]
   purchaseOrders         PurchaseOrder[]
   purchaseOrderLines     PurchaseOrderLine[]
+  financeSettings        CompanyFinanceSettings?
+  financeIntegrations    FinanceIntegration[]
+  externalRecordLinks    ExternalRecordLink[]
+  financeExportLogs      FinanceExportLog[]
 }
 
 model SaaSPlan {
@@ -427,6 +469,7 @@ model User {
   storageObjectsUploaded      StorageObject[]
   stockMovementsCreated       StockMovement[]         @relation("StockMovementCreatedBy")
   purchaseRequestsCreated     PurchaseRequest[]       @relation("PurchaseRequestRequestedBy")
+  financeExportLogsCreated    FinanceExportLog[]      @relation("FinanceExportLogCreatedBy")
 
   @@index([companyId])
 }
@@ -1440,6 +1483,82 @@ model JobSignature {
 
   @@index([companyId, jobId])
   @@index([companyId, capturedById])
+}
+
+model CompanyFinanceSettings {
+  id                   String   @id @default(cuid())
+  companyId            String   @unique
+  defaultCurrency      String   @default("USD")
+  allowedCurrencies    Json?
+  taxName              String   @default("Tax")
+  taxRate              Decimal  @default(0) @db.Decimal(7, 4)
+  pricesIncludeTax     Boolean  @default(false)
+  invoicePrefix        String?
+  receiptPrefix        String?
+  fiscalYearStartMonth Int?
+  invoiceFooter        String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  company              Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+model FinanceIntegration {
+  id               String                   @id @default(cuid())
+  companyId        String
+  provider         FinanceProvider
+  status           FinanceIntegrationStatus @default(CONFIGURED)
+  externalTenantId String?
+  lastSyncAt       DateTime?
+  config           Json?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  company          Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, provider])
+  @@index([companyId])
+  @@index([provider])
+  @@index([status])
+}
+
+model ExternalRecordLink {
+  id           String            @id @default(cuid())
+  companyId    String
+  provider     FinanceProvider
+  localType    ExternalLocalType
+  localId       String
+  externalId   String
+  lastSyncedAt DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  company      Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, provider, localType, localId])
+  @@index([companyId])
+  @@index([provider])
+  @@index([localType, localId])
+  @@index([externalId])
+}
+
+model FinanceExportLog {
+  id          String              @id @default(cuid())
+  companyId   String
+  exportType  FinanceExportType
+  provider    FinanceProvider     @default(MANUAL_CSV)
+  status      FinanceExportStatus @default(COMPLETED)
+  fileName    String?
+  recordCount Int                 @default(0)
+  createdById String?
+  error       String?
+  createdAt   DateTime            @default(now())
+  company     Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy   User?               @relation("FinanceExportLogCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, exportType])
+  @@index([provider])
+  @@index([status])
 }
 
 model AuditLog {
