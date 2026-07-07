@@ -79,7 +79,7 @@ const optionalQuantity = z.coerce.number().nonnegative().optional();
 const adminRoles = ['OWNER', 'ADMIN'];
 const ownerRoles = ['OWNER'];
 const jobStatusValues = ['NEW', 'SCHEDULED', 'DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
-const activityTypeValues = ['ASSIGNED','ARRIVED','STARTED','PAUSED','RESUMED','COMPLETED','ADMIN_NOTE','STATUS_CHANGED','PROOF_PHOTO_ADDED','PROOF_PHOTO_REMOVED','SIGNATURE_ADDED','SIGNATURE_REMOVED'];
+const activityTypeValues = ['ASSIGNED','ARRIVED','STARTED','PAUSED','RESUMED','COMPLETED','ADMIN_NOTE','STATUS_CHANGED','PROOF_PHOTO_ADDED','PROOF_PHOTO_REMOVED','SIGNATURE_ADDED','SIGNATURE_REMOVED','COMPLETION_LOCATION_CAPTURED'];
 const proofCategoryValues = ['BEFORE', 'AFTER', 'GENERAL', 'DAMAGE', 'ISSUE', 'EXTRA_WORK', 'CUSTOMER_APPROVAL'];
 const bookingRequestStatusValues = ['NEW', 'REVIEWED', 'CONVERTED', 'DECLINED', 'CANCELLED'];
 const integrationProviderValues = ['BREVO', 'META_WHATSAPP_CLOUD', 'CLICKATELL', 'AFRICAS_TALKING', 'CLOUDFLARE_R2'];
@@ -104,8 +104,8 @@ const paymentProviderConnectionStatusValues = ['DISCONNECTED', 'CONFIGURED', 'AC
 const paymentLinkStatusValues = ['CREATED', 'SENT', 'OPENED', 'PENDING', 'PAID', 'EXPIRED', 'CANCELLED', 'FAILED'];
 const reconciliationStatusValues = ['UNMATCHED', 'MATCHED', 'DUPLICATE', 'SUSPICIOUS', 'IGNORED'];
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
-const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED'];
-const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'PART_USED', 'PART_SHORTAGE'];
+const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED', 'CONFLICT', 'RESOLVED'];
+const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'GPS_CHECKPOINT', 'PART_USED', 'PART_SHORTAGE', 'CHECKLIST_COMPLETED', 'ISSUE_NOTE', 'CUSTOMER_UNAVAILABLE'];
 const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_DISCOUNT', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_ORDER_SEND', 'PURCHASE_ORDER_APPROVE', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'JOB_REASSIGN_AFTER_DISPATCH', 'SLA_WAIVE', 'CONTRACT_CANCEL'];
 const approvalStatusValues = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'];
 const permissionKeys = [
@@ -124,7 +124,8 @@ const permissionKeys = [
   'integration.manage',
   'approval.policy.manage',
   'approval.request.decide',
-  'audit.view'
+  'audit.view',
+  'mobile.sync.manage'
 ];
 const defaultPermissionBundles = {
   OWNER: permissionKeys,
@@ -969,6 +970,8 @@ const promisePaymentSchema = z.object({ promisedPaymentDate: optionalDate, payme
 const workerDeviceRegisterSchema = z.object({
   platform: z.string().trim().min(2).max(40).transform((value) => value.toUpperCase()),
   deviceName: optionalText(120),
+  deviceModel: optionalText(120),
+  appVersion: optionalText(80),
   deviceId: z.string().trim().min(4).max(180)
 });
 const workerSyncBootstrapSchema = z.object({
@@ -976,13 +979,16 @@ const workerSyncBootstrapSchema = z.object({
 });
 const workerSyncPullQuerySchema = z.object({
   since: optionalDate,
+  deviceId: optionalText(180),
   page: z.string().optional(),
-  limit: z.string().optional()
+  limit: z.coerce.number().int().positive().max(200).optional()
 });
 const offlinePayloadSchema = z.record(z.any()).default({});
 const offlineActionSchema = z.object({
   idempotencyKey: z.string().trim().min(6).max(180),
+  clientActionId: optionalText(180),
   actionType: z.enum(offlineActionTypeValues),
+  snapshotUpdatedAt: optionalDate,
   payload: offlinePayloadSchema
 });
 const workerSyncPushSchema = z.object({
@@ -990,6 +996,13 @@ const workerSyncPushSchema = z.object({
   actions: z.array(offlineActionSchema).min(1).max(100)
 });
 const workerSyncStatusParam = z.object({ idempotencyKey: z.string().trim().min(1).max(180) });
+const workerDeviceIdParam = z.object({ id: z.string().trim().min(1).max(180) });
+const workerDeviceRevokeSchema = z.object({ reason: optionalText(500) });
+const offlineActionIdParam = z.object({ id: z.string().trim().min(1).max(180) });
+const offlineActionResolveSchema = z.object({ resolutionNote: optionalText(1000) });
+const offlineActionAdminQuerySchema = z.object({ status: z.enum(offlineActionStatusValues).optional(), workerId: optionalText(160), deviceId: optionalText(180), limit: z.coerce.number().int().positive().max(200).optional() });
+const checklistItemSchema = z.object({ label: z.string().trim().min(1).max(240), helpText: optionalText(500), answerType: z.enum(['TEXT', 'NUMBER', 'YES_NO', 'PASS_FAIL', 'PHOTO']).default('TEXT'), required: z.boolean().optional(), photoRequired: z.boolean().optional(), passFail: z.boolean().optional(), sortOrder: z.coerce.number().int().optional(), active: z.boolean().optional() });
+const checklistTemplateSchema = z.object({ serviceId: optionalText(160), contractId: optionalText(160), name: z.string().trim().min(1).max(180), description: optionalText(1000), active: z.boolean().optional(), requiredForCompletion: z.boolean().optional(), sortOrder: z.coerce.number().int().optional(), items: z.array(checklistItemSchema).optional() });
 
 const branchSchema = z.object({
   name: z.string().trim().min(1).max(160),
@@ -1178,7 +1191,8 @@ function offlineJob(job) {
     parts: (job.jobPartUsages || []).map(safeWorkerPart),
     proofPhotos: job.proofPhotos || [],
     signature: job.signature || null,
-    completionLocation: job.completionLocation || null
+    completionLocation: job.completionLocation || null,
+    checklistAnswers: job.checklistAnswers || []
   });
 }
 
@@ -1189,7 +1203,8 @@ const offlineJobInclude = {
   jobPartUsages: { include: { item: true, location: true } },
   proofPhotos: { orderBy: { createdAt: 'desc' } },
   signature: true,
-  completionLocation: true
+  completionLocation: true,
+  checklistAnswers: { include: { item: true, template: true } }
 };
 
 async function registerOrTouchWorkerDevice(req, body, tx = prisma) {
@@ -1202,20 +1217,103 @@ async function registerOrTouchWorkerDevice(req, body, tx = prisma) {
     userId: req.user.id,
     platform: body.platform,
     deviceName: body.deviceName,
+    deviceModel: body.deviceModel,
+    appVersion: body.appVersion,
     deviceId: body.deviceId,
-    active: true,
-    lastSeenAt: now
+    lastSeenAt: now,
+    trustedAt: existing && existing.trustedAt || now
   };
-  if (existing) return tx.workerDevice.update({ where: { id: existing.id }, data });
-  return tx.workerDevice.create({ data });
+  if (existing) {
+    if (!existing.active || existing.revokedAt) throw new AppError(403, 'Worker device has been revoked');
+    return tx.workerDevice.update({ where: { id: existing.id }, data });
+  }
+  return tx.workerDevice.create({ data: { ...data, active: true } });
 }
 
 async function resolveWorkerDevice(req, deviceId) {
   if (!deviceId) return null;
   const worker = workerRequired(req);
-  const device = await prisma.workerDevice.findFirst({ where: { companyId: req.companyId, workerId: worker.id, deviceId, active: true } });
+  const device = await prisma.workerDevice.findFirst({ where: { companyId: req.companyId, workerId: worker.id, deviceId } });
   if (!device) throw notFound('Worker device not found');
+  if (!device.active || device.revokedAt) throw new AppError(403, 'Worker device has been revoked');
+  await prisma.workerDevice.update({ where: { id: device.id }, data: { lastSeenAt: new Date() } });
   return device;
+}
+
+function parseSyncSnapshot(action, payload) {
+  const value = action.snapshotUpdatedAt || payload.snapshotUpdatedAt || payload.jobUpdatedAt;
+  return value ? new Date(value) : null;
+}
+
+function isJobStale(job, snapshot) {
+  return snapshot && job.updatedAt && new Date(job.updatedAt).getTime() > snapshot.getTime();
+}
+
+function conflictError(message, details) {
+  return new AppError(409, message || 'Offline action conflicts with newer server state', { code: 'SYNC_CONFLICT', ...(details || {}) });
+}
+
+async function requiredChecklistItemsForJob(tx, req, job) {
+  const templates = await tx.jobChecklistTemplate.findMany({ where: { companyId: req.companyId, active: true } });
+  const applicableTemplates = templates.filter((template) => template.requiredForCompletion !== false && (!template.serviceId || template.serviceId === job.serviceId) && (!template.contractId || template.contractId === job.contractId));
+  const items = [];
+  for (const template of applicableTemplates) {
+    const templateItems = await tx.jobChecklistItem.findMany({ where: { companyId: req.companyId, templateId: template.id, active: true } });
+    for (const item of templateItems.filter((entry) => entry.required || entry.photoRequired)) items.push({ ...item, templateId: template.id });
+  }
+  return items;
+}
+
+async function assertRequiredChecklistComplete(tx, req, job) {
+  const requiredItems = await requiredChecklistItemsForJob(tx, req, job);
+  if (!requiredItems.length) return;
+  const answers = await tx.jobChecklistAnswer.findMany({ where: { companyId: req.companyId, jobId: job.id } });
+  const missing = requiredItems.filter((item) => {
+    const answer = answers.find((entry) => entry.itemId === item.id);
+    if (!answer) return true;
+    if (item.photoRequired && !answer.photoUrl) return true;
+    if (item.required && (answer.answer == null || String(answer.answer).trim() === '') && answer.passed == null && !answer.photoUrl) return true;
+    return false;
+  });
+  if (missing.length) throw new AppError(409, 'Required checklist is incomplete', { code: 'CHECKLIST_INCOMPLETE', missingItemIds: missing.map((item) => item.id) });
+}
+
+async function saveChecklistAnswers(tx, req, job, payload, meta) {
+  const templateId = payload.templateId;
+  if (!templateId) throw new AppError(400, 'templateId is required');
+  const template = await tx.jobChecklistTemplate.findFirst({ where: { id: templateId, companyId: req.companyId, active: true } });
+  if (!template) throw notFound('Checklist template not found');
+  if (template.serviceId && template.serviceId !== job.serviceId) throw new AppError(409, 'Checklist template does not match job service');
+  if (template.contractId && template.contractId !== job.contractId) throw new AppError(409, 'Checklist template does not match job contract');
+  const answers = Array.isArray(payload.answers) ? payload.answers : [];
+  const saved = [];
+  for (const entry of answers) {
+    if (!entry.itemId) throw new AppError(400, 'Checklist itemId is required');
+    const item = await tx.jobChecklistItem.findFirst({ where: { id: entry.itemId, companyId: req.companyId, templateId, active: true } });
+    if (!item) throw notFound('Checklist item not found');
+    if (item.photoRequired && !entry.photoUrl) throw new AppError(409, 'Checklist item requires a photo');
+    const data = {
+      companyId: req.companyId,
+      jobId: job.id,
+      templateId,
+      itemId: item.id,
+      workerId: req.user.worker.id,
+      capturedById: req.user.id,
+      answer: entry.answer == null ? null : String(entry.answer),
+      passed: entry.passed == null ? null : Boolean(entry.passed),
+      note: entry.note,
+      photoUrl: entry.photoUrl,
+      capturedAt: meta.capturedAt || new Date(),
+      offlineCreatedAt: meta.offlineCreatedAt,
+      deviceId: meta.deviceId,
+      syncId: meta.syncId
+    };
+    const existing = await tx.jobChecklistAnswer.findFirst({ where: { companyId: req.companyId, jobId: job.id, itemId: item.id } });
+    const answer = existing ? await tx.jobChecklistAnswer.update({ where: { id: existing.id }, data }) : await tx.jobChecklistAnswer.create({ data });
+    saved.push(answer);
+  }
+  await addJobActivity(tx, req, job, 'STATUS_CHANGED', payload.note || 'Checklist completed offline', { offline: true, checklistTemplateId: templateId, answerCount: saved.length }, meta);
+  return { jobId: job.id, templateId, answerCount: saved.length };
 }
 
 async function processOfflineAction(tx, req, queue, action, device) {
@@ -1226,6 +1324,8 @@ async function processOfflineAction(tx, req, queue, action, device) {
   const job = await tx.job.findFirst({ where: { id: jobId, companyId: req.companyId, workerId: req.user.worker.id } });
   if (!job) throw notFound('Job not found');
   const now = meta.capturedAt || new Date();
+  const snapshot = parseSyncSnapshot(action, payload);
+  if (isJobStale(job, snapshot)) throw conflictError('Job changed after offline snapshot', { jobId: job.id, serverUpdatedAt: job.updatedAt, snapshotUpdatedAt: snapshot.toISOString() });
 
   if (action.actionType === 'JOB_ARRIVE') {
     await tx.job.update({ where: { id: job.id }, data: { status: 'ARRIVED', arrivedAt: now } });
@@ -1248,6 +1348,8 @@ async function processOfflineAction(tx, req, queue, action, device) {
     return { jobId: job.id };
   }
   if (action.actionType === 'JOB_COMPLETE') {
+    if (job.status === 'COMPLETED') throw new AppError(409, 'Job is already completed');
+    await assertRequiredChecklistComplete(tx, req, job);
     await tx.job.update({ where: { id: job.id }, data: { status: 'COMPLETED', completedAt: now, completedById: req.user.id, completionNotes: payload.completionNotes || payload.note || job.completionNotes } });
     await addJobActivity(tx, req, job, 'COMPLETED', payload.completionNotes || payload.note, { offline: true }, meta);
     return { jobId: job.id };
@@ -1256,7 +1358,7 @@ async function processOfflineAction(tx, req, queue, action, device) {
     const activity = await addJobActivity(tx, req, job, 'STATUS_CHANGED', payload.note || 'Offline note', { offline: true, noteType: 'WORKER_NOTE' }, meta);
     return { jobId: job.id, activityId: activity.id };
   }
-  if (action.actionType === 'LOCATION_CAPTURED') {
+  if (action.actionType === 'LOCATION_CAPTURED' || action.actionType === 'GPS_CHECKPOINT') {
     if (payload.latitude == null || payload.longitude == null) throw new AppError(400, 'latitude and longitude are required');
     const location = await tx.jobCompletionLocation.upsert({
       where: { jobId: job.id },
@@ -1268,6 +1370,8 @@ async function processOfflineAction(tx, req, queue, action, device) {
   }
   if (action.actionType === 'PROOF_PHOTO_UPLOADED') {
     if (!payload.url) throw new AppError(400, 'proof photo url is required');
+    const existingPhoto = await tx.jobProofPhoto.findFirst({ where: { companyId: req.companyId, jobId: job.id, syncId: meta.syncId } });
+    if (existingPhoto) return { jobId: job.id, proofPhotoId: existingPhoto.id, duplicate: true };
     const photo = await tx.jobProofPhoto.create({ data: { companyId: req.companyId, jobId: job.id, workerId: req.user.worker.id, uploadedById: req.user.id, url: payload.url, filename: payload.filename || 'offline-proof.jpg', mimeType: payload.mimeType || 'image/jpeg', sizeBytes: Number(payload.sizeBytes || 0), category: payload.category || 'GENERAL', caption: payload.caption, capturedAt: meta.capturedAt, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, latitude: payload.latitude == null ? undefined : Number(payload.latitude), longitude: payload.longitude == null ? undefined : Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), syncId: meta.syncId } });
     await addJobActivity(tx, req, job, 'PROOF_PHOTO_ADDED', payload.caption, { offline: true, proofPhotoId: photo.id, category: photo.category }, meta);
     return { jobId: job.id, proofPhotoId: photo.id };
@@ -1281,6 +1385,18 @@ async function processOfflineAction(tx, req, queue, action, device) {
     });
     await addJobActivity(tx, req, job, 'SIGNATURE_ADDED', payload.signerName, { offline: true, signatureId: signature.id }, meta);
     return { jobId: job.id, signatureId: signature.id };
+  }
+  if (action.actionType === 'CHECKLIST_COMPLETED') {
+    return saveChecklistAnswers(tx, req, job, payload, meta);
+  }
+  if (action.actionType === 'ISSUE_NOTE') {
+    const activity = await addJobActivity(tx, req, job, 'STATUS_CHANGED', payload.note || 'Issue reported offline', { offline: true, issue: true, severity: payload.severity || 'NORMAL', photoUrl: payload.photoUrl }, meta);
+    return { jobId: job.id, activityId: activity.id };
+  }
+  if (action.actionType === 'CUSTOMER_UNAVAILABLE') {
+    await tx.job.update({ where: { id: job.id }, data: { status: 'ON_HOLD' } });
+    const activity = await addJobActivity(tx, req, job, 'STATUS_CHANGED', payload.note || 'Customer unavailable', { offline: true, customerUnavailable: true }, meta);
+    return { jobId: job.id, activityId: activity.id };
   }
   if (action.actionType === 'PART_USED') {
     if (!payload.itemId || !payload.locationId || !payload.quantity) throw new AppError(400, 'itemId, locationId and quantity are required');
@@ -1305,18 +1421,19 @@ async function processQueuedOfflineAction(req, action, device) {
   const duplicate = await prisma.offlineActionQueue.findFirst({ where: { companyId: req.companyId, idempotencyKey: action.idempotencyKey } });
   if (duplicate) return { id: duplicate.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, status: 'DUPLICATE', originalStatus: duplicate.status, processedAt: duplicate.processedAt, error: duplicate.error || null };
 
-  const queue = await prisma.offlineActionQueue.create({ data: { companyId: req.companyId, workerId: worker.id, userId: req.user.id, workerDeviceId: device && device.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, payload: action.payload, status: 'RECEIVED' } });
+  const queue = await prisma.offlineActionQueue.create({ data: { companyId: req.companyId, workerId: worker.id, userId: req.user.id, workerDeviceId: device && device.id, idempotencyKey: action.idempotencyKey, clientActionId: action.clientActionId, actionType: action.actionType, payload: action.payload, snapshotUpdatedAt: action.snapshotUpdatedAt || action.payload && (action.payload.snapshotUpdatedAt || action.payload.jobUpdatedAt) || null, status: 'RECEIVED' } });
   try {
     const result = await prisma.$transaction(async (tx) => {
       const outcome = await processOfflineAction(tx, req, queue, action, device);
-      const updated = await tx.offlineActionQueue.update({ where: { id: queue.id }, data: { status: 'PROCESSED', processedAt: new Date(), error: null } });
+      const updated = await tx.offlineActionQueue.update({ where: { id: queue.id }, data: { status: 'PROCESSED', processedAt: new Date(), error: null, result: outcome } });
       await addAuditLog(tx, req, 'SYNC_PROCESSED', 'OfflineActionQueue', queue.id, { actionType: action.actionType, idempotencyKey: action.idempotencyKey });
       return { updated, outcome };
     });
     return { id: result.updated.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, status: result.updated.status, processedAt: result.updated.processedAt, result: result.outcome };
   } catch (error) {
-    const status = error && (error.status === 403 || error.status === 404) ? 'REJECTED' : 'FAILED';
-    const updated = await prisma.offlineActionQueue.update({ where: { id: queue.id }, data: { status, processedAt: new Date(), error: error.message || 'Sync action failed' } });
+    const isConflict = error && error.status === 409 && error.details && error.details.code === 'SYNC_CONFLICT';
+    const status = isConflict ? 'CONFLICT' : error && (error.status === 403 || error.status === 404) ? 'REJECTED' : 'FAILED';
+    const updated = await prisma.offlineActionQueue.update({ where: { id: queue.id }, data: { status, processedAt: new Date(), error: error.message || 'Sync action failed', conflictReason: isConflict ? error.message : undefined, result: error.details || undefined } });
     return { id: updated.id, idempotencyKey: action.idempotencyKey, actionType: action.actionType, status: updated.status, processedAt: updated.processedAt, error: updated.error };
   }
 }
@@ -2605,30 +2722,49 @@ router.post('/worker/devices/register', requireRole('WORKER'), validate(workerDe
 router.post('/worker/sync/bootstrap', requireRole('WORKER'), validate(workerSyncBootstrapSchema), asyncHandler(async (req, res) => {
   const worker = workerRequired(req);
   let device = null;
-  if (req.body.deviceId) {
-    device = await registerOrTouchWorkerDevice(req, { deviceId: req.body.deviceId, platform: 'UNKNOWN' });
-  }
+  if (req.body.deviceId) device = await resolveWorkerDevice(req, req.body.deviceId);
   const jobs = await prisma.job.findMany({ where: { companyId: req.companyId, workerId: worker.id }, include: offlineJobInclude, orderBy: { scheduledStart: 'asc' } });
-  sendData(res, normalize({ serverTime: new Date().toISOString(), device, jobs: jobs.map(offlineJob) }));
+  sendData(res, normalize({ serverTime: new Date().toISOString(), syncCursor: new Date().toISOString(), device, jobs: jobs.map(offlineJob) }));
 }));
 
-router.get('/worker/sync/pull', requireRole('WORKER'), validate(workerSyncPullQuerySchema, 'query'), asyncHandler(async (req, res) => {
+router.get('/worker/mobile/config', requireRole('WORKER'), asyncHandler(async (req, res) => {
+  workerRequired(req);
+  sendData(res, normalize({ serverTime: new Date().toISOString(), supportedActionTypes: offlineActionTypeValues, supportedStatuses: offlineActionStatusValues, maxBatchSize: 100, requiresActiveDevice: true }));
+}));
+
+async function pullWorkerSync(req) {
   const worker = workerRequired(req);
+  if (req.query.deviceId) await resolveWorkerDevice(req, req.query.deviceId);
   const where = { companyId: req.companyId, workerId: worker.id };
   if (req.query.since) where.updatedAt = { gte: req.query.since };
   const jobs = await prisma.job.findMany({ where, include: offlineJobInclude, orderBy: { scheduledStart: 'asc' } });
-  const recentActions = await prisma.offlineActionQueue.findMany({ where: { companyId: req.companyId, workerId: worker.id, ...(req.query.since ? { updatedAt: { gte: req.query.since } } : {}) }, orderBy: { receivedAt: 'desc' }, take: 100 });
-  sendData(res, normalize({ serverTime: new Date().toISOString(), jobs: jobs.map(offlineJob), syncActions: recentActions }));
+  const recentActions = await prisma.offlineActionQueue.findMany({ where: { companyId: req.companyId, workerId: worker.id, ...(req.query.since ? { updatedAt: { gte: req.query.since } } : {}) }, orderBy: { receivedAt: 'desc' }, take: Number(req.query.limit || 100) });
+  return { serverTime: new Date().toISOString(), syncCursor: new Date().toISOString(), jobs: jobs.map(offlineJob), syncActions: recentActions };
+}
+
+router.get('/worker/sync/pull', requireRole('WORKER'), validate(workerSyncPullQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await pullWorkerSync(req)));
 }));
 
-router.post('/worker/sync/push', requireRole('WORKER'), validate(workerSyncPushSchema), asyncHandler(async (req, res) => {
+router.get('/worker/sync/v2/pull', requireRole('WORKER'), validate(workerSyncPullQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await pullWorkerSync(req)));
+}));
+
+async function pushWorkerSync(req) {
   workerRequired(req);
   const device = req.body.deviceId ? await resolveWorkerDevice(req, req.body.deviceId) : null;
   const results = [];
-  for (const action of req.body.actions) {
-    results.push(await processQueuedOfflineAction(req, action, device));
-  }
-  sendData(res, normalize({ serverTime: new Date().toISOString(), results }));
+  for (const action of req.body.actions) results.push(await processQueuedOfflineAction(req, action, device));
+  if (device) await prisma.workerDevice.update({ where: { id: device.id }, data: { lastSyncedAt: new Date(), lastSeenAt: new Date() } });
+  return { serverTime: new Date().toISOString(), syncCursor: new Date().toISOString(), partialSuccess: results.some((item) => item.status === 'PROCESSED') && results.some((item) => !['PROCESSED', 'DUPLICATE'].includes(item.status)), results };
+}
+
+router.post('/worker/sync/push', requireRole('WORKER'), validate(workerSyncPushSchema), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await pushWorkerSync(req)));
+}));
+
+router.post('/worker/sync/v2/push', requireRole('WORKER'), validate(workerSyncPushSchema), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await pushWorkerSync(req)));
 }));
 
 router.get('/worker/sync/status/:idempotencyKey', requireRole('WORKER'), validate(workerSyncStatusParam, 'params'), asyncHandler(async (req, res) => {
@@ -2636,6 +2772,68 @@ router.get('/worker/sync/status/:idempotencyKey', requireRole('WORKER'), validat
   const action = await prisma.offlineActionQueue.findFirst({ where: { companyId: req.companyId, workerId: worker.id, idempotencyKey: req.params.idempotencyKey } });
   if (!action) throw notFound('Sync action not found');
   sendData(res, normalize(action));
+}));
+
+router.get('/admin/worker-devices', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'mobile.sync.manage');
+  const devices = await prisma.workerDevice.findMany({ where: { companyId: req.companyId }, orderBy: { updatedAt: 'desc' } });
+  sendData(res, normalize(devices));
+}));
+
+router.patch('/admin/worker-devices/:id/revoke', requireRole(...adminRoles), validate(workerDeviceIdParam, 'params'), validate(workerDeviceRevokeSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'mobile.sync.manage');
+  const device = await prisma.workerDevice.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!device) throw notFound('Worker device not found');
+  const updated = await prisma.workerDevice.update({ where: { id: device.id }, data: { active: false, revokedAt: new Date(), revokedById: req.user.id, revokedReason: req.body.reason } });
+  await audit(req, 'REVOKE_WORKER_DEVICE', 'WorkerDevice', device.id, { deviceId: device.deviceId, reason: req.body.reason });
+  sendData(res, normalize(updated));
+}));
+
+router.get('/admin/offline-actions', requireRole(...adminRoles), validate(offlineActionAdminQuerySchema, 'query'), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'mobile.sync.manage');
+  const where = { companyId: req.companyId };
+  if (req.query.status) where.status = req.query.status;
+  if (req.query.workerId) where.workerId = req.query.workerId;
+  if (req.query.deviceId) where.workerDeviceId = req.query.deviceId;
+  const actions = await prisma.offlineActionQueue.findMany({ where, orderBy: { receivedAt: 'desc' }, take: req.query.limit || 100 });
+  sendData(res, normalize(actions));
+}));
+
+router.post('/admin/offline-actions/:id/resolve', requireRole(...adminRoles), validate(offlineActionIdParam, 'params'), validate(offlineActionResolveSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'mobile.sync.manage');
+  const action = await prisma.offlineActionQueue.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!action) throw notFound('Offline action not found');
+  const updated = await prisma.offlineActionQueue.update({ where: { id: action.id }, data: { status: 'RESOLVED', resolvedAt: new Date(), resolvedById: req.user.id, resolutionNote: req.body.resolutionNote } });
+  await audit(req, 'RESOLVE_OFFLINE_ACTION', 'OfflineActionQueue', action.id, { status: action.status, resolutionNote: req.body.resolutionNote });
+  sendData(res, normalize(updated));
+}));
+
+router.get('/checklist-templates', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const templates = await prisma.jobChecklistTemplate.findMany({ where: { companyId: req.companyId }, orderBy: { sortOrder: 'asc' }, include: { items: true } });
+  sendData(res, normalize(templates));
+}));
+
+router.post('/checklist-templates', requireRole(...adminRoles), validate(checklistTemplateSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'mobile.sync.manage');
+  if (req.body.serviceId) await requireService(req, req.body.serviceId);
+  if (req.body.contractId) await requireServiceContract(req, req.body.contractId);
+  const created = await prisma.$transaction(async (tx) => {
+    const template = await tx.jobChecklistTemplate.create({ data: { companyId: req.companyId, serviceId: req.body.serviceId, contractId: req.body.contractId, name: req.body.name, description: req.body.description, active: req.body.active !== false, requiredForCompletion: req.body.requiredForCompletion !== false, sortOrder: req.body.sortOrder || 0 } });
+    const items = [];
+    for (const [index, item] of (req.body.items || []).entries()) {
+      items.push(await tx.jobChecklistItem.create({ data: { companyId: req.companyId, templateId: template.id, label: item.label, helpText: item.helpText, answerType: item.answerType, required: !!item.required, photoRequired: !!item.photoRequired, passFail: !!item.passFail, sortOrder: item.sortOrder == null ? index : item.sortOrder, active: item.active !== false } }));
+    }
+    return { ...template, items };
+  });
+  sendData(res, normalize(created), 201);
+}));
+
+router.patch('/checklist-templates/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(checklistTemplateSchema.partial()), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'mobile.sync.manage');
+  const existing = await prisma.jobChecklistTemplate.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!existing) throw notFound('Checklist template not found');
+  const updated = await prisma.jobChecklistTemplate.update({ where: { id: existing.id }, data: { serviceId: req.body.serviceId, contractId: req.body.contractId, name: req.body.name, description: req.body.description, active: req.body.active, requiredForCompletion: req.body.requiredForCompletion, sortOrder: req.body.sortOrder } });
+  sendData(res, normalize(updated));
 }));
 
 router.get('/storage/objects/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {

@@ -157,3 +157,8 @@ FieldCore includes an accounting-sync foundation for Xero, Sage, and QuickBooks.
 FieldCore now includes a provider-ready payment rails layer for PayFast, Yoco, Ozow, Paynow/manual bank rails, and mock payment QA. Invoices can generate payment links, provider webhooks can confirm trusted payments, reconciliation imports can be matched manually, reminders are throttled, and refunds are tied into TASK7 approval gates.
 
 See `docs/payment-rails-reconciliation-collections.md`.
+
+
+## TASK10 mobile/offline foundation
+
+FieldCore now includes a native-app-ready mobile API contract, device revoke/trust metadata, sync v2 pull/push endpoints, per-action offline results, conflict detection, checklist templates/answers, and an admin Mobile Sync page for failed or conflicted offline actions. See `docs/mobile-api-contract.md`.

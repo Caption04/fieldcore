@@ -391,6 +391,8 @@ enum OfflineActionStatus {
   FAILED
   DUPLICATE
   REJECTED
+  CONFLICT
+  RESOLVED
 }
 
 enum OfflineActionType {
@@ -403,8 +405,12 @@ enum OfflineActionType {
   PROOF_PHOTO_UPLOADED
   SIGNATURE_CAPTURED
   LOCATION_CAPTURED
+  GPS_CHECKPOINT
   PART_USED
   PART_SHORTAGE
+  CHECKLIST_COMPLETED
+  ISSUE_NOTE
+  CUSTOMER_UNAVAILABLE
 }
 
 enum ApprovalEventType {
@@ -516,6 +522,9 @@ model Company {
   financeExportLogs      FinanceExportLog[]
   workerDevices          WorkerDevice[]
   offlineActionQueues    OfflineActionQueue[]
+  jobChecklistTemplates JobChecklistTemplate[]
+  jobChecklistItems     JobChecklistItem[]
+  jobChecklistAnswers   JobChecklistAnswer[]
   branches               Branch[]
   approvalPolicies       ApprovalPolicy[]
   approvalRequests       ApprovalRequest[]
@@ -632,6 +641,8 @@ model User {
   financeSyncLogsCreated      FinanceSyncLog[]        @relation("FinanceSyncLogCreatedBy")
   workerDevices               WorkerDevice[]
   offlineActionQueues         OfflineActionQueue[]
+  workerDevicesRevoked        WorkerDevice[]          @relation("WorkerDeviceRevokedBy")
+  checklistAnswersCaptured    JobChecklistAnswer[]    @relation("ChecklistAnswerCapturedBy")
   approvalRequestsMade        ApprovalRequest[]       @relation("ApprovalRequestRequestedBy")
   approvalRequestsDecided     ApprovalRequest[]       @relation("ApprovalRequestDecidedBy")
   permissionOverrides         UserPermissionOverride[]
@@ -902,6 +913,7 @@ model WorkerProfile {
   jobPartUsages   JobPartUsage[]
   workerDevices   WorkerDevice[]
   offlineActions  OfflineActionQueue[]
+  checklistAnswers JobChecklistAnswer[]
 
   @@index([companyId])
   @@index([companyId, roleId])
@@ -927,6 +939,7 @@ model Service {
   bookingRequests      BookingRequest[]
   assets               Asset[]
   contractServiceLines ContractServiceLine[]
+  checklistTemplates   JobChecklistTemplate[]
 
   @@index([companyId])
 }
@@ -993,6 +1006,7 @@ model Job {
   stockMovements       StockMovement[]
   jobPartUsages        JobPartUsage[]
   purchaseRequests     PurchaseRequest[]
+  checklistAnswers     JobChecklistAnswer[]
 
   @@index([companyId])
   @@index([companyId, customerId])
@@ -1082,6 +1096,7 @@ model ServiceContract {
   jobs               Job[]
   assets             ServiceContractAsset[]
   serviceLines       ContractServiceLine[]
+  checklistTemplates JobChecklistTemplate[]
 
   @@unique([companyId, contractNumber])
   @@index([companyId, customerId])
@@ -1334,51 +1349,143 @@ model PurchaseOrderLine {
 }
 
 model WorkerDevice {
-  id         String    @id @default(cuid())
-  companyId  String
-  workerId   String
-  userId     String
-  platform   String
-  deviceName String?
-  deviceId   String
-  lastSeenAt DateTime?
-  active     Boolean   @default(true)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  worker     WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  actions    OfflineActionQueue[]
+  id            String    @id @default(cuid())
+  companyId     String
+  workerId      String
+  userId        String
+  platform      String
+  deviceName    String?
+  deviceModel   String?
+  appVersion    String?
+  deviceId      String
+  lastSeenAt    DateTime?
+  lastSyncedAt  DateTime?
+  trustedAt     DateTime?
+  revokedAt     DateTime?
+  revokedById   String?
+  revokedReason String?
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker        WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revokedBy     User?     @relation("WorkerDeviceRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+  actions       OfflineActionQueue[]
 
   @@unique([companyId, deviceId])
-  @@index([companyId, workerId])
+  @@index([companyId, workerId, active])
   @@index([companyId, userId])
+  @@index([companyId, revokedAt])
 }
 
 model OfflineActionQueue {
-  id             String              @id @default(cuid())
-  companyId      String
-  workerId       String
-  userId         String
-  workerDeviceId String?
-  idempotencyKey String
-  actionType     OfflineActionType
-  payload        Json
-  status         OfflineActionStatus @default(RECEIVED)
-  receivedAt     DateTime            @default(now())
-  processedAt    DateTime?
-  error          String?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
-  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  worker         WorkerProfile       @relation(fields: [workerId], references: [id], onDelete: Cascade)
-  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workerDevice   WorkerDevice?       @relation(fields: [workerDeviceId], references: [id], onDelete: SetNull)
+  id                String              @id @default(cuid())
+  companyId         String
+  workerId          String
+  userId            String
+  workerDeviceId    String?
+  idempotencyKey    String
+  clientActionId    String?
+  actionType        OfflineActionType
+  payload           Json
+  snapshotUpdatedAt DateTime?
+  status            OfflineActionStatus @default(RECEIVED)
+  receivedAt        DateTime            @default(now())
+  processedAt       DateTime?
+  error             String?
+  conflictReason    String?
+  result            Json?
+  resolvedAt        DateTime?
+  resolvedById      String?
+  resolutionNote    String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  company           Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker            WorkerProfile       @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workerDevice      WorkerDevice?       @relation(fields: [workerDeviceId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, idempotencyKey])
   @@index([companyId, workerId, receivedAt])
   @@index([companyId, status])
   @@index([companyId, actionType])
+  @@index([companyId, clientActionId])
+}
+
+
+model JobChecklistTemplate {
+  id             String              @id @default(cuid())
+  companyId      String
+  serviceId      String?
+  contractId     String?
+  name           String
+  description    String?
+  active         Boolean             @default(true)
+  requiredForCompletion Boolean      @default(true)
+  sortOrder      Int                 @default(0)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  service        Service?            @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  contract       ServiceContract?    @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  items          JobChecklistItem[]
+  answers        JobChecklistAnswer[]
+
+  @@index([companyId, serviceId, active])
+  @@index([companyId, contractId, active])
+}
+
+model JobChecklistItem {
+  id              String              @id @default(cuid())
+  companyId       String
+  templateId      String
+  label           String
+  helpText        String?
+  answerType      String              @default("TEXT")
+  required        Boolean             @default(false)
+  photoRequired   Boolean             @default(false)
+  passFail        Boolean             @default(false)
+  sortOrder       Int                 @default(0)
+  active          Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  company         Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  template        JobChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  answers         JobChecklistAnswer[]
+
+  @@index([companyId, templateId, active])
+}
+
+model JobChecklistAnswer {
+  id             String               @id @default(cuid())
+  companyId      String
+  jobId          String
+  templateId     String
+  itemId         String
+  workerId       String?
+  capturedById   String?
+  answer         String?
+  passed         Boolean?
+  note           String?
+  photoUrl       String?
+  capturedAt     DateTime             @default(now())
+  offlineCreatedAt DateTime?
+  deviceId       String?
+  syncId         String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job            Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  template       JobChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  item           JobChecklistItem     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  worker         WorkerProfile?       @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  capturedBy     User?                @relation("ChecklistAnswerCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, jobId, itemId])
+  @@index([companyId, jobId])
+  @@index([companyId, templateId])
+  @@index([companyId, workerId])
 }
 
 model JobActivity {
@@ -2080,6 +2187,7 @@ model JobProofPhoto {
   @@index([companyId, jobId])
   @@index([companyId, workerId])
   @@index([companyId, uploadedById])
+  @@unique([companyId, jobId, syncId])
 }
 
 model JobCompletionLocation {

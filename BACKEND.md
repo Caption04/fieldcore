@@ -118,3 +118,8 @@ Important routes:
 - `POST /api/reconciliation/imports`
 - `POST /api/reconciliation/items/:id/match`
 - `POST /api/payments/:id/refund`
+
+
+## TASK10 mobile/offline API
+
+Worker sync now supports `/api/worker/mobile/config`, `/api/worker/sync/v2/pull`, and `/api/worker/sync/v2/push`. Devices can be revoked through admin APIs, offline actions are idempotent, stale job snapshots become `CONFLICT`, and required checklist templates block job completion until answered.

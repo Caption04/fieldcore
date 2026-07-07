@@ -18,6 +18,7 @@
     ['quotes', 'Quotes', 'quotes.html', 'file'],
     ['invoices', 'Invoices', 'invoices.html', 'receipt'],
     ['collections', 'Collections', 'collections.html', 'receipt'],
+    ['mobile-sync', 'Mobile Sync', 'mobile-sync.html', 'settings'],
     ['reports', 'Reports', 'reports.html', 'chart'],
     ['settings', 'Settings', 'settings.html', 'settings']
   ];

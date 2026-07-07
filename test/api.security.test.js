@@ -146,6 +146,7 @@ function createMockPrisma(seed) {
     if (include && include.proofPhotos) result.proofPhotos = db.jobProofPhotos.filter((photo) => photo.jobId === job.id);
     if (include && include.signature) result.signature = db.jobSignatures.find((signature) => signature.jobId === job.id) || null;
     if (include && include.completionLocation) result.completionLocation = clone(completionLocationByJobId(job.id)) || null;
+    if (include && include.checklistAnswers) result.checklistAnswers = db.jobChecklistAnswers.filter((answer) => answer.jobId === job.id).map((answer) => ({ ...answer, item: db.jobChecklistItems.find((item) => item.id === answer.itemId) || null, template: db.jobChecklistTemplates.find((template) => template.id === answer.templateId) || null }));
     if (include && include.completedBy) result.completedBy = include.completedBy.select ? applySelect(userById(job.completedById), include.completedBy.select) : clone(userById(job.completedById));
     return result;
   }
@@ -528,6 +529,13 @@ function createMockPrisma(seed) {
     storageObject: makeModel('storageObjects'),
     workerDevice: makeModel('workerDevices'),
     offlineActionQueue: makeModel('offlineActionQueues'),
+    jobChecklistTemplate: makeModel('jobChecklistTemplates', (template, include) => {
+      const result = { ...template };
+      if (include && include.items) result.items = db.jobChecklistItems.filter((item) => item.templateId === template.id);
+      return result;
+    }),
+    jobChecklistItem: makeModel('jobChecklistItems'),
+    jobChecklistAnswer: makeModel('jobChecklistAnswers'),
     storageUsageMonthly: {
       ...makeModel('storageUsageMonthly'),
       upsert: async (args) => {
@@ -692,6 +700,9 @@ async function buildApp() {
     storageUsageMonthly: [],
     workerDevices: [],
     offlineActionQueues: [],
+    jobChecklistTemplates: [],
+    jobChecklistItems: [],
+    jobChecklistAnswers: [],
     jobActivities: [],
     auditLogs: []
   };
@@ -3408,4 +3419,74 @@ test('task9 refunds create approval-gated refund records and credit notes', asyn
   assert.equal(refund.status, 200);
   assert.equal(refund.body.data.status, 'REFUNDED');
   assert.equal(app.locals.testDb.creditNotes.some((note) => note.invoiceId === 'invoice-a' && note.status === 'ISSUED'), true);
+});
+
+
+test('task10 revoked device cannot sync and admin can resolve conflicts', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+  const owner = await login(app, 'owner-a@test.local');
+
+  const registered = await worker.post('/api/worker/devices/register').send({ platform: 'ANDROID', deviceName: 'Samsung A22', deviceModel: 'SM-A226B', appVersion: '1.0.0', deviceId: 'device-task10-a' });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.data.active, true);
+
+  const revoke = await owner.patch('/api/admin/worker-devices/' + registered.body.data.id + '/revoke').send({ reason: 'Lost phone' });
+  assert.equal(revoke.status, 200);
+  assert.equal(revoke.body.data.active, false);
+
+  const blocked = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-a', actions: [{ idempotencyKey: 'task10-revoked-note', actionType: 'JOB_NOTE', payload: { jobId: 'job-a', note: 'Should not sync' } }] });
+  assert.equal(blocked.status, 403);
+
+  app.locals.testDb.workerDevices.push({ id: 'device-active-task10', companyId: 'company-a', workerId: 'wp-a', userId: 'worker-a', platform: 'ANDROID', deviceId: 'device-task10-b', active: true, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').updatedAt = '2026-01-10T12:00:00.000Z';
+  const conflict = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-b', actions: [{ idempotencyKey: 'task10-conflict-001', actionType: 'JOB_NOTE', snapshotUpdatedAt: '2026-01-10T10:00:00.000Z', payload: { jobId: 'job-a', note: 'Old offline edit' } }] });
+  assert.equal(conflict.status, 200);
+  assert.equal(conflict.body.data.results[0].status, 'CONFLICT');
+
+  const actionId = app.locals.testDb.offlineActionQueues.find((item) => item.idempotencyKey === 'task10-conflict-001').id;
+  const resolved = await owner.post('/api/admin/offline-actions/' + actionId + '/resolve').send({ resolutionNote: 'Admin accepted server version' });
+  assert.equal(resolved.status, 200);
+  assert.equal(resolved.body.data.status, 'RESOLVED');
+});
+
+test('task10 checklist completion blocks and then allows offline job completion', async () => {
+  const app = await buildApp();
+  const worker = await login(app, 'worker-a@test.local');
+  const owner = await login(app, 'owner-a@test.local');
+
+  const template = await owner.post('/api/checklist-templates').send({
+    serviceId: 'service-a',
+    name: 'Solar completion checklist',
+    requiredForCompletion: true,
+    items: [
+      { label: 'Before photo captured', required: true, photoRequired: true, answerType: 'PHOTO' },
+      { label: 'Panels inspected', required: true, passFail: true, answerType: 'PASS_FAIL' }
+    ]
+  });
+  assert.equal(template.status, 201);
+  const photoItem = template.body.data.items[0];
+  const passItem = template.body.data.items[1];
+
+  const registered = await worker.post('/api/worker/devices/register').send({ platform: 'ANDROID', deviceName: 'Field phone', deviceId: 'device-task10-checklist' });
+  assert.equal(registered.status, 201);
+
+  const blocked = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-checklist', actions: [{ idempotencyKey: 'task10-complete-blocked', actionType: 'JOB_COMPLETE', payload: { jobId: 'job-a', completionNotes: 'Done offline' } }] });
+  assert.equal(blocked.status, 200);
+  assert.equal(blocked.body.data.results[0].status, 'FAILED');
+  assert.equal(app.locals.testDb.jobs.find((job) => job.id === 'job-a').status, 'SCHEDULED');
+
+  const checklist = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-checklist', actions: [{ idempotencyKey: 'task10-checklist-001', actionType: 'CHECKLIST_COMPLETED', payload: { jobId: 'job-a', templateId: template.body.data.id, answers: [{ itemId: photoItem.id, photoUrl: '/uploads/proof/checklist.jpg', answer: 'Captured' }, { itemId: passItem.id, passed: true, answer: 'Pass' }] } }] });
+  assert.equal(checklist.status, 200);
+  assert.equal(checklist.body.data.results[0].status, 'PROCESSED');
+  assert.equal(app.locals.testDb.jobChecklistAnswers.length, 2);
+
+  const complete = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-checklist', actions: [{ idempotencyKey: 'task10-complete-ok', actionType: 'JOB_COMPLETE', payload: { jobId: 'job-a', completionNotes: 'Checklist done' } }] });
+  assert.equal(complete.status, 200);
+  assert.equal(complete.body.data.results[0].status, 'PROCESSED');
+  assert.equal(app.locals.testDb.jobs.find((job) => job.id === 'job-a').status, 'COMPLETED');
+
+  const duplicate = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-checklist', actions: [{ idempotencyKey: 'task10-complete-ok', actionType: 'JOB_COMPLETE', payload: { jobId: 'job-a' } }] });
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.data.results[0].status, 'DUPLICATE');
 });

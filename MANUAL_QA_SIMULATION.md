@@ -1353,3 +1353,14 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 10. Enable quote deposit enforcement and confirm scheduling blocks accepted quotes with unpaid deposits.
 11. Send a collection reminder twice and confirm the second one is throttled.
 12. Add a refund approval policy and confirm refunds above threshold require approval.
+
+
+## TASK10 mobile/offline QA
+
+1. Register a worker device from a worker session.
+2. Pull assigned jobs with `/api/worker/sync/v2/pull`.
+3. Push a note with an idempotency key; repeat it and confirm `DUPLICATE`.
+4. Create a required checklist template and confirm job completion fails until answers are synced.
+5. Change a job in admin, then push an action with an older `snapshotUpdatedAt` and confirm `CONFLICT`.
+6. Open `mobile-sync.html`, review the conflict, and resolve it.
+7. Revoke the device and confirm sync returns `403`.
