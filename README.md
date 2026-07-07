@@ -175,3 +175,8 @@ FieldCore now supports enterprise contract automation on top of assets and servi
 - contract profitability reporting.
 
 See `docs/contract-asset-sla-automation.md`.
+
+
+### TASK12 enterprise inventory and job costing
+
+FieldCore now includes deeper inventory/procurement controls: preferred suppliers, min stock, vehicle stock, purchase request lines, PO approval lifecycle, partial receipts/backorders, inventory valuation, supplier performance, and job costing.

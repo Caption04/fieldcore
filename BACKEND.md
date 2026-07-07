@@ -140,3 +140,8 @@ New operational APIs:
 - `GET /api/reports/contract-profitability`
 
 SLA waiver and warranty override flows preserve TASK7 approval behavior. Planned contract work records visit usage to distinguish included visits from overage.
+
+
+## TASK12 inventory/procurement/job costing API
+
+Added purchase request line items, low-stock replenishment request creation, worker vehicle-stock replenishment requests, PO approval/partial-receipt/backorder fields, job costing, inventory valuation, stock adjustment reports, parts-used reports, and supplier performance reporting. Tenant scoping remains company-based.

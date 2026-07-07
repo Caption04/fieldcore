@@ -312,14 +312,20 @@ async function main() {
 
   const supplier = await prisma.supplier.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Demo Parts Supplier' } },
-    update: { active: true },
-    create: { companyId: company.id, name: 'Demo Parts Supplier', email: 'parts@supplier.test', phone: '+263 000 000 101', active: true }
+    update: { active: true, leadTimeDays: 5 },
+    create: { companyId: company.id, name: 'Demo Parts Supplier', email: 'parts@supplier.test', phone: '+263 000 000 101', leadTimeDays: 5, active: true }
   });
 
   const warehouse = await prisma.stockLocation.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Harare Warehouse' } },
     update: { branchId: branch.id, active: true },
     create: { companyId: company.id, branchId: branch.id, name: 'Harare Warehouse', type: 'WAREHOUSE', active: true }
+  });
+
+  const technicianVan = await prisma.stockLocation.upsert({
+    where: { companyId_name: { companyId: company.id, name: 'Demo Technician Van' } },
+    update: { branchId: branch.id, workerId: worker.id, vehicleIdentifier: 'DEMO-VAN-1', active: true },
+    create: { companyId: company.id, branchId: branch.id, workerId: worker.id, name: 'Demo Technician Van', type: 'VEHICLE', vehicleIdentifier: 'DEMO-VAN-1', active: true }
   });
 
   const demoItems = [
@@ -333,8 +339,8 @@ async function main() {
   for (const [sku, name, unitCost, reorderPoint] of demoItems) {
     const item = await prisma.inventoryItem.upsert({
       where: { companyId_sku: { companyId: company.id, sku } },
-      update: { name, unitCost, reorderPoint, active: true },
-      create: { companyId: company.id, sku, name, unitCost, reorderPoint, unitOfMeasure: 'each', active: true }
+      update: { name, unitCost, reorderPoint, minStockLevel: Math.max(reorderPoint - 2, 0), preferredSupplierId: supplier.id, supplierLeadTimeDays: supplier.leadTimeDays, active: true },
+      create: { companyId: company.id, sku, name, unitCost, reorderPoint, minStockLevel: Math.max(reorderPoint - 2, 0), preferredSupplierId: supplier.id, supplierLeadTimeDays: supplier.leadTimeDays, unitOfMeasure: 'each', active: true }
     });
     itemRecords.push(item);
   }
@@ -350,10 +356,22 @@ async function main() {
     create: { companyId: company.id, itemId: itemRecords[4].id, locationId: warehouse.id, quantityOnHand: 1 }
   });
 
+  await prisma.inventoryStock.upsert({
+    where: { companyId_itemId_locationId: { companyId: company.id, itemId: itemRecords[0].id, locationId: technicianVan.id } },
+    update: { quantityOnHand: 3 },
+    create: { companyId: company.id, itemId: itemRecords[0].id, locationId: technicianVan.id, quantityOnHand: 3 }
+  });
+
   const purchaseRequest = await prisma.purchaseRequest.upsert({
     where: { id: 'demo-purchase-request' },
-    update: { status: 'REQUESTED', branchId: branch.id },
-    create: { id: 'demo-purchase-request', companyId: company.id, branchId: branch.id, requestedById: owner.id, jobId: job.id, status: 'REQUESTED', reason: 'Low stock demo item' }
+    update: { status: 'REQUESTED', branchId: branch.id, source: 'LOW_STOCK', estimatedTotal: 240 },
+    create: { id: 'demo-purchase-request', companyId: company.id, branchId: branch.id, requestedById: owner.id, jobId: job.id, source: 'LOW_STOCK', status: 'REQUESTED', reason: 'Low stock demo item', estimatedTotal: 240 }
+  });
+
+  await prisma.purchaseRequestLine.upsert({
+    where: { id: 'demo-purchase-request-line' },
+    update: { quantity: 2, estimatedUnitCost: 120, branchId: branch.id },
+    create: { id: 'demo-purchase-request-line', companyId: company.id, purchaseRequestId: purchaseRequest.id, branchId: branch.id, itemId: itemRecords[4].id, quantity: 2, estimatedUnitCost: 120, notes: 'Seeded low-stock line' }
   });
 
   const purchaseOrder = await prisma.purchaseOrder.upsert({
@@ -364,8 +382,8 @@ async function main() {
 
   await prisma.purchaseOrderLine.upsert({
     where: { id: 'demo-po-line' },
-    update: { quantity: 2, unitCost: 120 },
-    create: { id: 'demo-po-line', companyId: company.id, purchaseOrderId: purchaseOrder.id, itemId: itemRecords[4].id, quantity: 2, unitCost: 120 }
+    update: { quantity: 2, unitCost: 120, receivedQuantity: 1, backorderQuantity: 1 },
+    create: { id: 'demo-po-line', companyId: company.id, purchaseOrderId: purchaseOrder.id, itemId: itemRecords[4].id, quantity: 2, unitCost: 120, receivedQuantity: 1, backorderQuantity: 1 }
   });
 
   await prisma.workerDevice.upsert({

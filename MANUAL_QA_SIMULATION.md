@@ -1377,3 +1377,13 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 8. Create a TASK7 SLA waiver policy and confirm waiver requires approval.
 9. Mark a job as warranty-related; confirm accidental billing is prevented.
 10. Review contract profitability and confirm parts cost and margin estimate appear.
+
+
+## TASK12 manual QA
+
+1. Create supplier, branch store, technician vehicle stock location, and inventory item with min/reorder levels.
+2. Add opening stock, transfer stock to the vehicle, and confirm both locations update.
+3. Log in as the technician and confirm they cannot consume stock from another worker vehicle.
+4. Create low-stock and vehicle replenishment purchase requests.
+5. Approve a PR, convert it to a PO, receive a partial quantity, and verify backorder quantity.
+6. Open Procurement Costing and review inventory valuation, supplier performance, and job costing.

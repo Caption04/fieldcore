@@ -98,7 +98,7 @@ const stockLocationTypeValues = ['WAREHOUSE', 'BRANCH', 'VEHICLE', 'TECHNICIAN',
 const stockMovementTypeValues = ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'RESERVED', 'RESERVATION_RELEASED', 'JOB_USED', 'JOB_RETURNED', 'PURCHASE_RECEIVED', 'TRANSFER_IN', 'TRANSFER_OUT'];
 const jobPartStatusValues = ['PLANNED', 'RESERVED', 'USED', 'SHORT', 'RETURNED', 'CANCELLED'];
 const purchaseRequestStatusValues = ['DRAFT', 'REQUESTED', 'APPROVED', 'REJECTED', 'ORDERED', 'CLOSED'];
-const purchaseOrderStatusValues = ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
+const purchaseOrderStatusValues = ['DRAFT', 'APPROVAL_REQUIRED', 'APPROVED', 'SENT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
 const financeProviderValues = ['MANUAL_CSV', 'XERO', 'QUICKBOOKS', 'SAGE', 'ZOHO_BOOKS', 'CUSTOM'];
 const financeIntegrationStatusValues = ['DISCONNECTED', 'CONFIGURED', 'ACTIVE', 'ERROR', 'DISABLED'];
 const financeExportTypeValues = ['INVOICES', 'PAYMENTS', 'RECEIPTS', 'CUSTOMERS'];
@@ -111,13 +111,14 @@ const reconciliationStatusValues = ['UNMATCHED', 'MATCHED', 'DUPLICATE', 'SUSPIC
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
 const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED', 'CONFLICT', 'RESOLVED'];
 const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'GPS_CHECKPOINT', 'PART_USED', 'PART_SHORTAGE', 'CHECKLIST_COMPLETED', 'ISSUE_NOTE', 'CUSTOMER_UNAVAILABLE'];
-const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_DISCOUNT', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_ORDER_SEND', 'PURCHASE_ORDER_APPROVE', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'JOB_REASSIGN_AFTER_DISPATCH', 'SLA_WAIVE', 'CONTRACT_CANCEL'];
+const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_DISCOUNT', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_REQUEST_APPROVE', 'PURCHASE_ORDER_SEND', 'PURCHASE_ORDER_APPROVE', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'JOB_REASSIGN_AFTER_DISPATCH', 'SLA_WAIVE', 'CONTRACT_CANCEL'];
 const approvalStatusValues = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'];
 const permissionKeys = [
   'invoice.void',
   'invoice.discount.approve',
   'payment.refund',
   'quote.discount.approve',
+  'purchaseRequest.approve',
   'purchaseOrder.send',
   'purchaseOrder.approve',
   'stock.adjust',
@@ -142,6 +143,7 @@ const defaultPermissionBundles = {
 const approvalActionMap = {
   INVOICE_VOID: 'invoice.void',
   PAYMENT_REFUND: 'payment.refund',
+  PURCHASE_REQUEST_APPROVE: 'purchaseRequest.approve',
   PURCHASE_ORDER_SEND: 'purchaseOrder.send',
   PURCHASE_ORDER_APPROVE: 'purchaseOrder.approve',
   STOCK_ADJUSTMENT: 'stock.adjust',
@@ -456,9 +458,11 @@ async function applyStockChange(tx, req, change) {
   const stock = await getOrCreateStock(tx, req, change.itemId, change.locationId);
   const onHand = decimalNumber(stock.quantityOnHand) + decimalNumber(change.onHandDelta);
   const reserved = decimalNumber(stock.quantityReserved) + decimalNumber(change.reservedDelta);
-  if (onHand < 0) throw new AppError(400, 'Insufficient stock on hand');
+  const company = await tx.company.findUnique({ where: { id: req.companyId } });
+  const allowNegativeStock = company && company.allowNegativeStock === true;
+  if (!allowNegativeStock && onHand < 0) throw new AppError(400, 'Insufficient stock on hand');
   if (reserved < 0) throw new AppError(400, 'Reserved stock cannot be negative');
-  if (reserved > onHand) throw new AppError(400, 'Reserved stock cannot exceed stock on hand');
+  if (!allowNegativeStock && reserved > onHand) throw new AppError(400, 'Reserved stock cannot exceed stock on hand');
 
   const updated = await tx.inventoryStock.update({ where: { id: stock.id }, data: { quantityOnHand: onHand, quantityReserved: reserved } });
   await tx.stockMovement.create({
@@ -476,6 +480,49 @@ async function applyStockChange(tx, req, change) {
     }
   });
   return updated;
+}
+
+function requestLineTotal(line) {
+  return decimalNumber(line.quantity) * decimalNumber(line.estimatedUnitCost || line.unitCost || 0);
+}
+
+function purchaseOrderLineTotal(line) {
+  return decimalNumber(line.quantity) * decimalNumber(line.unitCost || 0);
+}
+
+async function companyThreshold(req, key, fallback) {
+  const company = await prisma.company.findUnique({ where: { id: req.companyId } });
+  return decimalNumber(company && company[key] !== undefined ? company[key] : fallback);
+}
+
+async function ensureWorkerCanUseStockLocation(req, location) {
+  if (!req.user || !req.user.worker) return;
+  if (location.workerId && location.workerId !== req.user.worker.id) {
+    throw new AppError(403, 'Technicians can only consume stock from their assigned vehicle or location');
+  }
+}
+
+async function calculateJobCosting(req, jobId) {
+  const job = await requireJob(req, jobId, { assignedOnly: false });
+  const quotes = await prisma.quote.findMany({ where: { companyId: req.companyId, jobId: job.id } });
+  const invoices = await prisma.invoice.findMany({ where: { companyId: req.companyId, jobId: job.id } });
+  const parts = await prisma.jobPartUsage.findMany({ where: { companyId: req.companyId, jobId: job.id }, include: { item: true } });
+  const quotedRevenue = quotes.reduce((sum, quote) => sum + decimalNumber(quote.total || quote.amount), 0);
+  const invoicedRevenue = invoices.reduce((sum, invoice) => sum + decimalNumber(invoice.total || invoice.amount), 0);
+  const partsCost = parts.reduce((sum, part) => {
+    const quantity = decimalNumber(part.quantityUsed || part.quantityPlanned || 0);
+    const unitCost = decimalNumber(part.unitCost || (part.item && part.item.unitCost) || 0);
+    return sum + quantity * unitCost;
+  }, 0);
+  const estimatedLabourCost = decimalNumber(job.estimatedLabourCost || 0);
+  const estimatedTravelCost = decimalNumber(job.estimatedTravelCost || 0);
+  const costTotal = partsCost + estimatedLabourCost + estimatedTravelCost;
+  const revenue = invoicedRevenue || quotedRevenue || decimalNumber(job.total);
+  const grossMarginEstimate = revenue - costTotal;
+  const unbilledPartsWarning = partsCost > 0 && invoicedRevenue <= 0;
+  const includedParts = parts.filter((part) => part.contractBillingStatus === 'INCLUDED').length;
+  const billableParts = parts.filter((part) => ['BILLABLE', 'OVERAGE'].includes(part.contractBillingStatus)).length;
+  return { jobId: job.id, quotedRevenue, invoicedRevenue, partsCost, estimatedLabourCost, estimatedTravelCost, costTotal, grossMarginEstimate, grossMarginPercent: revenue ? Math.round((grossMarginEstimate / revenue) * 10000) / 100 : null, unbilledPartsWarning, contractIncludedParts: includedParts, billableParts, partLines: parts };
 }
 
 function safeWorkerPart(part) {
@@ -4671,6 +4718,7 @@ const supplierSchema = z.object({
   phone: optionalText(40),
   address: optionalText(500),
   taxNumber: optionalText(80),
+  leadTimeDays: z.coerce.number().int().nonnegative().optional(),
   notes: optionalText(2000),
   active: z.boolean().optional()
 });
@@ -4681,6 +4729,7 @@ const stockLocationSchema = z.object({
   branchId: optionalText(80),
   address: optionalText(500),
   workerId: z.string().min(1).optional(),
+  vehicleIdentifier: optionalText(120),
   active: z.boolean().optional()
 });
 
@@ -4689,10 +4738,16 @@ const inventoryItemSchema = z.object({
   name: z.string().trim().min(2).max(160),
   description: optionalText(2000),
   category: optionalText(120),
+  itemCategory: optionalText(120),
   unitOfMeasure: z.string().trim().min(1).max(40).default('each'),
   unitCost: amount.optional(),
   salePrice: amount.optional(),
+  minStockLevel: optionalQuantity,
   reorderPoint: optionalQuantity,
+  preferredSupplierId: z.string().min(1).optional(),
+  supplierLeadTimeDays: z.coerce.number().int().nonnegative().optional(),
+  serialTracked: z.boolean().optional(),
+  serialNumberRequired: z.boolean().optional(),
   active: z.boolean().optional()
 });
 
@@ -4729,25 +4784,33 @@ const jobPartUseSchema = z.object({ quantity: positiveQuantity, locationId: z.st
 const workerPartUsedSchema = z.object({ itemId: z.string().min(1), locationId: z.string().min(1), quantity: positiveQuantity, notes: optionalText(2000) });
 const workerPartShortageSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, notes: optionalText(2000) });
 
+const purchaseRequestLineSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, estimatedUnitCost: amount.optional(), notes: optionalText(1000) });
 const purchaseRequestSchema = z.object({
   branchId: z.string().min(1).optional(),
   jobId: z.string().min(1).optional(),
+  assetId: z.string().min(1).optional(),
+  contractId: z.string().min(1).optional(),
+  source: optionalText(80),
   status: z.enum(purchaseRequestStatusValues).optional(),
-  reason: optionalText(2000)
+  reason: optionalText(2000),
+  lines: z.array(purchaseRequestLineSchema).default([])
 });
-const purchaseRequestPatchSchema = z.object({ status: z.enum(purchaseRequestStatusValues).optional(), reason: optionalText(2000) });
+const purchaseRequestPatchSchema = z.object({ status: z.enum(purchaseRequestStatusValues).optional(), reason: optionalText(2000), rejectionReason: optionalText(2000) });
 
 const purchaseOrderLineSchema = z.object({ itemId: z.string().min(1), quantity: positiveQuantity, unitCost: amount.optional() });
 const purchaseOrderSchema = z.object({
   branchId: z.string().min(1).optional(),
   supplierId: z.string().min(1).optional(),
   purchaseRequestId: z.string().min(1).optional(),
+  assetId: z.string().min(1).optional(),
+  contractId: z.string().min(1).optional(),
   orderNumber: optionalText(80),
   expectedAt: optionalDate,
+  supplierInvoiceRef: optionalText(120),
   notes: optionalText(2000),
   lines: z.array(purchaseOrderLineSchema).min(1).default([])
 });
-const purchaseOrderPatchSchema = z.object({ branchId: z.string().min(1).optional(), supplierId: z.string().min(1).optional(), expectedAt: optionalDate, notes: optionalText(2000), status: z.enum(purchaseOrderStatusValues).optional() });
+const purchaseOrderPatchSchema = z.object({ branchId: z.string().min(1).optional(), supplierId: z.string().min(1).optional(), expectedAt: optionalDate, supplierInvoiceRef: optionalText(120), notes: optionalText(2000), status: z.enum(purchaseOrderStatusValues).optional() });
 const purchaseOrderReceiveSchema = z.object({
   locationId: z.string().min(1),
   lines: z.array(z.object({ lineId: z.string().min(1), receivedQuantity: positiveQuantity })).min(1)
@@ -4755,7 +4818,8 @@ const purchaseOrderReceiveSchema = z.object({
 
 const inventoryItemInclude = { stocks: { include: { location: true } } };
 const jobPartInclude = { item: true, location: true, worker: { include: SAFE_WORKER_INCLUDE } };
-const purchaseOrderInclude = { supplier: true, purchaseRequest: true, lines: { include: { item: true } } };
+const purchaseRequestInclude = { job: true, asset: true, contract: true, requestedBy: { select: SAFE_USER_SELECT }, approvedBy: { select: SAFE_USER_SELECT }, rejectedBy: { select: SAFE_USER_SELECT }, lines: { include: { item: true } }, purchaseOrders: true };
+const purchaseOrderInclude = { supplier: true, purchaseRequest: true, asset: true, contract: true, approvedBy: { select: SAFE_USER_SELECT }, lines: { include: { item: true } } };
 
 router.get('/suppliers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const result = await paged(prisma.supplier, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
@@ -4803,6 +4867,7 @@ router.get('/inventory/items', requireRole(...adminRoles), asyncHandler(async (r
 }));
 
 router.post('/inventory/items', requireRole(...adminRoles), validate(inventoryItemSchema), asyncHandler(async (req, res) => {
+  if (req.body.preferredSupplierId) await requireSupplier(req, req.body.preferredSupplierId);
   const data = await prisma.inventoryItem.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false }, include: inventoryItemInclude });
   await audit(req, 'CREATE', 'InventoryItem', data.id);
   sendData(res, normalize(data), 201);
@@ -4818,6 +4883,26 @@ router.get('/inventory/low-stock', requireRole(...adminRoles), asyncHandler(asyn
   sendData(res, normalize(data));
 }));
 
+
+router.get('/inventory/vehicle-stock', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const locations = await prisma.stockLocation.findMany({ where: { companyId: req.companyId, type: { in: ['VEHICLE', 'TECHNICIAN'] } } });
+  const stocks = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId, locationId: { in: locations.map((location) => location.id) } }, include: { item: true, location: true } });
+  sendData(res, normalize(stocks));
+}));
+
+router.post('/inventory/low-stock/:id/purchase-request', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ branchId: z.string().min(1).optional(), quantity: positiveQuantity.optional(), reason: optionalText(2000) })), asyncHandler(async (req, res) => {
+  const item = await requireInventoryItem(req, req.params.id);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
+  const quantity = req.body.quantity || Math.max(decimalNumber(item.reorderPoint || item.minStockLevel || 1), 1);
+  const data = await prisma.$transaction(async (tx) => {
+    const request = await tx.purchaseRequest.create({ data: { companyId: req.companyId, branchId: req.body.branchId, requestedById: req.user.id, source: 'LOW_STOCK', status: 'REQUESTED', reason: req.body.reason || `Low stock replenishment for ${item.name}`, estimatedTotal: quantity * decimalNumber(item.unitCost || 0) } });
+    await tx.purchaseRequestLine.create({ data: { companyId: req.companyId, purchaseRequestId: request.id, branchId: req.body.branchId, itemId: item.id, quantity, estimatedUnitCost: item.unitCost, notes: 'Created from low-stock alert' } });
+    return tx.purchaseRequest.findUnique({ where: { id: request.id }, include: { lines: { include: { item: true } }, job: true, requestedBy: { select: SAFE_USER_SELECT }, purchaseOrders: true } });
+  });
+  await audit(req, 'CREATE', 'PurchaseRequest', data.id, { source: 'LOW_STOCK', itemId: item.id });
+  sendData(res, normalize(data), 201);
+}));
+
 router.get('/inventory/items/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireInventoryItem(req, req.params.id);
   const data = await prisma.inventoryItem.findUnique({ where: { id: req.params.id }, include: inventoryItemInclude });
@@ -4826,6 +4911,7 @@ router.get('/inventory/items/:id', requireRole(...adminRoles), validate(idParam,
 
 router.patch('/inventory/items/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(inventoryItemSchema.partial()), asyncHandler(async (req, res) => {
   await requireInventoryItem(req, req.params.id);
+  if (req.body.preferredSupplierId) await requireSupplier(req, req.body.preferredSupplierId);
   const data = await prisma.inventoryItem.update({ where: { id: req.params.id }, data: req.body, include: inventoryItemInclude });
   await audit(req, 'UPDATE', 'InventoryItem', data.id);
   sendData(res, normalize(data));
@@ -4878,6 +4964,56 @@ router.get('/inventory/movements', requireRole(...adminRoles), asyncHandler(asyn
   if (req.query.movementType && stockMovementTypeValues.includes(String(req.query.movementType))) where.movementType = String(req.query.movementType);
   const result = await paged(prisma.stockMovement, req, { where, include: { item: true, location: true, job: true, purchaseOrder: true, createdBy: { select: { id: true, name: true, email: true, role: true } } }, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/reports/inventory/valuation', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const stocks = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId }, include: { item: true, location: true } });
+  const data = stocks.map((stock) => ({ itemId: stock.itemId, itemName: stock.item && stock.item.name, locationId: stock.locationId, locationName: stock.location && stock.location.name, branchId: stock.location && stock.location.branchId, quantityOnHand: decimalNumber(stock.quantityOnHand), unitCost: decimalNumber(stock.item && stock.item.unitCost), stockValue: decimalNumber(stock.quantityOnHand) * decimalNumber(stock.item && stock.item.unitCost) }));
+  sendData(res, normalize({ totalValue: data.reduce((sum, row) => sum + row.stockValue, 0), rows: data }));
+}));
+
+router.get('/reports/inventory/low-stock', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const items = await prisma.inventoryItem.findMany({ where: { companyId: req.companyId, active: true }, include: inventoryItemInclude });
+  const data = items.map((item) => {
+    const onHand = (item.stocks || []).reduce((sum, stock) => sum + decimalNumber(stock.quantityOnHand), 0);
+    const threshold = decimalNumber(item.reorderPoint || item.minStockLevel || 0);
+    return { ...item, quantityOnHand: onHand, threshold, lowStock: threshold > 0 && onHand <= threshold };
+  }).filter((item) => item.lowStock);
+  sendData(res, normalize(data));
+}));
+
+router.get('/reports/inventory/stock-adjustments', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await prisma.stockMovement.findMany({ where: { companyId: req.companyId, movementType: { in: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'] } }, include: { item: true, location: true, createdBy: { select: SAFE_USER_SELECT } }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.get('/reports/inventory/parts-used', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.jobId) where.jobId = String(req.query.jobId);
+  const data = await prisma.jobPartUsage.findMany({ where, include: jobPartInclude, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.get('/reports/suppliers/performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const suppliers = await prisma.supplier.findMany({ where: { companyId: req.companyId } });
+  const orders = await prisma.purchaseOrder.findMany({ where: { companyId: req.companyId }, include: purchaseOrderInclude });
+  const data = suppliers.map((supplier) => {
+    const supplierOrders = orders.filter((order) => order.supplierId === supplier.id);
+    const receivedOrders = supplierOrders.filter((order) => order.receivedAt);
+    const cancelledOrders = supplierOrders.filter((order) => order.status === 'CANCELLED').length;
+    const partialDeliveries = supplierOrders.filter((order) => order.status === 'PARTIALLY_RECEIVED').length;
+    const spend = supplierOrders.reduce((sum, order) => sum + (order.lines || []).reduce((lineSum, line) => lineSum + purchaseOrderLineTotal(line), 0), 0);
+    const leadTimes = receivedOrders.filter((order) => order.createdAt && order.receivedAt).map((order) => (new Date(order.receivedAt).getTime() - new Date(order.createdAt).getTime()) / 86400000);
+    const averageLeadTimeDays = leadTimes.length ? Math.round((leadTimes.reduce((sum, value) => sum + value, 0) / leadTimes.length) * 10) / 10 : null;
+    const onTimeDeliveries = receivedOrders.filter((order) => order.expectedAt && new Date(order.receivedAt) <= new Date(order.expectedAt)).length;
+    return { supplierId: supplier.id, supplierName: supplier.name, orderCount: supplierOrders.length, cancelledOrders, partialDeliveries, spend, averageLeadTimeDays, onTimeDeliveryRate: receivedOrders.length ? Math.round((onTimeDeliveries / receivedOrders.length) * 10000) / 100 : null };
+  });
+  sendData(res, normalize(data));
+}));
+
+router.get('/jobs/:id/costing', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const data = await calculateJobCosting(req, req.params.id);
+  sendData(res, normalize(data));
 }));
 
 router.get('/jobs/:id/parts', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
@@ -4956,37 +5092,66 @@ router.post('/jobs/:id/parts/:partId/return', requireRole(...adminRoles), valida
 }));
 
 router.get('/purchase-requests', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const result = await paged(prisma.purchaseRequest, req, { where: { companyId: req.companyId }, include: { job: true, requestedBy: { select: { id: true, name: true, email: true, role: true } }, purchaseOrders: true }, orderBy: { createdAt: 'desc' } });
+  const result = await paged(prisma.purchaseRequest, req, { where: { companyId: req.companyId }, include: purchaseRequestInclude, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
 router.post('/purchase-requests', requireRole(...adminRoles), validate(purchaseRequestSchema), asyncHandler(async (req, res) => {
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   if (req.body.jobId) await requireJob(req, req.body.jobId, { assignedOnly: false });
-  const data = await prisma.purchaseRequest.create({ data: { companyId: req.companyId, requestedById: req.user.id, jobId: req.body.jobId, status: req.body.status || 'REQUESTED', reason: req.body.reason } });
-  await audit(req, 'CREATE', 'PurchaseRequest', data.id);
+  if (req.body.assetId) await requireAsset(req, req.body.assetId);
+  if (req.body.contractId) await requireServiceContract(req, req.body.contractId);
+  for (const line of req.body.lines) await requireInventoryItem(req, line.itemId);
+  const estimatedTotal = req.body.lines.reduce((sum, line) => sum + requestLineTotal(line), 0);
+  const data = await prisma.$transaction(async (tx) => {
+    const request = await tx.purchaseRequest.create({ data: { companyId: req.companyId, branchId: req.body.branchId, requestedById: req.user.id, jobId: req.body.jobId, assetId: req.body.assetId, contractId: req.body.contractId, source: req.body.source || 'MANUAL', status: req.body.status || 'REQUESTED', reason: req.body.reason, estimatedTotal } });
+    for (const line of req.body.lines) await tx.purchaseRequestLine.create({ data: { companyId: req.companyId, purchaseRequestId: request.id, branchId: req.body.branchId, itemId: line.itemId, quantity: line.quantity, estimatedUnitCost: line.estimatedUnitCost, notes: line.notes } });
+    return tx.purchaseRequest.findUnique({ where: { id: request.id }, include: purchaseRequestInclude });
+  });
+  await audit(req, 'CREATE', 'PurchaseRequest', data.id, { estimatedTotal });
   sendData(res, normalize(data), 201);
 }));
 
 router.patch('/purchase-requests/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(purchaseRequestPatchSchema), asyncHandler(async (req, res) => {
   await requirePurchaseRequest(req, req.params.id);
-  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: req.body });
+  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: req.body, include: purchaseRequestInclude });
   await audit(req, 'UPDATE', 'PurchaseRequest', data.id);
   sendData(res, normalize(data));
 }));
 
 router.post('/purchase-requests/:id/approve', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
-  await requirePurchaseRequest(req, req.params.id);
-  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: { status: 'APPROVED' } });
-  await audit(req, 'APPROVE', 'PurchaseRequest', data.id);
+  const request = await prisma.purchaseRequest.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: purchaseRequestInclude });
+  if (!request) throw notFound('Purchase request not found');
+  const threshold = await companyThreshold(req, 'purchaseRequestApprovalThreshold', 1000);
+  const amount = decimalNumber(request.estimatedTotal);
+  if (amount > threshold) {
+    const approval = await requireApprovalOrProceed(req, { eventType: 'PURCHASE_REQUEST_APPROVE', actionKey: 'purchaseRequest.approve', entityType: 'PurchaseRequest', entityId: request.id, branchId: request.branchId, amount, reason: request.reason, actionPayload: { purchaseRequestId: request.id } });
+    if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
+  }
+  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: { status: 'APPROVED', approvedAt: new Date(), approvedById: req.user.id }, include: purchaseRequestInclude });
+  await audit(req, 'APPROVE', 'PurchaseRequest', data.id, { amount });
   sendData(res, normalize(data));
 }));
 
-router.post('/purchase-requests/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ reason: optionalText(2000) })), asyncHandler(async (req, res) => {
+router.post('/purchase-requests/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ reason: z.string().trim().min(2).max(2000) })), asyncHandler(async (req, res) => {
   await requirePurchaseRequest(req, req.params.id);
-  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: { status: 'REJECTED', reason: req.body.reason } });
-  await audit(req, 'REJECT', 'PurchaseRequest', data.id);
+  const data = await prisma.purchaseRequest.update({ where: { id: req.params.id }, data: { status: 'REJECTED', rejectionReason: req.body.reason, rejectedAt: new Date(), rejectedById: req.user.id }, include: purchaseRequestInclude });
+  await audit(req, 'REJECT', 'PurchaseRequest', data.id, { reason: req.body.reason });
   sendData(res, normalize(data));
+}));
+
+router.post('/purchase-requests/:id/convert-to-po', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ supplierId: z.string().min(1).optional(), orderNumber: optionalText(80), expectedAt: optionalDate, notes: optionalText(2000) })), asyncHandler(async (req, res) => {
+  const request = await prisma.purchaseRequest.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: purchaseRequestInclude });
+  if (!request) throw notFound('Purchase request not found');
+  if (request.status !== 'APPROVED') throw new AppError(409, 'Purchase request must be approved before conversion');
+  if (req.body.supplierId) await requireSupplier(req, req.body.supplierId);
+  const data = await prisma.$transaction(async (tx) => {
+    const order = await tx.purchaseOrder.create({ data: { companyId: req.companyId, branchId: request.branchId, supplierId: req.body.supplierId, purchaseRequestId: request.id, assetId: request.assetId, contractId: request.contractId, orderNumber: req.body.orderNumber || `PO-${Date.now()}`, expectedAt: req.body.expectedAt, notes: req.body.notes, status: 'DRAFT', lines: { create: (request.lines || []).map((line) => ({ companyId: req.companyId, itemId: line.itemId, quantity: line.quantity, unitCost: line.estimatedUnitCost, receivedQuantity: 0, backorderQuantity: line.quantity })) } }, include: purchaseOrderInclude });
+    await tx.purchaseRequest.update({ where: { id: request.id }, data: { status: 'ORDERED' } });
+    return order;
+  });
+  await audit(req, 'CONVERT', 'PurchaseRequest', request.id, { purchaseOrderId: data.id });
+  sendData(res, normalize(data), 201);
 }));
 
 router.get('/purchase-orders', requireRole(...adminRoles), asyncHandler(async (req, res) => {
@@ -4998,21 +5163,29 @@ router.post('/purchase-orders', requireRole(...adminRoles), validate(purchaseOrd
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   if (req.body.supplierId) await requireSupplier(req, req.body.supplierId);
   if (req.body.purchaseRequestId) await requirePurchaseRequest(req, req.body.purchaseRequestId);
+  if (req.body.assetId) await requireAsset(req, req.body.assetId);
+  if (req.body.contractId) await requireServiceContract(req, req.body.contractId);
   for (const line of req.body.lines) await requireInventoryItem(req, line.itemId);
+  const orderTotal = req.body.lines.reduce((sum, line) => sum + purchaseOrderLineTotal(line), 0);
+  const threshold = await companyThreshold(req, 'purchaseOrderApprovalThreshold', 2500);
   const data = await prisma.purchaseOrder.create({
     data: {
       companyId: req.companyId,
+      branchId: req.body.branchId,
       supplierId: req.body.supplierId,
       purchaseRequestId: req.body.purchaseRequestId,
+      assetId: req.body.assetId,
+      contractId: req.body.contractId,
       orderNumber: req.body.orderNumber || `PO-${Date.now()}`,
       expectedAt: req.body.expectedAt,
+      supplierInvoiceRef: req.body.supplierInvoiceRef,
       notes: req.body.notes,
-      status: 'DRAFT',
-      lines: { create: req.body.lines.map((line) => ({ companyId: req.companyId, itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost, receivedQuantity: 0 })) }
+      status: orderTotal > threshold ? 'APPROVAL_REQUIRED' : 'DRAFT',
+      lines: { create: req.body.lines.map((line) => ({ companyId: req.companyId, itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost, receivedQuantity: 0, backorderQuantity: line.quantity })) }
     },
     include: purchaseOrderInclude
   });
-  await audit(req, 'CREATE', 'PurchaseOrder', data.id);
+  await audit(req, 'CREATE', 'PurchaseOrder', data.id, { orderTotal });
   sendData(res, normalize(data), 201);
 }));
 
@@ -5031,9 +5204,21 @@ router.patch('/purchase-orders/:id', requireRole(...adminRoles), validate(idPara
   sendData(res, normalize(data));
 }));
 
+router.post('/purchase-orders/:id/approve', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const order = await prisma.purchaseOrder.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: purchaseOrderInclude });
+  if (!order) throw notFound('Purchase order not found');
+  const orderTotal = (order.lines || []).reduce((sum, line) => sum + purchaseOrderLineTotal(line), 0);
+  const approval = await requireApprovalOrProceed(req, { eventType: 'PURCHASE_ORDER_APPROVE', actionKey: 'purchaseOrder.approve', entityType: 'PurchaseOrder', entityId: order.id, branchId: order.branchId, amount: orderTotal, reason: req.body && req.body.reason, actionPayload: { purchaseOrderId: order.id } });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
+  const data = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: { status: 'APPROVED', approvedAt: new Date(), approvedById: req.user.id }, include: purchaseOrderInclude });
+  await audit(req, 'APPROVE', 'PurchaseOrder', data.id, { orderTotal });
+  sendData(res, normalize(data));
+}));
+
 router.post('/purchase-orders/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const order = await prisma.purchaseOrder.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: purchaseOrderInclude });
   if (!order) throw notFound('Purchase order not found');
+  if (order.status === 'APPROVAL_REQUIRED') throw new AppError(409, 'Purchase order requires approval before it can be sent');
   const orderTotal = (order.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0) * Number(line.unitCost || 0), 0);
   const approval = await requireApprovalOrProceed(req, { eventType: 'PURCHASE_ORDER_SEND', actionKey: 'purchaseOrder.send', entityType: 'PurchaseOrder', entityId: order.id, branchId: order.branchId, amount: orderTotal, reason: req.body && req.body.reason });
   if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
@@ -5059,7 +5244,7 @@ router.post('/purchase-orders/:id/receive', requireRole(...adminRoles), validate
       if (!line) throw notFound('Purchase order line not found');
       const newReceived = decimalNumber(line.receivedQuantity) + received.receivedQuantity;
       if (newReceived > decimalNumber(line.quantity)) throw new AppError(400, 'Received quantity cannot exceed ordered quantity');
-      await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQuantity: newReceived } });
+      await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQuantity: newReceived, backorderQuantity: Math.max(decimalNumber(line.quantity) - newReceived, 0) } });
       await applyStockChange(tx, req, { itemId: line.itemId, locationId: req.body.locationId, purchaseOrderId: po.id, movementType: 'PURCHASE_RECEIVED', quantity: received.receivedQuantity, unitCost: line.unitCost, reason: `Received ${po.orderNumber}`, onHandDelta: received.receivedQuantity, reservedDelta: 0 });
     }
     const lines = await tx.purchaseOrderLine.findMany({ where: { companyId: req.companyId, purchaseOrderId: po.id } });
@@ -5071,6 +5256,30 @@ router.post('/purchase-orders/:id/receive', requireRole(...adminRoles), validate
   sendData(res, normalize(data));
 }));
 
+router.get('/worker/vehicle-stock', requireRole('WORKER'), asyncHandler(async (req, res) => {
+  if (!req.user.worker) throw notFound('Worker not found');
+  const locations = await prisma.stockLocation.findMany({ where: { companyId: req.companyId, workerId: req.user.worker.id, type: { in: ['VEHICLE', 'TECHNICIAN'] }, active: true } });
+  const data = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId, locationId: { in: locations.map((location) => location.id) } }, include: { item: true, location: true }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data));
+}));
+
+router.post('/worker/stock/replenishment-requests', requireRole('WORKER'), validate(z.object({ itemId: z.string().min(1), quantity: positiveQuantity, locationId: z.string().min(1).optional(), jobId: z.string().min(1).optional(), notes: optionalText(2000) })), asyncHandler(async (req, res) => {
+  if (!req.user.worker) throw notFound('Worker not found');
+  const item = await requireInventoryItem(req, req.body.itemId);
+  if (req.body.locationId) {
+    const location = await requireStockLocation(req, req.body.locationId);
+    await ensureWorkerCanUseStockLocation(req, location);
+  }
+  if (req.body.jobId) await requireAssignedWorkerJob(req, req.body.jobId);
+  const data = await prisma.$transaction(async (tx) => {
+    const request = await tx.purchaseRequest.create({ data: { companyId: req.companyId, requestedById: req.user.id, jobId: req.body.jobId, source: 'VEHICLE_REPLENISHMENT', status: 'REQUESTED', reason: req.body.notes || `Vehicle replenishment for ${item.name}`, estimatedTotal: req.body.quantity * decimalNumber(item.unitCost || 0) } });
+    await tx.purchaseRequestLine.create({ data: { companyId: req.companyId, purchaseRequestId: request.id, itemId: item.id, quantity: req.body.quantity, estimatedUnitCost: item.unitCost, notes: req.body.notes } });
+    return tx.purchaseRequest.findUnique({ where: { id: request.id }, include: purchaseRequestInclude });
+  });
+  await audit(req, 'CREATE', 'PurchaseRequest', data.id, { source: 'VEHICLE_REPLENISHMENT', workerId: req.user.worker.id });
+  sendData(res, normalize(data), 201);
+}));
+
 router.get('/worker/jobs/:id/parts', requireRole('WORKER'), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireAssignedWorkerJob(req, req.params.id);
   const data = await prisma.jobPartUsage.findMany({ where: { companyId: req.companyId, jobId: req.params.id }, include: { item: true, location: true }, orderBy: { createdAt: 'desc' } });
@@ -5080,7 +5289,8 @@ router.get('/worker/jobs/:id/parts', requireRole('WORKER'), validate(idParam, 'p
 router.post('/worker/jobs/:id/parts-used', requireRole('WORKER'), validate(idParam, 'params'), validate(workerPartUsedSchema), asyncHandler(async (req, res) => {
   const job = await requireAssignedWorkerJob(req, req.params.id);
   await requireInventoryItem(req, req.body.itemId);
-  await requireStockLocation(req, req.body.locationId);
+  const location = await requireStockLocation(req, req.body.locationId);
+  await ensureWorkerCanUseStockLocation(req, location);
   const data = await prisma.$transaction(async (tx) => {
     await applyStockChange(tx, req, { itemId: req.body.itemId, locationId: req.body.locationId, jobId: job.id, movementType: 'JOB_USED', quantity: req.body.quantity, reason: req.body.notes || 'Worker recorded parts used', onHandDelta: -req.body.quantity, reservedDelta: 0 });
     return tx.jobPartUsage.create({ data: { companyId: req.companyId, jobId: job.id, itemId: req.body.itemId, locationId: req.body.locationId, workerId: req.user.worker.id, quantityUsed: req.body.quantity, notes: req.body.notes, status: 'USED' }, include: { item: true, location: true } });

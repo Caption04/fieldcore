@@ -97,6 +97,7 @@ function createMockPrisma(seed) {
   function supplierById(supplierId) { return db.suppliers.find((item) => item.id === supplierId); }
   function purchaseRequestById(requestId) { return db.purchaseRequests.find((item) => item.id === requestId); }
   function purchaseOrderById(orderId) { return db.purchaseOrders.find((item) => item.id === orderId); }
+  function purchaseRequestLinesByRequestId(requestId) { return db.purchaseRequestLines.filter((item) => item.purchaseRequestId === requestId); }
   function branchById(branchId) { return db.branches.find((item) => item.id === branchId); }
   function userByIdSafe(userId) { return db.users.find((item) => item.id === userId); }
   function invoiceById(invoiceId) { return db.invoices.find((item) => item.id === invoiceId); }
@@ -239,7 +240,19 @@ function createMockPrisma(seed) {
     const result = { ...request };
     if (include && include.job) result.job = clone(jobById(request.jobId));
     if (include && include.requestedBy) result.requestedBy = include.requestedBy.select ? applySelect(userById(request.requestedById), include.requestedBy.select) : clone(userById(request.requestedById));
+    if (include && include.asset) result.asset = clone(assetById(request.assetId)) || null;
+    if (include && include.contract) result.contract = clone(contractById(request.contractId)) || null;
+    if (include && include.approvedBy) result.approvedBy = include.approvedBy.select ? applySelect(userById(request.approvedById), include.approvedBy.select) : clone(userById(request.approvedById));
+    if (include && include.rejectedBy) result.rejectedBy = include.rejectedBy.select ? applySelect(userById(request.rejectedById), include.rejectedBy.select) : clone(userById(request.rejectedById));
+    if (include && include.lines) result.lines = purchaseRequestLinesByRequestId(request.id).map((line) => enrichPurchaseRequestLine(line, include.lines.include));
     if (include && include.purchaseOrders) result.purchaseOrders = db.purchaseOrders.filter((order) => order.purchaseRequestId === request.id).map((order) => enrichPurchaseOrder(order, include.purchaseOrders.include));
+    return result;
+  }
+
+  function enrichPurchaseRequestLine(line, include) {
+    if (!line) return null;
+    const result = { ...line };
+    if (include && include.item) result.item = clone(inventoryItemById(line.itemId));
     return result;
   }
 
@@ -248,6 +261,9 @@ function createMockPrisma(seed) {
     const result = { ...order };
     if (include && include.supplier) result.supplier = clone(supplierById(order.supplierId));
     if (include && include.purchaseRequest) result.purchaseRequest = clone(purchaseRequestById(order.purchaseRequestId));
+    if (include && include.asset) result.asset = clone(assetById(order.assetId)) || null;
+    if (include && include.contract) result.contract = clone(contractById(order.contractId)) || null;
+    if (include && include.approvedBy) result.approvedBy = include.approvedBy.select ? applySelect(userById(order.approvedById), include.approvedBy.select) : clone(userById(order.approvedById));
     if (include && include.lines) result.lines = db.purchaseOrderLines.filter((line) => line.purchaseOrderId === order.id).map((line) => enrichPurchaseOrderLine(line, include.lines.include));
     return result;
   }
@@ -465,6 +481,7 @@ function createMockPrisma(seed) {
     stockMovement: makeModel('stockMovements', enrichStockMovement),
     jobPartUsage: makeModel('jobPartUsages', enrichJobPartUsage),
     purchaseRequest: makeModel('purchaseRequests', enrichPurchaseRequest),
+    purchaseRequestLine: makeModel('purchaseRequestLines', enrichPurchaseRequestLine),
     purchaseOrder: {
       ...makeModel('purchaseOrders', enrichPurchaseOrder),
       create: async (args) => {
@@ -698,6 +715,7 @@ async function buildApp() {
     stockMovements: [],
     jobPartUsages: [],
     purchaseRequests: [],
+    purchaseRequestLines: [],
     purchaseOrders: [],
     purchaseOrderLines: [],
     notificationLogs: [],
@@ -3580,4 +3598,78 @@ test('task11 asset history is tenant scoped and contract profitability summarize
   assert.equal(Boolean(row), true);
   assert.equal(row.jobsDelivered, 1);
   assert.equal(row.partsCost, 10);
+});
+
+
+test('task12 stock controls vehicle stock PR PO and job costing are safe', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+
+  app.locals.testDb.branches.push({ id: 'branch-a', companyId: 'company-a', name: 'Task12 Branch', code: 'T12', city: 'Harare', country: 'ZW', timezone: 'Africa/Harare', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.suppliers.push({ id: 'supplier-task12', companyId: 'company-a', name: 'Task12 Supplier', leadTimeDays: 5, active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.stockLocations.push({ id: 'store-task12', companyId: 'company-a', branchId: 'branch-a', name: 'Main Store T12', type: 'BRANCH', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.stockLocations.push({ id: 'van-task12-a', companyId: 'company-a', branchId: 'branch-a', workerId: 'wp-a', name: 'Van A T12', type: 'VEHICLE', vehicleIdentifier: 'VAN-A', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.stockLocations.push({ id: 'van-task12-b', companyId: 'company-a', branchId: 'branch-a', workerId: 'wp-b', name: 'Van B T12', type: 'VEHICLE', vehicleIdentifier: 'VAN-B', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+
+  const item = await admin.post('/api/inventory/items').send({ sku: 'TASK12-FILTER', name: 'Task12 Filter', category: 'HVAC', itemCategory: 'Consumable', unitCost: 10, minStockLevel: 3, reorderPoint: 5, preferredSupplierId: 'supplier-task12', supplierLeadTimeDays: 5, serialTracked: true });
+  assert.equal(item.status, 201);
+
+  const stockIn = await admin.post('/api/inventory/adjustments').send({ itemId: item.body.data.id, locationId: 'store-task12', movementType: 'ADJUSTMENT_IN', quantity: 10, unitCost: 10, reason: 'Opening stock' });
+  assert.equal(stockIn.status, 201);
+
+  const blockedNegative = await admin.post('/api/inventory/adjustments').send({ itemId: item.body.data.id, locationId: 'store-task12', movementType: 'ADJUSTMENT_OUT', quantity: 99, unitCost: 10, reason: 'Bad count' });
+  assert.equal(blockedNegative.status, 400);
+
+  const transfer = await admin.post('/api/inventory/transfers').send({ itemId: item.body.data.id, fromLocationId: 'store-task12', toLocationId: 'van-task12-a', quantity: 2, reason: 'Load van' });
+  assert.equal(transfer.status, 201);
+  const storeStock = app.locals.testDb.inventoryStocks.find((stock) => stock.itemId === item.body.data.id && stock.locationId === 'store-task12');
+  const vanStock = app.locals.testDb.inventoryStocks.find((stock) => stock.itemId === item.body.data.id && stock.locationId === 'van-task12-a');
+  assert.equal(storeStock.quantityOnHand, 8);
+  assert.equal(vanStock.quantityOnHand, 2);
+
+  const otherVanBlocked = await worker.post('/api/worker/jobs/job-a/parts-used').send({ itemId: item.body.data.id, locationId: 'van-task12-b', quantity: 1, notes: 'Wrong van' });
+  assert.equal(otherVanBlocked.status, 403);
+
+  const used = await worker.post('/api/worker/jobs/job-a/parts-used').send({ itemId: item.body.data.id, locationId: 'van-task12-a', quantity: 1, notes: 'Used filter' });
+  assert.equal(used.status, 201);
+
+  const replenish = await worker.post('/api/worker/stock/replenishment-requests').send({ itemId: item.body.data.id, locationId: 'van-task12-a', quantity: 4, jobId: 'job-a', notes: 'Restock van' });
+  assert.equal(replenish.status, 201);
+  assert.equal(replenish.body.data.source, 'VEHICLE_REPLENISHMENT');
+  assert.equal(replenish.body.data.lines.length, 1);
+
+  const pr = await admin.post('/api/purchase-requests').send({ branchId: 'branch-a', jobId: 'job-a', source: 'JOB_PARTS', reason: 'Task12 job parts', lines: [{ itemId: item.body.data.id, quantity: 12, estimatedUnitCost: 10 }] });
+  assert.equal(pr.status, 201);
+  assert.equal(pr.body.data.estimatedTotal, 120);
+
+  const approve = await admin.post('/api/purchase-requests/' + pr.body.data.id + '/approve').send({});
+  assert.equal(approve.status, 200);
+  assert.equal(approve.body.data.status, 'APPROVED');
+
+  const po = await admin.post('/api/purchase-requests/' + pr.body.data.id + '/convert-to-po').send({ supplierId: 'supplier-task12', orderNumber: 'PO-TASK12' });
+  assert.equal(po.status, 201);
+  assert.equal(po.body.data.lines[0].backorderQuantity, 12);
+
+  const partial = await admin.post('/api/purchase-orders/' + po.body.data.id + '/receive').send({ locationId: 'store-task12', lines: [{ lineId: po.body.data.lines[0].id, receivedQuantity: 5 }] });
+  assert.equal(partial.status, 200);
+  assert.equal(partial.body.data.status, 'PARTIALLY_RECEIVED');
+  assert.equal(partial.body.data.lines[0].backorderQuantity, 7);
+
+  const costing = await admin.get('/api/jobs/job-a/costing');
+  assert.equal(costing.status, 200);
+  assert.equal(costing.body.data.partsCost >= 10, true);
+  assert.equal(typeof costing.body.data.grossMarginEstimate, 'number');
+
+  const valuation = await admin.get('/api/reports/inventory/valuation');
+  assert.equal(valuation.status, 200);
+  assert.equal(valuation.body.data.totalValue >= 10, true);
+
+  const supplierPerformance = await admin.get('/api/reports/suppliers/performance');
+  assert.equal(supplierPerformance.status, 200);
+  assert.equal(supplierPerformance.body.data.some((row) => row.supplierId === 'supplier-task12'), true);
+
+  const tenantBlocked = await adminB.get('/api/jobs/job-a/costing');
+  assert.equal(tenantBlocked.status, 404);
 });

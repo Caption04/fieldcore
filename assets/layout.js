@@ -16,6 +16,7 @@
     ['inventory', 'Inventory', 'inventory.html', 'briefcase'],
     ['purchase-requests', 'Purchase Requests', 'purchase-requests.html', 'inbox'],
     ['purchase-orders', 'Purchase Orders', 'purchase-orders.html', 'receipt'],
+    ['procurement-costing', 'Procurement Costing', 'procurement-costing.html', 'chart'],
     ['quotes', 'Quotes', 'quotes.html', 'file'],
     ['invoices', 'Invoices', 'invoices.html', 'receipt'],
     ['collections', 'Collections', 'collections.html', 'receipt'],
