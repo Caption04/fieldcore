@@ -186,3 +186,22 @@ FieldCore now includes deeper inventory/procurement controls: preferred supplier
 ### TASK14 — Enterprise onboarding and data migration
 
 Adds `onboarding.html` plus tenant-scoped onboarding checklist, implementation mode settings, onboarding package records, CSV import previews/imports, downloadable templates, duplicate detection, and vertical demo-data generation for implementation projects.
+
+### TASK15 — Security, compliance, reliability foundation
+
+FieldCore now includes a practical enterprise security foundation: owner/admin 2FA, recovery codes, revocable sessions, password/lockout policies, identity-provider configuration records, scoped data exports, security event monitoring, and an internal operations status page. This is a compliance-ready foundation, not a certification claim.
+
+Security Center: `security-center.html`
+
+Key endpoints:
+
+- `PATCH /api/company/security-settings`
+- `POST /api/auth/2fa/enable`
+- `POST /api/auth/2fa/disable`
+- `GET /api/auth/sessions`
+- `POST /api/auth/sessions/:id/revoke`
+- `GET /api/security/events`
+- `GET /api/admin/security/identity-providers`
+- `POST /api/admin/security/identity-providers`
+- `GET /api/admin/data-export/:type`
+- `GET /api/ops/status`

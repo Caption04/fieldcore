@@ -74,7 +74,8 @@ const staffHtmlPages = new Map([
   ['quotes.html', ['OWNER', 'ADMIN']],
   ['invoices.html', ['OWNER', 'ADMIN']],
   ['reports.html', ['OWNER', 'ADMIN']],
-  ['settings.html', ['OWNER', 'ADMIN']]
+  ['settings.html', ['OWNER', 'ADMIN']],
+  ['security-center.html', ['OWNER', 'ADMIN']]
 ]);
 
 const clientHtmlPages = new Set(['client-portal.html']);
@@ -153,6 +154,8 @@ app.get('/readyz', async (req, res) => {
 
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/2fa/enable', authLimiter);
+app.use('/api/auth/2fa/recovery-codes', authLimiter);
 app.use('/api/client/auth/login', authLimiter);
 app.use('/api/client/auth/register', authLimiter);
 app.use('/api/client/auth/forgot-password', authLimiter);

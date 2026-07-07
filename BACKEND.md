@@ -160,3 +160,24 @@ Owner/admin analytics endpoints live under `/api/analytics/*`. They are company-
 - `POST /api/onboarding/imports/:type` runs dry-run by default; send `dryRun:false` for a real import.
 - `GET /api/onboarding/duplicates/:type` returns manual merge suggestions for customers, workers, assets, and inventory.
 - `POST /api/onboarding/demo-data/:vertical` creates sales demo data for supported verticals.
+
+## TASK15 security/compliance/reliability controls
+
+TASK15 adds enterprise security controls without claiming SOC 2/ISO certification:
+
+- `CompanySecuritySettings` now stores password, lockout, 2FA, session and data-retention policy settings.
+- `UserSession` allows active session listing and revocation; password changes revoke active sessions.
+- `SecurityEvent` captures failed login, lockout, 2FA failure, role change, export, and identity-provider changes.
+- `IdentityProviderConfig` stores OIDC/SAML-ready configuration metadata with providers disabled by default; `src/services/identity/oidcProvider.interface.js` defines the adapter boundary.
+- Admin data export is company-scoped and omits secret/password fields.
+- `/api/ops/status` reports operational readiness without leaking secrets.
+
+Backup/restore scripts:
+
+- `scripts/backup-db.sh`
+- `scripts/restore-db-nonprod.sh`
+
+Runbooks:
+
+- `docs/security-compliance-reliability.md`
+- `docs/disaster-recovery-runbook.md`

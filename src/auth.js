@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { prisma } = require('./db');
 const { AppError } = require('./errors');
 
@@ -11,12 +12,13 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || JWT_SEC
   throw new Error('JWT_SECRET must be set to a strong non-default value in production');
 }
 
+const DEFAULT_SESSION_HOURS = 8;
 const COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: 'lax',
   secure: process.env.NODE_ENV === 'production',
   path: '/',
-  maxAge: 1000 * 60 * 60 * 8
+  maxAge: 1000 * 60 * 60 * DEFAULT_SESSION_HOURS
 };
 
 const SAFE_USER_SELECT = {
@@ -26,7 +28,12 @@ const SAFE_USER_SELECT = {
   name: true,
   role: true,
   createdAt: true,
-  updatedAt: true
+  updatedAt: true,
+  twoFactorEnabled: true,
+  mustResetPassword: true,
+  disabledAt: true,
+  lockedUntil: true,
+  passwordChangedAt: true
 };
 
 const SAFE_AUTH_USER_SELECT = {
@@ -37,7 +44,10 @@ const SAFE_AUTH_USER_SELECT = {
 
 const SAFE_LOGIN_USER_SELECT = {
   ...SAFE_AUTH_USER_SELECT,
-  passwordHash: true
+  passwordHash: true,
+  twoFactorSecretHash: true,
+  twoFactorRecoveryCodes: true,
+  failedLoginCount: true
 };
 
 const SAFE_WORKER_INCLUDE = {
@@ -65,12 +75,17 @@ async function verifyPassword(password, passwordHash) {
   return bcrypt.compare(password, passwordHash);
 }
 
-function signToken(user) {
-  return jwt.sign({ sub: user.id, companyId: user.companyId, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
+function signToken(user, options = {}) {
+  const sessionHours = Number(options.expiresInHours || DEFAULT_SESSION_HOURS);
+  const payload = { sub: user.id, companyId: user.companyId, role: user.role };
+  const sessionId = options.sessionId || user.currentSessionId;
+  if (sessionId) payload.sid = sessionId;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: `${sessionHours}h`, jwtid: crypto.randomUUID() });
 }
 
-function setAuthCookie(res, user) {
-  res.cookie(COOKIE_NAME, signToken(user), COOKIE_OPTIONS);
+function setAuthCookie(res, user, options = {}) {
+  const sessionHours = Number(options.expiresInHours || DEFAULT_SESSION_HOURS);
+  res.cookie(COOKIE_NAME, signToken(user, options), { ...COOKIE_OPTIONS, maxAge: 1000 * 60 * 60 * sessionHours });
 }
 
 function clearAuthCookie(res) {
@@ -89,7 +104,20 @@ async function requireAuth(req, res, next) {
       where: { id: payload.sub },
       select: SAFE_AUTH_USER_SELECT
     });
-    if (!user) throw new AppError(401, 'Authentication required');
+    if (!user || user.disabledAt) throw new AppError(401, 'Authentication required');
+    if (user.passwordChangedAt && payload.iat && (payload.iat * 1000) < (new Date(user.passwordChangedAt).getTime() - 1000)) {
+      throw new AppError(401, 'Authentication required');
+    }
+    if (payload.sid && prisma.userSession) {
+      const session = await prisma.userSession.findFirst({ where: { id: payload.sid, userId: user.id, companyId: user.companyId } });
+      if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) throw new AppError(401, 'Authentication required');
+      req.authSessionId = session.id;
+      try {
+        await prisma.userSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
+      } catch (error) {
+        // Non-critical for auth; keep request moving if a mock does not support lastSeen updates.
+      }
+    }
     req.user = user;
     req.companyId = user.companyId;
     next();
@@ -147,6 +175,7 @@ module.exports = {
   requireAuth,
   requireRole,
   setAuthCookie,
+  signToken,
   verifyPassword,
   audit
 };

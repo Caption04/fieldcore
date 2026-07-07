@@ -1406,3 +1406,17 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 6. Save implementation settings and onboarding package values as owner.
 7. Confirm worker users cannot import CSV data.
 8. Create solar O&M demo data and confirm demo services and inventory appear.
+
+## TASK15 manual QA — security and reliability
+
+1. Log in as owner and open `security-center.html`.
+2. Save security settings with 2FA required for owner/admin users.
+3. Enable 2FA and copy the setup code and recovery codes.
+4. Log out and verify owner/admin login requires a 2FA code.
+5. Verify one recovery code works once and fails on reuse.
+6. Refresh active sessions and revoke the current session; verify the account is logged out.
+7. Trigger failed login attempts until lockout activates.
+8. Change a worker role and confirm a `CHANGE_ROLE` audit log plus `ROLE_CHANGED` security event exists.
+9. Export customers and verify only the current company’s records are returned.
+10. Open ops status and confirm no API keys, tokens, passwords, or ciphertext values are displayed.
+11. Review `docs/disaster-recovery-runbook.md` and verify backup commands contain no credentials.

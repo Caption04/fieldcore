@@ -24,6 +24,7 @@
     ['reports', 'Reports', 'reports.html', 'chart'],
     ['executive-dashboard', 'Executive Dashboard', 'executive-dashboard.html', 'chart'],
     ['onboarding', 'Onboarding', 'onboarding.html', 'settings'],
+    ['security-center', 'Security Center', 'security-center.html', 'settings'],
     ['settings', 'Settings', 'settings.html', 'settings']
   ];
 

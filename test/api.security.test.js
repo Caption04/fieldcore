@@ -422,8 +422,13 @@ function createMockPrisma(seed) {
 
   return {
     user: {
-      findMany: (args = {}) => Promise.resolve(list('users', args, (user) => args.select ? applySelect(user, args.select) : user)),
+      findMany: (args = {}) => Promise.resolve(list('users', args, (user) => args.select ? applySelect(enrichUser(user), args.select) : enrichUser(user))),
       count: (args = {}) => Promise.resolve(db.users.filter((record) => matchesWhere(record, args.where)).length),
+      findFirst: (args = {}) => {
+        const record = db.users.find((item) => matchesWhere(item, args.where));
+        const enriched = record ? enrichUser(record) : null;
+        return Promise.resolve(args.select ? applySelect(enriched, args.select) : clone(enriched));
+      },
       findUnique: (args = {}) => {
         const record = db.users.find((item) => matchesWhere(item, args.where));
         const enriched = record ? enrichUser(record) : null;
@@ -436,6 +441,22 @@ function createMockPrisma(seed) {
         if (workerCreate) db.workerProfiles.push({ id: id('worker'), userId: record.id, createdAt: record.createdAt, updatedAt: record.updatedAt, ...workerCreate });
         const enriched = enrichUser(record);
         return args.select ? applySelect(enriched, args.select) : clone(enriched);
+      },
+      update: async (args) => {
+        const index = db.users.findIndex((item) => matchesWhere(item, args.where));
+        if (index === -1) throw new Error('users not found');
+        db.users[index] = { ...db.users[index], ...stripUndefined(args.data), updatedAt: new Date().toISOString() };
+        const enriched = enrichUser(db.users[index]);
+        return args.select ? applySelect(enriched, args.select) : clone(enriched);
+      },
+      updateMany: async (args) => {
+        let count = 0;
+        db.users = db.users.map((item) => {
+          if (!matchesWhere(item, args.where)) return item;
+          count += 1;
+          return { ...item, ...stripUndefined(args.data), updatedAt: new Date().toISOString() };
+        });
+        return { count };
       }
     },
     company: makeModel('companies', enrichCompany),
@@ -455,7 +476,11 @@ function createMockPrisma(seed) {
         return clone(db.companyBrandings[index]);
       }
     },
+    companySecuritySettings: makeModel('companySecuritySettings'),
     companyImplementationSettings: makeModel('companyImplementationSettings'),
+    userSession: makeModel('userSessions'),
+    identityProviderConfig: makeModel('identityProviderConfigs'),
+    securityEvent: makeModel('securityEvents'),
     companyOnboardingPackage: makeModel('companyOnboardingPackages'),
     dataImportJob: makeModel('dataImportJobs', enrichDataImportJob),
     dataImportRowError: makeModel('dataImportRowErrors'),
@@ -630,6 +655,10 @@ async function buildApp() {
       { id: 'branding-a', companyId: 'company-a', brandName: 'Brand A', primaryColor: '#111111', secondaryColor: '#222222', accentColor: '#333333', supportEmail: 'support@a.test', supportPhone: '+1 A', invoiceFooter: 'Footer A', invoiceTerms: 'Terms A' },
       { id: 'branding-b', companyId: 'company-b', brandName: 'Brand B', primaryColor: '#444444', secondaryColor: '#555555', accentColor: '#666666', supportEmail: 'support@b.test', supportPhone: '+1 B', invoiceFooter: 'Footer B', invoiceTerms: 'Terms B' }
     ],
+    companySecuritySettings: [],
+    userSessions: [],
+    identityProviderConfigs: [],
+    securityEvents: [],
     companyImplementationSettings: [],
     companyOnboardingPackages: [],
     dataImportJobs: [],
@@ -3800,4 +3829,97 @@ test('task14 onboarding checklist imports duplicates and implementation settings
   assert.equal(demo.status, 201);
   assert.equal(demo.body.data.vertical, 'solar-om');
   assert.equal(demo.body.data.created.services.length, 3);
+});
+
+test('task15 2fa required recovery codes and session revocation are safe', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+
+  const settings = await owner.patch('/api/company/security-settings').send({
+    sessionLengthHours: 8,
+    passwordMinimum: 10,
+    twoFactorEnabled: true,
+    twoFactorRequired: true,
+    failedLoginLockoutThreshold: 4,
+    lockoutDurationMinutes: 15
+  });
+  assert.equal(settings.status, 200);
+
+  const setup = await owner.post('/api/auth/2fa/enable').send({ code: '123456' });
+  assert.equal(setup.status, 200);
+  assert.equal(setup.body.data.enabled, true);
+  assert.equal(Array.isArray(setup.body.data.recoveryCodes), true);
+  const recoveryCode = setup.body.data.recoveryCodes[0];
+
+  const missing2fa = await request(app).post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!' });
+  assert.equal(missing2fa.status, 202);
+  assert.equal(missing2fa.body.data.twoFactorRequired, true);
+
+  const withCode = await request(app).post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!', twoFactorCode: '123456' });
+  assert.equal(withCode.status, 200);
+  assert.equal(withCode.body.data.role, 'OWNER');
+
+  const withRecovery = await request(app).post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!', recoveryCode });
+  assert.equal(withRecovery.status, 200);
+  const reusedRecovery = await request(app).post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!', recoveryCode });
+  assert.equal(reusedRecovery.status, 202);
+
+  const sessions = await owner.get('/api/auth/sessions');
+  assert.equal(sessions.status, 200);
+  assert.equal(sessions.body.data.length >= 1, true);
+  const currentSession = sessions.body.data.find((session) => session.current) || sessions.body.data[0];
+  const revoked = await owner.post(`/api/auth/sessions/${currentSession.id}/revoke`).send({});
+  assert.equal(revoked.status, 200);
+  const blocked = await owner.get('/api/auth/me');
+  assert.equal(blocked.status, 401);
+});
+
+test('task15 lockout security events role audit exports and ops status are safe', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  const workerBlocked = await worker.get('/api/security/events');
+  assert.equal(workerBlocked.status, 403);
+
+  await owner.patch('/api/company/security-settings').send({
+    sessionLengthHours: 8,
+    passwordMinimum: 8,
+    twoFactorEnabled: false,
+    twoFactorRequired: false,
+    failedLoginLockoutThreshold: 3,
+    lockoutDurationMinutes: 30
+  });
+
+  for (let i = 0; i < 3; i += 1) {
+    const bad = await request(app).post('/api/auth/login').send({ email: 'admin-a@test.local', password: 'wrong-password' });
+    assert.equal(bad.status, 401);
+  }
+  const locked = await request(app).post('/api/auth/login').send({ email: 'admin-a@test.local', password: 'Password123!' });
+  assert.equal(locked.status, 423);
+
+  const roleChange = await owner.patch('/api/users/worker-b/role').send({ role: 'ADMIN' });
+  assert.equal(roleChange.status, 200);
+  assert.equal(roleChange.body.data.role, 'ADMIN');
+  assert.equal(app.locals.testDb.auditLogs.some((log) => log.action === 'CHANGE_ROLE' && log.entityId === 'worker-b'), true);
+
+  app.locals.testDb.customers.push({ id: 'customer-secret-b', companyId: 'company-b', name: 'Other Company', phone: 'secret', createdAt: '2026-01-01T00:00:00.000Z' });
+  const exportData = await owner.get('/api/admin/data-export/customers');
+  assert.equal(exportData.status, 200);
+  assert.equal(exportData.body.data.rows.some((row) => row.companyId === 'company-b'), false);
+  assert.equal(exportData.body.data.rows.every((row) => row.companyId === 'company-a'), true);
+
+  app.locals.testDb.securityEvents.push({ id: 'security-secret', companyId: 'company-a', userId: 'owner-a', eventType: 'INTEGRATION_SECRET_CHANGED', severity: 'HIGH', metadata: { apiToken: 'should-not-leak' }, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.integrationConnections.push({ id: 'integration-a', companyId: 'company-a', provider: 'BREVO', channel: 'EMAIL', displayName: 'Brevo', status: 'ACTIVE', config: { apiKey: 'do-not-show' }, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.integrationSecrets.push({ id: 'integration-secret-a', companyId: 'company-a', integrationConnectionId: 'integration-a', keyName: 'apiKey', ciphertext: 'secret-ciphertext', createdAt: '2026-01-01T00:00:00.000Z' });
+
+  const events = await owner.get('/api/security/events');
+  assert.equal(events.status, 200);
+  assert.equal(JSON.stringify(events.body).includes('should-not-leak'), false);
+
+  const status = await owner.get('/api/ops/status');
+  assert.equal(status.status, 200);
+  assert.equal(status.body.data.database.ready, true);
+  assert.equal(JSON.stringify(status.body).includes('do-not-show'), false);
+  assert.equal(JSON.stringify(status.body).includes('secret-ciphertext'), false);
 });

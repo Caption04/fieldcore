@@ -133,7 +133,8 @@ const permissionKeys = [
   'approval.request.decide',
   'audit.view',
   'mobile.sync.manage',
-  'contract.automation.manage'
+  'contract.automation.manage',
+  'security.manage'
 ];
 const defaultPermissionBundles = {
   OWNER: permissionKeys,
@@ -1978,7 +1979,9 @@ const registerSchema = z.object({
 
 const loginSchema = z.object({
   email: z.string().email().transform((v) => v.toLowerCase()),
-  password: z.string().min(1)
+  password: z.string().min(1),
+  twoFactorCode: optionalText(32),
+  recoveryCode: optionalText(64)
 });
 
 const accountPatchSchema = z.object({
@@ -1993,43 +1996,148 @@ const passwordPatchSchema = z.object({
 
 const companySecuritySettingsSchema = z.object({
   sessionLengthHours: z.coerce.number().int().min(1).max(24).default(8),
+  sessionIdleTimeoutMinutes: z.coerce.number().int().min(5).max(1440).default(120),
   passwordMinimum: z.coerce.number().int().min(8).max(128).default(8),
+  requirePasswordResetOnInvite: z.boolean().default(true),
   twoFactorEnabled: z.boolean().default(false),
-  twoFactorRequired: z.boolean().default(false)
+  twoFactorRequired: z.boolean().default(false),
+  failedLoginLockoutThreshold: z.coerce.number().int().min(3).max(20).default(5),
+  lockoutDurationMinutes: z.coerce.number().int().min(5).max(1440).default(30),
+  inactiveUserDisableDays: z.coerce.number().int().min(7).max(3650).optional().nullable(),
+  auditLogRetentionDays: z.coerce.number().int().min(30).max(3650).default(365),
+  notificationLogRetentionDays: z.coerce.number().int().min(30).max(3650).default(180),
+  proofPhotoRetentionDays: z.coerce.number().int().min(30).max(3650).default(365),
+  deletedCustomerPolicyNotes: optionalText(2000)
 });
+
+const twoFactorSetupSchema = z.object({ code: optionalText(32) });
+const twoFactorDisableSchema = z.object({ currentPassword: z.string().min(1).optional() });
+const identityProviderSchema = z.object({
+  providerType: z.enum(['OIDC', 'SAML', 'GOOGLE_WORKSPACE', 'MICROSOFT_ENTRA']),
+  displayName: z.string().trim().min(2).max(120),
+  issuerUrl: optionalUrl,
+  clientId: optionalText(240),
+  status: z.enum(['DISABLED', 'CONFIGURED']).default('DISABLED'),
+  scopes: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  config: z.record(z.any()).optional()
+});
+const rolePatchSchema = z.object({ role: z.enum(['OWNER', 'ADMIN', 'WORKER']) });
+const dataExportParamSchema = z.object({ type: z.enum(['customers', 'jobs', 'invoices', 'payments', 'assets', 'contracts']) });
 
 const securityDefaults = () => ({
   sessionLengthHours: 8,
+  sessionIdleTimeoutMinutes: 120,
   passwordMinimum: 8,
+  requirePasswordResetOnInvite: true,
   twoFactorEnabled: false,
-  twoFactorRequired: false
+  twoFactorRequired: false,
+  failedLoginLockoutThreshold: 5,
+  lockoutDurationMinutes: 30,
+  inactiveUserDisableDays: null,
+  auditLogRetentionDays: 365,
+  notificationLogRetentionDays: 180,
+  proofPhotoRetentionDays: 365,
+  deletedCustomerPolicyNotes: null
 });
 
-async function ensureSecuritySettingsTable() {
-  await prisma.$executeRawUnsafe('CREATE TABLE IF NOT EXISTS "CompanySecuritySettings" ("id" TEXT NOT NULL PRIMARY KEY, "companyId" TEXT NOT NULL UNIQUE, "sessionLengthHours" INTEGER NOT NULL DEFAULT 8, "passwordMinimum" INTEGER NOT NULL DEFAULT 8, "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false, "twoFactorRequired" BOOLEAN NOT NULL DEFAULT false, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)');
-}
-
 async function getCompanySecuritySettings(companyId) {
-  await ensureSecuritySettingsTable();
-  const rows = await prisma.$queryRaw`SELECT "sessionLengthHours", "passwordMinimum", "twoFactorEnabled", "twoFactorRequired" FROM "CompanySecuritySettings" WHERE "companyId" = ${companyId} LIMIT 1`;
-  return rows[0] || securityDefaults();
+  if (!prisma.companySecuritySettings) return securityDefaults();
+  const existing = await prisma.companySecuritySettings.findUnique({ where: { companyId } });
+  return { ...securityDefaults(), ...(existing || {}) };
 }
 
 async function saveCompanySecuritySettings(companyId, input) {
-  await ensureSecuritySettingsTable();
-  const id = crypto.randomUUID();
-  const rows = await prisma.$queryRaw`
-    INSERT INTO "CompanySecuritySettings" ("id", "companyId", "sessionLengthHours", "passwordMinimum", "twoFactorEnabled", "twoFactorRequired", "createdAt", "updatedAt")
-    VALUES (${id}, ${companyId}, ${input.sessionLengthHours}, ${input.passwordMinimum}, ${input.twoFactorEnabled}, ${input.twoFactorRequired}, now(), now())
-    ON CONFLICT ("companyId") DO UPDATE SET
-      "sessionLengthHours" = EXCLUDED."sessionLengthHours",
-      "passwordMinimum" = EXCLUDED."passwordMinimum",
-      "twoFactorEnabled" = EXCLUDED."twoFactorEnabled",
-      "twoFactorRequired" = EXCLUDED."twoFactorRequired",
-      "updatedAt" = now()
-    RETURNING "sessionLengthHours", "passwordMinimum", "twoFactorEnabled", "twoFactorRequired"`;
-  return rows[0] || securityDefaults();
+  const data = { ...securityDefaults(), ...input };
+  if (!prisma.companySecuritySettings) return data;
+  return prisma.companySecuritySettings.upsert({
+    where: { companyId },
+    create: { companyId, ...data },
+    update: data
+  });
 }
+
+function securityHash(value) {
+  return crypto.createHash('sha256').update(`${process.env.JWT_SECRET || 'fieldcore'}:${String(value || '').trim().toUpperCase()}`).digest('hex');
+}
+
+function generateSecurityCode(length = 6) {
+  const digits = '0123456789';
+  return Array.from({ length }, () => digits[Math.floor(Math.random() * digits.length)]).join('');
+}
+
+function generateRecoveryCodes(count = 8) {
+  return Array.from({ length: count }, () => `FC-${crypto.randomBytes(4).toString('hex').toUpperCase()}`);
+}
+
+function recoveryHashes(user) {
+  if (!user || !user.twoFactorRecoveryCodes) return [];
+  if (Array.isArray(user.twoFactorRecoveryCodes)) return user.twoFactorRecoveryCodes;
+  try { return JSON.parse(user.twoFactorRecoveryCodes); } catch { return []; }
+}
+
+async function recordSecurityEvent(companyId, eventType, options = {}) {
+  if (!companyId || !prisma.securityEvent) return null;
+  const metadata = safeAuditMetadata(options.metadata || {});
+  return prisma.securityEvent.create({
+    data: {
+      companyId,
+      userId: options.userId || null,
+      eventType,
+      severity: options.severity || 'INFO',
+      ipAddress: options.req && options.req.ip,
+      userAgent: options.req && options.req.get && options.req.get('user-agent'),
+      metadata
+    }
+  });
+}
+
+async function createAuthSession(req, user, settings) {
+  const expiresAt = new Date(Date.now() + Number(settings.sessionLengthHours || 8) * 60 * 60 * 1000);
+  if (!prisma.userSession) return { id: null, expiresAt };
+  return prisma.userSession.create({ data: { companyId: user.companyId, userId: user.id, ipAddress: req.ip, userAgent: req.get('user-agent'), expiresAt, lastSeenAt: new Date() } });
+}
+
+async function requireCurrentUserRecord(req) {
+  const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: SAFE_LOGIN_USER_SELECT });
+  if (!user || user.companyId !== req.companyId) throw new AppError(404, 'User not found');
+  return user;
+}
+
+async function consumeRecoveryCode(user, recoveryCode) {
+  const hashes = recoveryHashes(user);
+  const hash = securityHash(recoveryCode);
+  if (!hashes.includes(hash)) return false;
+  await prisma.user.update({ where: { id: user.id }, data: { twoFactorRecoveryCodes: hashes.filter((item) => item !== hash) } });
+  return true;
+}
+
+async function verifyTwoFactorForUser(user, body) {
+  if (body.twoFactorCode && user.twoFactorSecretHash && user.twoFactorSecretHash === securityHash(body.twoFactorCode)) return true;
+  if (body.recoveryCode) return consumeRecoveryCode(user, body.recoveryCode);
+  return false;
+}
+
+async function failLoginAttempt(req, user, settings, reason) {
+  if (!user) return;
+  const nextFailedCount = Number(user.failedLoginCount || 0) + 1;
+  const lockedUntil = nextFailedCount >= Number(settings.failedLoginLockoutThreshold || 5)
+    ? new Date(Date.now() + Number(settings.lockoutDurationMinutes || 30) * 60 * 1000)
+    : null;
+  await prisma.user.update({ where: { id: user.id }, data: { failedLoginCount: nextFailedCount, ...(lockedUntil ? { lockedUntil } : {}) } });
+  await recordSecurityEvent(user.companyId, lockedUntil ? 'LOGIN_LOCKOUT' : 'FAILED_LOGIN', { userId: user.id, severity: lockedUntil ? 'HIGH' : 'WARN', req, metadata: { reason, failedLoginCount: nextFailedCount, lockedUntil } });
+}
+
+function exportRowsToCsv(rows) {
+  if (!rows.length) return 'id\n';
+  const keys = Array.from(new Set(rows.flatMap((row) => Object.keys(row).filter((key) => !/password|secret|token/i.test(key)))));
+  const escape = (value) => {
+    if (value == null) return '';
+    const text = typeof value === 'object' ? JSON.stringify(safeAuditMetadata(value)) : String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return [keys.join(','), ...rows.map((row) => keys.map((key) => escape(row[key])).join(','))].join('\n');
+}
+
 
 router.post('/auth/register', validate(registerSchema), asyncHandler(async (req, res) => {
   const user = await prisma.$transaction(async (tx) => {
@@ -2058,11 +2166,35 @@ router.post('/auth/register', validate(registerSchema), asyncHandler(async (req,
 
 router.post('/auth/login', validate(loginSchema), asyncHandler(async (req, res) => {
   const user = await prisma.user.findUnique({ where: { email: req.body.email }, select: SAFE_LOGIN_USER_SELECT });
-  if (!user || !(await verifyPassword(req.body.password, user.passwordHash))) throw new AppError(401, 'Invalid email or password');
+  const settings = user ? await getCompanySecuritySettings(user.companyId) : securityDefaults();
+  if (user && user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
+    await recordSecurityEvent(user.companyId, 'LOCKED_LOGIN_ATTEMPT', { userId: user.id, severity: 'HIGH', req });
+    throw new AppError(423, 'Account is temporarily locked. Try again later.');
+  }
+  if (!user || !(await verifyPassword(req.body.password, user.passwordHash))) {
+    await failLoginAttempt(req, user, settings, 'invalid_password');
+    throw new AppError(401, 'Invalid email or password');
+  }
+  if (user.disabledAt) throw new AppError(403, 'Account is disabled');
+  const twoFactorRequired = ['OWNER', 'ADMIN'].includes(user.role) && (settings.twoFactorRequired || user.twoFactorEnabled);
+  if (twoFactorRequired) {
+    if (!user.twoFactorEnabled) {
+      await recordSecurityEvent(user.companyId, 'TWO_FACTOR_SETUP_REQUIRED', { userId: user.id, severity: 'WARN', req });
+      throw new AppError(403, 'Two-factor setup is required before login.');
+    }
+    const ok = await verifyTwoFactorForUser(user, req.body);
+    if (!ok) {
+      await recordSecurityEvent(user.companyId, 'TWO_FACTOR_FAILURE', { userId: user.id, severity: 'HIGH', req });
+      return sendData(res, { twoFactorRequired: true, message: 'Two-factor verification required.' }, 202);
+    }
+  }
+  await prisma.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null } });
+  const session = await createAuthSession(req, user, settings);
   clearClientAuthCookie(res);
-  setAuthCookie(res, user);
-  await audit({ companyId: user.companyId, user }, 'LOGIN', 'User', user.id);
-  sendData(res, publicUser(user));
+  setAuthCookie(res, { ...user, currentSessionId: session.id }, { sessionId: session.id, expiresInHours: settings.sessionLengthHours });
+  await audit({ companyId: user.companyId, user, ip: req.ip, get: req.get.bind(req) }, 'LOGIN', 'User', user.id, { sessionId: session.id });
+  await recordSecurityEvent(user.companyId, 'LOGIN_SUCCESS', { userId: user.id, severity: 'INFO', req, metadata: { sessionId: session.id } });
+  sendData(res, { ...publicUser(user), sessionId: session.id, expiresAt: session.expiresAt });
 }));
 
 router.post('/auth/logout', (req, res) => {
@@ -2097,10 +2229,15 @@ router.patch('/auth/me', requireAuth, validate(accountPatchSchema), asyncHandler
 router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), asyncHandler(async (req, res) => {
   const existing = await prisma.user.findFirst({ where: { id: req.user.id, companyId: req.companyId } });
   if (!existing || !(await verifyPassword(req.body.currentPassword, existing.passwordHash))) throw new AppError(401, 'Current password is incorrect');
-  const data = await prisma.user.update({ where: { id: existing.id }, data: { passwordHash: await hashPassword(req.body.newPassword) }, select: SAFE_LOGIN_USER_SELECT });
-  setAuthCookie(res, data);
-  await audit({ companyId: req.companyId, user: data }, 'UPDATE', 'User', data.id, { section: 'password' });
-  sendData(res, { updated: true });
+  const settings = await getCompanySecuritySettings(req.companyId);
+  if (req.body.newPassword.length < Number(settings.passwordMinimum || 8)) throw new AppError(400, `Password must be at least ${settings.passwordMinimum} characters.`);
+  const changedAt = new Date();
+  const data = await prisma.user.update({ where: { id: existing.id }, data: { passwordHash: await hashPassword(req.body.newPassword), mustResetPassword: false, passwordChangedAt: changedAt }, select: SAFE_LOGIN_USER_SELECT });
+  if (prisma.userSession) await prisma.userSession.updateMany({ where: { companyId: req.companyId, userId: existing.id, revokedAt: null }, data: { revokedAt: changedAt, revokedById: existing.id } });
+  clearAuthCookie(res);
+  await audit({ companyId: req.companyId, user: data }, 'UPDATE', 'User', data.id, { section: 'password', sessionsRevoked: true });
+  await recordSecurityEvent(req.companyId, 'PASSWORD_CHANGED', { userId: data.id, severity: 'WARN', req, metadata: { sessionsRevoked: true } });
+  sendData(res, { updated: true, sessionsRevoked: true });
 }));
 
 router.get('/company/security-settings', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
@@ -2110,8 +2247,133 @@ router.get('/company/security-settings', requireAuth, requireRole(...adminRoles)
 router.patch('/company/security-settings', requireAuth, requireRole(...adminRoles), validate(companySecuritySettingsSchema), asyncHandler(async (req, res) => {
   const body = { ...req.body, twoFactorRequired: Boolean(req.body.twoFactorRequired), twoFactorEnabled: Boolean(req.body.twoFactorEnabled || req.body.twoFactorRequired) };
   const data = await saveCompanySecuritySettings(req.companyId, body);
-  await audit(req, 'UPDATE', 'CompanySecuritySettings', req.companyId, { section: 'security' });
+  await audit(req, 'UPDATE', 'CompanySecuritySettings', req.companyId, { section: 'security', fields: Object.keys(body) });
+  await recordSecurityEvent(req.companyId, 'SECURITY_SETTINGS_CHANGED', { userId: req.user.id, severity: 'WARN', req, metadata: { fields: Object.keys(body) } });
   sendData(res, normalize(data));
+}));
+
+router.post('/auth/2fa/enable', requireAuth, requireRole(...adminRoles), validate(twoFactorSetupSchema), asyncHandler(async (req, res) => {
+  const setupCode = req.body.code || generateSecurityCode();
+  const recoveryCodes = generateRecoveryCodes();
+  const data = await prisma.user.update({
+    where: { id: req.user.id },
+    data: { twoFactorEnabled: true, twoFactorSecretHash: securityHash(setupCode), twoFactorRecoveryCodes: recoveryCodes.map(securityHash) },
+    select: SAFE_LOGIN_USER_SELECT
+  });
+  await audit({ companyId: req.companyId, user: data, ip: req.ip, get: req.get.bind(req) }, 'ENABLE_2FA', 'User', data.id, { recoveryCodesIssued: recoveryCodes.length });
+  await recordSecurityEvent(req.companyId, 'TWO_FACTOR_ENABLED', { userId: data.id, severity: 'WARN', req, metadata: { recoveryCodesIssued: recoveryCodes.length } });
+  sendData(res, { enabled: true, setupCode, recoveryCodes });
+}));
+
+router.post('/auth/2fa/disable', requireAuth, requireRole(...adminRoles), validate(twoFactorDisableSchema), asyncHandler(async (req, res) => {
+  const existing = await requireCurrentUserRecord(req);
+  if (req.body.currentPassword && !(await verifyPassword(req.body.currentPassword, existing.passwordHash))) throw new AppError(401, 'Current password is incorrect');
+  const data = await prisma.user.update({ where: { id: existing.id }, data: { twoFactorEnabled: false, twoFactorSecretHash: null, twoFactorRecoveryCodes: null }, select: SAFE_LOGIN_USER_SELECT });
+  await audit({ companyId: req.companyId, user: data, ip: req.ip, get: req.get.bind(req) }, 'DISABLE_2FA', 'User', data.id);
+  await recordSecurityEvent(req.companyId, 'TWO_FACTOR_DISABLED', { userId: data.id, severity: 'HIGH', req });
+  sendData(res, { enabled: false });
+}));
+
+router.post('/auth/2fa/recovery-codes', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const recoveryCodes = generateRecoveryCodes();
+  await prisma.user.update({ where: { id: req.user.id }, data: { twoFactorRecoveryCodes: recoveryCodes.map(securityHash) } });
+  await audit(req, 'ROTATE_2FA_RECOVERY_CODES', 'User', req.user.id, { recoveryCodesIssued: recoveryCodes.length });
+  await recordSecurityEvent(req.companyId, 'TWO_FACTOR_RECOVERY_CODES_ROTATED', { userId: req.user.id, severity: 'WARN', req });
+  sendData(res, { recoveryCodes });
+}));
+
+router.get('/auth/sessions', requireAuth, asyncHandler(async (req, res) => {
+  const rows = prisma.userSession ? await prisma.userSession.findMany({ where: { companyId: req.companyId, userId: req.user.id }, orderBy: { createdAt: 'desc' } }) : [];
+  sendData(res, normalize(rows.map((session) => ({ id: session.id, current: session.id === req.authSessionId, ipAddress: session.ipAddress, userAgent: session.userAgent, expiresAt: session.expiresAt, lastSeenAt: session.lastSeenAt, revokedAt: session.revokedAt, createdAt: session.createdAt }))));
+}));
+
+router.post('/auth/sessions/revoke-all', requireAuth, asyncHandler(async (req, res) => {
+  const now = new Date();
+  const result = prisma.userSession ? await prisma.userSession.updateMany({ where: { companyId: req.companyId, userId: req.user.id, revokedAt: null }, data: { revokedAt: now, revokedById: req.user.id } }) : { count: 0 };
+  clearAuthCookie(res);
+  await recordSecurityEvent(req.companyId, 'ALL_SESSIONS_REVOKED', { userId: req.user.id, severity: 'WARN', req, metadata: { count: result.count } });
+  sendData(res, { revoked: result.count });
+}));
+
+router.post('/auth/sessions/:id/revoke', requireAuth, validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const session = prisma.userSession ? await prisma.userSession.findFirst({ where: { id: req.params.id, companyId: req.companyId, userId: req.user.id } }) : null;
+  if (!session) throw notFound('Session not found');
+  const updated = await prisma.userSession.update({ where: { id: session.id }, data: { revokedAt: new Date(), revokedById: req.user.id } });
+  if (session.id === req.authSessionId) clearAuthCookie(res);
+  await recordSecurityEvent(req.companyId, 'SESSION_REVOKED', { userId: req.user.id, severity: 'WARN', req, metadata: { sessionId: session.id, self: session.id === req.authSessionId } });
+  sendData(res, normalize({ revoked: true, session: updated }));
+}));
+
+router.get('/security/events', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.securityEvent, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data.map((event) => ({ id: event.id, eventType: event.eventType, severity: event.severity, userId: event.userId || null, metadata: safeAuditMetadata(event.metadata || {}), createdAt: event.createdAt }))), 200, result.meta);
+}));
+
+router.get('/admin/security/identity-providers', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const rows = await prisma.identityProviderConfig.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(rows.map((row) => ({ id: row.id, providerType: row.providerType, displayName: row.displayName, issuerUrl: row.issuerUrl, clientId: row.clientId ? '[configured]' : null, status: row.status, scopes: row.scopes || [], config: safeAuditMetadata(row.config || {}), lastTestedAt: row.lastTestedAt, lastTestStatus: row.lastTestStatus, lastTestError: row.lastTestError, createdAt: row.createdAt, updatedAt: row.updatedAt }))));
+}));
+
+router.post('/admin/security/identity-providers', requireAuth, requireRole(...ownerRoles), validate(identityProviderSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.identityProviderConfig.create({ data: { companyId: req.companyId, providerType: req.body.providerType, displayName: req.body.displayName, issuerUrl: req.body.issuerUrl, clientId: req.body.clientId, status: req.body.status, scopes: req.body.scopes || [], config: safeAuditMetadata(req.body.config || {}) } });
+  await audit(req, 'CREATE_IDENTITY_PROVIDER', 'IdentityProviderConfig', data.id, { providerType: data.providerType, status: data.status });
+  await recordSecurityEvent(req.companyId, 'IDENTITY_PROVIDER_CONFIG_CHANGED', { userId: req.user.id, severity: 'WARN', req, metadata: { providerType: data.providerType, status: data.status } });
+  sendData(res, normalize({ ...data, clientId: data.clientId ? '[configured]' : null }), 201);
+}));
+
+router.patch('/users/:id/role', requireAuth, requireRole(...ownerRoles), validate(idParam, 'params'), validate(rolePatchSchema), asyncHandler(async (req, res) => {
+  const existing = await requireCompanyUser(req, req.params.id);
+  if (existing.id === req.user.id && req.body.role !== 'OWNER') throw new AppError(409, 'Owners cannot demote their own account.');
+  const data = await prisma.user.update({ where: { id: existing.id }, data: { role: req.body.role }, select: SAFE_LOGIN_USER_SELECT });
+  if (prisma.userSession) await prisma.userSession.updateMany({ where: { companyId: req.companyId, userId: existing.id, revokedAt: null }, data: { revokedAt: new Date(), revokedById: req.user.id } });
+  await audit(req, 'CHANGE_ROLE', 'User', existing.id, { fromRole: existing.role, toRole: req.body.role, sessionsRevoked: true });
+  await recordSecurityEvent(req.companyId, 'ROLE_CHANGED', { userId: existing.id, severity: 'HIGH', req, metadata: { fromRole: existing.role, toRole: req.body.role } });
+  sendData(res, publicUser(data));
+}));
+
+router.get('/admin/data-export/:type', requireAuth, requireRole(...adminRoles), validate(dataExportParamSchema, 'params'), asyncHandler(async (req, res) => {
+  const modelByType = {
+    customers: prisma.customer,
+    jobs: prisma.job,
+    invoices: prisma.invoice,
+    payments: prisma.payment,
+    assets: prisma.asset,
+    contracts: prisma.serviceContract
+  };
+  const model = modelByType[req.params.type];
+  const rows = await model.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' }, take: Math.min(Number(req.query.limit || 1000), 5000) });
+  await audit(req, 'DATA_EXPORT', req.params.type, req.companyId, { recordCount: rows.length, format: req.query.format || 'json' });
+  await recordSecurityEvent(req.companyId, 'DATA_EXPORT_CREATED', { userId: req.user.id, severity: 'WARN', req, metadata: { type: req.params.type, recordCount: rows.length } });
+  const data = normalize(rows.map((row) => safeAuditMetadata(row)));
+  if (String(req.query.format || '').toLowerCase() === 'csv') {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="fieldcore-${req.params.type}-export.csv"`);
+    return res.status(200).send(exportRowsToCsv(data));
+  }
+  sendData(res, { type: req.params.type, recordCount: data.length, rows: data });
+}));
+
+router.get('/ops/status', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  let database = { ready: true };
+  try {
+    if (typeof prisma.$queryRaw === 'function') await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    database = { ready: false };
+  }
+  const [integrations, storageObjects, recentSecurityEvents] = await Promise.all([
+    prisma.integrationConnection.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' }, take: 20 }),
+    prisma.storageObject.findMany({ where: { companyId: req.companyId, deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 1 }),
+    prisma.securityEvent.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' }, take: 5 })
+  ]);
+  sendData(res, normalize({
+    database,
+    app: { status: 'operational', generatedAt: new Date() },
+    integrations: integrations.map((item) => ({ provider: item.provider, channel: item.channel, status: item.status, configured: item.status !== 'DISCONNECTED' })),
+    queues: { notifications: 'inline', backgroundJobs: 'not_configured' },
+    storage: { configured: storageObjects.length > 0 || Boolean(process.env.R2_BUCKET), provider: process.env.STORAGE_PROVIDER || 'local_or_r2' },
+    backups: { lastBackupAt: process.env.LAST_BACKUP_AT || null, runbook: 'docs/disaster-recovery-runbook.md' },
+    securityEvents: recentSecurityEvents.map((event) => ({ eventType: event.eventType, severity: event.severity, createdAt: event.createdAt }))
+  }));
 }));
 
 

@@ -539,6 +539,9 @@ model Company {
   storageObjects         StorageObject[]
   storageUsageMonthly    StorageUsageMonthly[]
   securitySettings       CompanySecuritySettings?
+  userSessions           UserSession[]
+  identityProviderConfigs IdentityProviderConfig[]
+  securityEvents         SecurityEvent[]
   subscription           CompanySubscription?
   saasBillingEvents      SaaSBillingEvent[]
   assets                 Asset[]
@@ -698,8 +701,20 @@ model User {
   approvalRequestsDecided     ApprovalRequest[]       @relation("ApprovalRequestDecidedBy")
   permissionOverrides         UserPermissionOverride[]
   branchAccesses              UserBranchAccess[]
+  twoFactorEnabled            Boolean                 @default(false)
+  twoFactorSecretHash         String?
+  twoFactorRecoveryCodes      Json?
+  failedLoginCount            Int                     @default(0)
+  lockedUntil                 DateTime?
+  disabledAt                  DateTime?
+  mustResetPassword           Boolean                 @default(false)
+  passwordChangedAt           DateTime?
+  sessions                    UserSession[]
+  securityEvents              SecurityEvent[]
 
   @@index([companyId])
+  @@index([companyId, role])
+  @@index([companyId, lockedUntil])
 }
 
 model Branch {
@@ -2841,17 +2856,86 @@ model StorageUsageMonthly {
 }
 
 model CompanySecuritySettings {
-  id                 String   @id @default(cuid())
-  companyId          String   @unique
-  sessionLengthHours Int      @default(8)
-  passwordMinimum    Int      @default(8)
-  twoFactorEnabled   Boolean  @default(false)
-  twoFactorRequired  Boolean  @default(false)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                            String   @id @default(cuid())
+  companyId                     String   @unique
+  sessionLengthHours            Int      @default(8)
+  sessionIdleTimeoutMinutes     Int      @default(120)
+  passwordMinimum               Int      @default(8)
+  requirePasswordResetOnInvite  Boolean  @default(true)
+  twoFactorEnabled              Boolean  @default(false)
+  twoFactorRequired             Boolean  @default(false)
+  failedLoginLockoutThreshold   Int      @default(5)
+  lockoutDurationMinutes        Int      @default(30)
+  inactiveUserDisableDays       Int?
+  auditLogRetentionDays         Int      @default(365)
+  notificationLogRetentionDays  Int      @default(180)
+  proofPhotoRetentionDays       Int      @default(365)
+  deletedCustomerPolicyNotes    String?
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+  company                       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
+}
+
+model UserSession {
+  id          String    @id @default(cuid())
+  companyId   String
+  userId      String
+  ipAddress   String?
+  userAgent   String?
+  deviceLabel String?
+  expiresAt   DateTime
+  lastSeenAt  DateTime?
+  revokedAt   DateTime?
+  revokedById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, userId])
+  @@index([companyId, revokedAt])
+  @@index([expiresAt])
+}
+
+model IdentityProviderConfig {
+  id             String   @id @default(cuid())
+  companyId      String
+  providerType   String
+  displayName    String
+  issuerUrl      String?
+  clientId       String?
+  status         String   @default("DISABLED")
+  scopes         Json?
+  config         Json?
+  lastTestedAt   DateTime?
+  lastTestStatus String?
+  lastTestError  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, providerType])
+  @@index([companyId, status])
+}
+
+model SecurityEvent {
+  id          String   @id @default(cuid())
+  companyId   String
+  userId      String?
+  eventType   String
+  severity    String   @default("INFO")
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, eventType])
+  @@index([companyId, severity])
 }
 
 model CompanyImplementationSettings {
