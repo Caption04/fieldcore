@@ -16,7 +16,7 @@ General rules for Codex:
 - Any live third-party integration must be disabled safely unless env vars are configured.
 - Do not claim real provider sync/payment works unless the provider call, webhook handling, retry behavior, audit logs, and tests exist.
 
-## TASK13 — Executive dashboards, enterprise analytics, and revenue leakage reporting
+## TASK12 — Executive dashboards, enterprise analytics, and revenue leakage reporting
 
 ## Commercial reason
 

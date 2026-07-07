@@ -16,7 +16,7 @@ General rules for Codex:
 - Any live third-party integration must be disabled safely unless env vars are configured.
 - Do not claim real provider sync/payment works unless the provider call, webhook handling, retry behavior, audit logs, and tests exist.
 
-## TASK16 — Advanced dispatch, capacity planning, routing, and scheduling intelligence
+## TASK15 — Advanced dispatch, capacity planning, routing, and scheduling intelligence
 
 ## Commercial reason
 

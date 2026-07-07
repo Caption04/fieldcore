@@ -1,6 +1,6 @@
 # FieldCore Enterprise Readiness Task
 
-These tasks assume the current codebase is the uploaded `FieldCore_Software(52).zip` project: Node/Express, Prisma/PostgreSQL, static HTML/CSS/JS UI, JWT auth, multi-tenant company scoping, existing assets/contracts, inventory/purchasing, finance localization, offline worker sync foundation, branches, approvals, reports, notifications, integrations, and SaaS billing foundations.
+These tasks assume the current codebase is the uploaded `FieldCore_Software.zip` project: Node/Express, Prisma/PostgreSQL, static HTML/CSS/JS UI, JWT auth, multi-tenant company scoping, existing assets/contracts, inventory/purchasing, finance localization, offline worker sync foundation, branches, approvals, reports, notifications, integrations, and SaaS billing foundations.
 
 General rules for Codex:
 
@@ -16,7 +16,7 @@ General rules for Codex:
 - Any live third-party integration must be disabled safely unless env vars are configured.
 - Do not claim real provider sync/payment works unless the provider call, webhook handling, retry behavior, audit logs, and tests exist.
 
-## TASK10 — Native offline-first technician app foundation
+## TASK16 — Native offline-first technician app foundation
 
 ## Commercial reason
 
