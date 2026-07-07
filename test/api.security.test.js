@@ -434,6 +434,9 @@ function createMockPrisma(seed) {
     externalRecordLink: makeModel('externalRecordLinks'),
     financeExportLog: makeModel('financeExportLogs'),
     branch: makeModel('branches'),
+    permissionRoleTemplate: makeModel('permissionRoleTemplates'),
+    userPermissionOverride: makeModel('userPermissionOverrides'),
+    userBranchAccess: makeModel('userBranchAccesses'),
     approvalPolicy: makeModel('approvalPolicies'),
     approvalRequest: makeModel('approvalRequests', enrichApprovalRequest),
     customer: makeModel('customers'),
@@ -577,6 +580,9 @@ async function buildApp() {
     externalRecordLinks: [],
     financeExportLogs: [],
     branches: [],
+    permissionRoleTemplates: [],
+    userPermissionOverrides: [],
+    userBranchAccesses: [],
     approvalPolicies: [],
     approvalRequests: [],
     users: [
@@ -3111,4 +3117,87 @@ test('task6 public localization and notification templates are available', async
     assert.equal(Boolean(whatsapp.label), true);
     assert.equal(Boolean(whatsapp.text), true);
   }
+});
+
+
+test('task7 approval gate blocks invoice void until approved and executes once', async () => {
+  const app = await buildApp();
+  const admin = request.agent(app);
+  const owner = request.agent(app);
+  await admin.post('/api/auth/login').send({ email: 'admin-a@test.local', password: 'Password123!' });
+  await owner.post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!' });
+
+  const policy = await owner.post('/api/approval-policies').send({ name: 'Invoice void control', eventType: 'INVOICE_VOID', thresholdAmount: 1, requiredApproverRole: 'OWNER', allowSelfApproval: false, reasonRequired: true });
+  assert.equal(policy.status, 201);
+
+  const blocked = await admin.post('/api/invoices/invoice-a/void').send({ reason: 'Duplicate invoice' });
+  assert.equal(blocked.status, 202);
+  assert.equal(blocked.body.data.approvalRequired, true);
+  assert.equal(blocked.body.data.eventType, 'INVOICE_VOID');
+  assert.equal(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').status !== 'VOID', true);
+
+  const requestId = blocked.body.data.approvalRequestId;
+  const approved = await owner.post('/api/approvals/' + requestId + '/approve').send({ decisionNote: 'Approved' });
+  assert.equal(approved.status, 200);
+
+  const executed = await owner.post('/api/approvals/' + requestId + '/execute').send({ decisionNote: 'Execute approved void' });
+  assert.equal(executed.status, 200);
+  assert.equal(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').status, 'VOID');
+
+  const replay = await owner.post('/api/approvals/' + requestId + '/execute').send({ decisionNote: 'Replay' });
+  assert.equal(replay.status, 409);
+  assert.equal(app.locals.testDb.auditLogs.some((log) => log.action === 'APPROVAL_REQUIRED' && log.metadata && log.metadata.approvalRequestId === requestId), true);
+});
+
+test('task7 branch approval decisions are branch scoped and permissions are configurable', async () => {
+  const app = await buildApp();
+  const owner = request.agent(app);
+  const admin = request.agent(app);
+  await owner.post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!' });
+  await admin.post('/api/auth/login').send({ email: 'admin-a@test.local', password: 'Password123!' });
+
+  const branchA = await owner.post('/api/branches').send({ name: 'North', code: 'NORTH' });
+  const branchB = await owner.post('/api/branches').send({ name: 'South', code: 'SOUTH' });
+  assert.equal(branchA.status, 201);
+  assert.equal(branchB.status, 201);
+
+  const permissions = await owner.get('/api/permissions');
+  assert.equal(permissions.status, 200);
+  assert.equal(permissions.body.data.keys.includes('payment.refund'), true);
+
+  const access = await owner.post('/api/users/admin-a/branch-access').send({ branchId: branchA.body.data.id, permissions: ['approval.request.decide'] });
+  assert.equal(access.status, 201);
+
+  const policy = await owner.post('/api/approval-policies').send({ name: 'Branch refunds', branchId: branchB.body.data.id, eventType: 'PAYMENT_REFUND', thresholdAmount: 1, requiredApproverRole: 'ADMIN' });
+  assert.equal(policy.status, 201);
+
+  const requestBody = { policyId: policy.body.data.id, branchId: branchB.body.data.id, eventType: 'PAYMENT_REFUND', entityType: 'Payment', entityId: 'payment-a', actionKey: 'payment.refund', amount: 100, reason: 'Client refund' };
+  const approval = await owner.post('/api/approvals').send(requestBody);
+  assert.equal(approval.status, 201);
+
+  const denied = await admin.post('/api/approvals/' + approval.body.data.id + '/approve').send({ decisionNote: 'Wrong branch' });
+  assert.equal(denied.status, 403);
+
+  const rejected = await owner.post('/api/approvals/' + approval.body.data.id + '/reject').send({ decisionNote: 'No refund' });
+  assert.equal(rejected.status, 200);
+  const executeRejected = await owner.post('/api/approvals/' + approval.body.data.id + '/execute').send({});
+  assert.equal(executeRejected.status, 409);
+});
+
+test('task7 audit filters work and redact secret-like metadata', async () => {
+  const app = await buildApp();
+  const owner = request.agent(app);
+  await owner.post('/api/auth/login').send({ email: 'owner-a@test.local', password: 'Password123!' });
+
+  const policy = await owner.post('/api/approval-policies').send({ name: 'Stock control', eventType: 'STOCK_ADJUSTMENT', thresholdAmount: 1, requiredApproverRole: 'OWNER', allowSelfApproval: false });
+  assert.equal(policy.status, 201);
+  const item = await owner.post('/api/inventory/items').send({ name: 'Cable', sku: 'CBL-T7', unitOfMeasure: 'each' });
+  const location = await owner.post('/api/stock-locations').send({ name: 'Main Store', type: 'WAREHOUSE' });
+  const blocked = await owner.post('/api/inventory/adjustments').send({ itemId: item.body.data.id, locationId: location.body.data.id, movementType: 'ADJUSTMENT_IN', quantity: 10, unitCost: 5, reason: 'secretToken=abc should not leak' });
+  assert.equal(blocked.status, 202);
+
+  const logs = await owner.get('/api/audit-logs?action=APPROVAL_REQUIRED');
+  assert.equal(logs.status, 200);
+  assert.equal(logs.body.data.length >= 1, true);
+  assert.equal(JSON.stringify(logs.body.data).includes('abc'), false);
 });

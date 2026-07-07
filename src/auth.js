@@ -106,6 +106,20 @@ function requireRole(...roles) {
   };
 }
 
+function redactAuditMetadata(metadata = {}) {
+  const secretPattern = /(secret|token|password|apiKey|key|authorization|cookie)/i;
+  const clean = (value) => {
+    if (value == null) return value;
+    if (Array.isArray(value)) return value.map(clean);
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, secretPattern.test(key) ? '[redacted]' : clean(val)]));
+    }
+    return value;
+  };
+  return clean(metadata);
+}
+
 async function audit(req, action, entity, entityId, metadata) {
   const companyId = req.companyId || (req.user && req.user.companyId);
   if (!companyId) return;
@@ -116,7 +130,7 @@ async function audit(req, action, entity, entityId, metadata) {
       action,
       entity,
       entityId,
-      metadata
+      metadata: redactAuditMetadata({ ...(metadata || {}), ip: req.ip, userAgent: req.get && req.get('user-agent') })
     }
   });
 }

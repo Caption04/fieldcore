@@ -1313,3 +1313,14 @@ FieldCore now supports company-level localization for country, timezone, currenc
 Payment methods are configurable operational options only unless a real provider integration is separately configured. CSV export remains the accounting foundation; live Xero/Sage/QuickBooks sync is not claimed.
 
 Manual QA should verify: finance settings save, payment methods restrict payment capture, public services show currency/tax metadata, invoices get default due dates, quotes get default expiry dates, and new WhatsApp/email template names exist without breaking existing notifications.
+
+
+## TASK7 manual QA
+
+1. Create two branches.
+2. Give a branch manager access to only one branch.
+3. Create an approval policy for invoice voids or payment refunds.
+4. Attempt the risky action as admin and confirm it returns approval required.
+5. Approve and execute as owner.
+6. Confirm replaying the approval fails.
+7. Confirm audit logs include the approval history and do not expose secret-like metadata.

@@ -95,8 +95,45 @@ const paymentMethodValues = ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
 const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED'];
 const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'PART_USED', 'PART_SHORTAGE'];
-const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_ORDER_SEND', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'SLA_WAIVE'];
+const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_DISCOUNT', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_ORDER_SEND', 'PURCHASE_ORDER_APPROVE', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'JOB_REASSIGN_AFTER_DISPATCH', 'SLA_WAIVE', 'CONTRACT_CANCEL'];
 const approvalStatusValues = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'];
+const permissionKeys = [
+  'invoice.void',
+  'invoice.discount.approve',
+  'payment.refund',
+  'quote.discount.approve',
+  'purchaseOrder.send',
+  'purchaseOrder.approve',
+  'stock.adjust',
+  'contract.sla.override',
+  'job.reassign.after_dispatch',
+  'branch.manage',
+  'report.enterprise.view',
+  'settings.finance.manage',
+  'integration.manage',
+  'approval.policy.manage',
+  'approval.request.decide',
+  'audit.view'
+];
+const defaultPermissionBundles = {
+  OWNER: permissionKeys,
+  ADMIN: permissionKeys.filter((key) => !['integration.manage'].includes(key)),
+  WORKER: [],
+  CLIENT: []
+};
+const approvalActionMap = {
+  INVOICE_VOID: 'invoice.void',
+  PAYMENT_REFUND: 'payment.refund',
+  PURCHASE_ORDER_SEND: 'purchaseOrder.send',
+  PURCHASE_ORDER_APPROVE: 'purchaseOrder.approve',
+  STOCK_ADJUSTMENT: 'stock.adjust',
+  JOB_REASSIGN_AFTER_DISPATCH: 'job.reassign.after_dispatch',
+  SLA_WAIVE: 'contract.sla.override',
+  CONTRACT_CANCEL: 'contract.sla.override',
+  QUOTE_DISCOUNT: 'quote.discount.approve',
+  INVOICE_DISCOUNT: 'invoice.discount.approve'
+};
+
 
 function validate(schema, source = 'body') {
   return (req, res, next) => {
@@ -167,6 +204,145 @@ async function requireApprovalRequest(req, id) {
   const record = await prisma.approvalRequest.findFirst({ where: { id, companyId: req.companyId } });
   if (!record) throw notFound('Approval request not found');
   return record;
+}
+
+async function requireCompanyUser(req, id) {
+  const record = prisma.user.findFirst
+    ? await prisma.user.findFirst({ where: { id, companyId: req.companyId }, select: SAFE_USER_SELECT })
+    : await prisma.user.findUnique({ where: { id }, select: SAFE_USER_SELECT });
+  if (!record || record.companyId !== req.companyId) throw notFound('User not found');
+  return record;
+}
+
+function safeAuditMetadata(metadata = {}) {
+  const secretPattern = /(secret|token|password|apiKey|key|authorization|cookie)/i;
+  const clean = (value) => {
+    if (value == null) return value;
+    if (Array.isArray(value)) return value.map(clean);
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, secretPattern.test(key) ? '[redacted]' : clean(val)]));
+    }
+    return value;
+  };
+  return clean(metadata);
+}
+
+function requestAuditContext(req, extra = {}) {
+  return safeAuditMetadata({
+    ...extra,
+    ip: req.ip,
+    userAgent: req.get && req.get('user-agent')
+  });
+}
+
+async function addEnterpriseAudit(req, action, entity, entityId, metadata) {
+  return prisma.auditLog.create({
+    data: {
+      companyId: req.companyId,
+      userId: req.user && req.user.id,
+      action,
+      entity,
+      entityId,
+      metadata: requestAuditContext(req, metadata)
+    }
+  });
+}
+
+function roleBundle(role) {
+  return new Set(defaultPermissionBundles[role] || []);
+}
+
+async function getEffectivePermissionSet(req, userId = req.user.id, branchId) {
+  const user = userId === req.user.id ? req.user : await requireCompanyUser(req, userId);
+  const permissions = roleBundle(user.role);
+  const overrides = await prisma.userPermissionOverride.findMany({ where: { companyId: req.companyId, userId } });
+  for (const override of overrides.filter((item) => !item.branchId || item.branchId === branchId)) {
+    if (override.allowed) permissions.add(override.permissionKey);
+    else permissions.delete(override.permissionKey);
+  }
+  const branchAccess = branchId ? await prisma.userBranchAccess.findFirst({ where: { companyId: req.companyId, userId, branchId, active: true } }) : null;
+  if (branchAccess && Array.isArray(branchAccess.permissions)) for (const key of branchAccess.permissions) permissions.add(key);
+  return permissions;
+}
+
+async function hasPermission(req, permissionKey, options = {}) {
+  if (!permissionKeys.includes(permissionKey)) return false;
+  const permissions = await getEffectivePermissionSet(req, req.user.id, options.branchId);
+  return permissions.has(permissionKey);
+}
+
+async function requirePermission(req, permissionKey, options = {}) {
+  if (!(await hasPermission(req, permissionKey, options))) throw new AppError(403, 'Missing permission: ' + permissionKey);
+}
+
+function roleRank(role) {
+  return { CLIENT: 0, WORKER: 1, ADMIN: 2, OWNER: 3 }[role] || 0;
+}
+
+async function canDecideApproval(req, approval) {
+  if (approval.branchId) {
+    const access = await prisma.userBranchAccess.findFirst({ where: { companyId: req.companyId, userId: req.user.id, branchId: approval.branchId, active: true } });
+    if (!access && req.user.role !== 'OWNER') return false;
+  }
+  const policy = approval.policyId ? await prisma.approvalPolicy.findFirst({ where: { id: approval.policyId, companyId: req.companyId } }) : null;
+  if (policy && !policy.allowSelfApproval && approval.requestedById === req.user.id) return false;
+  if (policy && roleRank(req.user.role) < roleRank(policy.requiredApproverRole || 'OWNER')) return false;
+  return hasPermission(req, 'approval.request.decide', { branchId: approval.branchId });
+}
+
+async function findApprovalPolicy(req, eventType, options = {}) {
+  const policies = await prisma.approvalPolicy.findMany({ where: { companyId: req.companyId, eventType, active: true }, orderBy: { createdAt: 'desc' } });
+  const amountValue = Number(options.amount || 0);
+  return policies
+    .filter((policy) => !policy.branchId || policy.branchId === options.branchId)
+    .sort((a, b) => (b.branchId ? 1 : 0) - (a.branchId ? 1 : 0) || Number(b.thresholdAmount || 0) - Number(a.thresholdAmount || 0))
+    .find((policy) => policy.thresholdAmount == null || amountValue >= Number(policy.thresholdAmount));
+}
+
+function approvalRequiredPayload(request) {
+  return {
+    approvalRequired: true,
+    approvalRequestId: request.id,
+    status: request.status,
+    eventType: request.eventType,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    amount: request.amount,
+    thresholdAmount: request.thresholdAmount,
+    expiresAt: request.expiresAt
+  };
+}
+
+async function requireApprovalOrProceed(req, config) {
+  const permissionKey = config.permissionKey || approvalActionMap[config.eventType];
+  if (permissionKey) await requirePermission(req, permissionKey, { branchId: config.branchId });
+  const policy = await findApprovalPolicy(req, config.eventType, { branchId: config.branchId, amount: config.amount });
+  if (!policy) return null;
+  if (policy.reasonRequired && !config.reason) throw new AppError(400, 'Approval reason is required.');
+  if (policy.allowSelfApproval && roleRank(req.user.role) >= roleRank(policy.requiredApproverRole || 'OWNER')) return null;
+  const expiresAt = policy.expiresAfterHours ? new Date(Date.now() + policy.expiresAfterHours * 60 * 60 * 1000) : null;
+  const request = await prisma.approvalRequest.create({
+    data: {
+      companyId: req.companyId,
+      branchId: config.branchId || policy.branchId || null,
+      policyId: policy.id,
+      requestedById: req.user.id,
+      entityType: config.entityType,
+      entityId: config.entityId,
+      eventType: config.eventType,
+      actionKey: config.actionKey,
+      actionPayload: safeAuditMetadata(config.actionPayload || {}),
+      amount: config.amount == null ? null : config.amount,
+      thresholdAmount: policy.thresholdAmount,
+      reason: config.reason,
+      expiresAt,
+      status: 'PENDING'
+    },
+    include: { policy: true, requestedBy: { select: SAFE_USER_SELECT } }
+  });
+  await addEnterpriseAudit(req, 'APPROVAL_REQUIRED', config.entityType, config.entityId, { approvalRequestId: request.id, eventType: config.eventType, actionKey: config.actionKey, amount: config.amount, thresholdAmount: policy.thresholdAmount, branchId: config.branchId });
+  return request;
 }
 
 async function requireCustomer(req, id) {
@@ -647,16 +823,38 @@ const approvalPolicySchema = z.object({
   name: z.string().trim().min(1).max(160),
   eventType: z.enum(approvalEventTypeValues),
   thresholdAmount: amount.optional(),
+  branchId: optionalText(160),
+  requiredApproverRole: z.enum(['OWNER', 'ADMIN']).optional(),
+  allowSelfApproval: z.boolean().optional(),
+  reasonRequired: z.boolean().optional(),
+  expiresAfterHours: z.coerce.number().int().positive().optional(),
   active: z.boolean().optional()
 });
 const approvalRequestSchema = z.object({
   policyId: optionalText(160),
+  branchId: optionalText(160),
   entityType: z.string().trim().min(1).max(80),
   entityId: z.string().trim().min(1).max(160),
   eventType: z.enum(approvalEventTypeValues),
+  actionKey: optionalText(160),
+  actionPayload: z.record(z.any()).optional(),
+  amount: amount.optional(),
   reason: optionalText(1000)
 });
 const approvalDecisionSchema = z.object({
+  decisionNote: optionalText(1000)
+});
+const permissionOverrideSchema = z.object({
+  permissionKey: z.enum(permissionKeys),
+  allowed: z.boolean().default(true),
+  branchId: optionalText(160)
+});
+const branchAccessSchema = z.object({
+  branchId: z.string().min(1),
+  permissions: z.array(z.enum(permissionKeys)).optional(),
+  active: z.boolean().optional()
+});
+const approvalExecutionSchema = z.object({
   decisionNote: optionalText(1000)
 });
 
@@ -2362,12 +2560,14 @@ router.get('/branches', requireRole(...adminRoles), asyncHandler(async (req, res
 }));
 
 router.post('/branches', requireRole(...adminRoles), validate(branchSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'branch.manage');
   const data = await prisma.branch.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
   await audit(req, 'CREATE', 'Branch', data.id);
   sendData(res, normalize(data), 201);
 }));
 
 router.patch('/branches/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(branchSchema.partial()), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'branch.manage', { branchId: req.params.id });
   await requireBranch(req, req.params.id);
   const data = await prisma.branch.update({ where: { id: req.params.id }, data: req.body });
   await audit(req, 'UPDATE', 'Branch', data.id);
@@ -2380,13 +2580,25 @@ router.get('/approval-policies', requireRole(...adminRoles), asyncHandler(async 
 }));
 
 router.post('/approval-policies', requireRole(...adminRoles), validate(approvalPolicySchema), asyncHandler(async (req, res) => {
-  const data = await prisma.approvalPolicy.create({ data: { ...req.body, companyId: req.companyId, active: req.body.active !== false } });
+  await requirePermission(req, 'approval.policy.manage', { branchId: req.body.branchId });
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
+  const data = await prisma.approvalPolicy.create({
+    data: {
+      ...req.body,
+      companyId: req.companyId,
+      requiredApproverRole: req.body.requiredApproverRole || 'ADMIN',
+      active: req.body.active !== false,
+      allowSelfApproval: req.body.allowSelfApproval !== false
+    }
+  });
   await audit(req, 'CREATE', 'ApprovalPolicy', data.id);
   sendData(res, normalize(data), 201);
 }));
 
 router.patch('/approval-policies/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalPolicySchema.partial()), asyncHandler(async (req, res) => {
-  await requireApprovalPolicy(req, req.params.id);
+  const existing = await requireApprovalPolicy(req, req.params.id);
+  await requirePermission(req, 'approval.policy.manage', { branchId: req.body.branchId || existing.branchId });
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.approvalPolicy.update({ where: { id: req.params.id }, data: req.body });
   await audit(req, 'UPDATE', 'ApprovalPolicy', data.id);
   sendData(res, normalize(data));
@@ -2395,7 +2607,7 @@ router.patch('/approval-policies/:id', requireRole(...adminRoles), validate(idPa
 router.get('/approvals', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const status = approvalStatusValues.includes(String(req.query.status || '')) ? String(req.query.status) : undefined;
   const result = await paged(prisma.approvalRequest, req, {
-    where: { companyId: req.companyId, ...(status ? { status } : {}) },
+    where: { companyId: req.companyId, ...(status ? { status } : {}), ...branchFilterFromQuery(req) },
     include: { policy: true, requestedBy: { select: SAFE_USER_SELECT }, approvedBy: { select: SAFE_USER_SELECT } },
     orderBy: { createdAt: 'desc' }
   });
@@ -2404,7 +2616,7 @@ router.get('/approvals', requireRole(...adminRoles), asyncHandler(async (req, re
 
 router.get('/approvals/pending', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const result = await paged(prisma.approvalRequest, req, {
-    where: { companyId: req.companyId, status: 'PENDING' },
+    where: { companyId: req.companyId, status: 'PENDING', ...branchFilterFromQuery(req) },
     include: { policy: true, requestedBy: { select: SAFE_USER_SELECT } },
     orderBy: { createdAt: 'desc' }
   });
@@ -2412,18 +2624,22 @@ router.get('/approvals/pending', requireRole(...adminRoles), asyncHandler(async 
 }));
 
 router.post('/approvals', requireRole(...adminRoles), validate(approvalRequestSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'approval.request.decide', { branchId: req.body.branchId });
   if (req.body.policyId) await requireApprovalPolicy(req, req.body.policyId);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.approvalRequest.create({
-    data: { ...req.body, companyId: req.companyId, requestedById: req.user.id, status: 'PENDING' },
+    data: { ...req.body, actionPayload: safeAuditMetadata(req.body.actionPayload || {}), companyId: req.companyId, requestedById: req.user.id, status: 'PENDING' },
     include: { policy: true, requestedBy: { select: SAFE_USER_SELECT } }
   });
-  await audit(req, 'CREATE', 'ApprovalRequest', data.id, { eventType: data.eventType, entityType: data.entityType, entityId: data.entityId });
+  await addEnterpriseAudit(req, 'CREATE', 'ApprovalRequest', data.id, { eventType: data.eventType, entityType: data.entityType, entityId: data.entityId, branchId: data.branchId });
   sendData(res, normalize(data), 201);
 }));
 
 router.post('/approvals/:id/approve', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalDecisionSchema), asyncHandler(async (req, res) => {
   const existing = await requireApprovalRequest(req, req.params.id);
+  if (!(await canDecideApproval(req, existing))) throw new AppError(403, 'You cannot approve this request.');
   if (existing.status !== 'PENDING') throw new AppError(409, 'Approval request has already been decided.');
+  if (existing.expiresAt && new Date(existing.expiresAt) < new Date()) throw new AppError(409, 'Approval request has expired.');
   const data = await prisma.approvalRequest.update({
     where: { id: req.params.id },
     data: { status: 'APPROVED', approvedById: req.user.id, decisionNote: req.body.decisionNote, decidedAt: new Date() },
@@ -2435,6 +2651,7 @@ router.post('/approvals/:id/approve', requireRole(...adminRoles), validate(idPar
 
 router.post('/approvals/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalDecisionSchema), asyncHandler(async (req, res) => {
   const existing = await requireApprovalRequest(req, req.params.id);
+  if (!(await canDecideApproval(req, existing))) throw new AppError(403, 'You cannot reject this request.');
   if (existing.status !== 'PENDING') throw new AppError(409, 'Approval request has already been decided.');
   const data = await prisma.approvalRequest.update({
     where: { id: req.params.id },
@@ -2444,6 +2661,98 @@ router.post('/approvals/:id/reject', requireRole(...adminRoles), validate(idPara
   await audit(req, 'REJECT', 'ApprovalRequest', data.id, { eventType: data.eventType, entityType: data.entityType, entityId: data.entityId });
   sendData(res, normalize(data));
 }));
+
+router.post('/approvals/:id/execute', requireRole(...adminRoles), validate(idParam, 'params'), validate(approvalExecutionSchema), asyncHandler(async (req, res) => {
+  const existing = await requireApprovalRequest(req, req.params.id);
+  if (!(await canDecideApproval(req, existing))) throw new AppError(403, 'You cannot execute this request.');
+  const data = await executeApprovedAction(req, existing, req.body.decisionNote);
+  sendData(res, normalize(data));
+}));
+
+router.get('/permissions', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, { keys: permissionKeys, bundles: defaultPermissionBundles });
+}));
+
+router.get('/users/:id/permissions', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requireCompanyUser(req, req.params.id);
+  const [overrides, branchAccess] = await Promise.all([
+    prisma.userPermissionOverride.findMany({ where: { companyId: req.companyId, userId: req.params.id }, orderBy: { createdAt: 'desc' } }),
+    prisma.userBranchAccess.findMany({ where: { companyId: req.companyId, userId: req.params.id }, include: { branch: true }, orderBy: { createdAt: 'desc' } })
+  ]);
+  sendData(res, normalize({ overrides, branchAccess }));
+}));
+
+router.post('/users/:id/permissions', requireRole(...adminRoles), validate(idParam, 'params'), validate(permissionOverrideSchema), asyncHandler(async (req, res) => {
+  await requireCompanyUser(req, req.params.id);
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
+  const data = await prisma.userPermissionOverride.upsert({
+    where: { companyId_userId_permissionKey_branchId: { companyId: req.companyId, userId: req.params.id, permissionKey: req.body.permissionKey, branchId: req.body.branchId || null } },
+    update: { allowed: req.body.allowed, branchId: req.body.branchId || null },
+    create: { companyId: req.companyId, userId: req.params.id, permissionKey: req.body.permissionKey, allowed: req.body.allowed, branchId: req.body.branchId || null }
+  });
+  await addEnterpriseAudit(req, 'UPSERT_PERMISSION', 'User', req.params.id, { permissionKey: req.body.permissionKey, allowed: req.body.allowed, branchId: req.body.branchId });
+  sendData(res, normalize(data), 201);
+}));
+
+router.post('/users/:id/branch-access', requireRole(...adminRoles), validate(idParam, 'params'), validate(branchAccessSchema), asyncHandler(async (req, res) => {
+  await requireCompanyUser(req, req.params.id);
+  await requireBranch(req, req.body.branchId);
+  const data = await prisma.userBranchAccess.upsert({
+    where: { companyId_userId_branchId: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId } },
+    update: { permissions: req.body.permissions || [], active: req.body.active !== false },
+    create: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId, permissions: req.body.permissions || [], active: req.body.active !== false }
+  });
+  await addEnterpriseAudit(req, 'UPSERT_BRANCH_ACCESS', 'User', req.params.id, { branchId: req.body.branchId, active: req.body.active !== false });
+  sendData(res, normalize(data), 201);
+}));
+
+async function executeApprovedAction(req, approval, decisionNote) {
+  if (approval.status === 'REJECTED') throw new AppError(409, 'Rejected approvals cannot be executed.');
+  if (approval.executedAt) throw new AppError(409, 'Approval action has already been executed.');
+  let decided = approval;
+  if (approval.status === 'PENDING') {
+    if (approval.expiresAt && new Date(approval.expiresAt) < new Date()) throw new AppError(409, 'Approval request has expired.');
+    decided = await prisma.approvalRequest.update({ where: { id: approval.id }, data: { status: 'APPROVED', approvedById: req.user.id, decisionNote, decidedAt: new Date() } });
+  }
+  if (decided.status !== 'APPROVED') throw new AppError(409, 'Approval must be approved before execution.');
+  const payload = decided.actionPayload || {};
+  let result;
+  if (decided.actionKey === 'invoice.void') {
+    result = await transitionInvoice({ ...req, params: { id: decided.entityId } }, 'VOID', 'voidedAt', 'Invoice voided');
+  } else if (decided.actionKey === 'payment.refund') {
+    const payment = await prisma.payment.findFirst({ where: { id: decided.entityId, companyId: req.companyId } });
+    if (!payment) throw notFound('Payment not found');
+    result = await prisma.payment.update({ where: { id: payment.id }, data: { status: 'REFUNDED' } });
+    await recalcInvoice(prisma, req.companyId, payment.invoiceId);
+  } else if (decided.actionKey === 'purchaseOrder.send') {
+    await requirePurchaseOrder(req, decided.entityId);
+    result = await prisma.purchaseOrder.update({ where: { id: decided.entityId }, data: { status: 'SENT' }, include: purchaseOrderInclude });
+  } else if (decided.actionKey === 'stock.adjust') {
+    await requireInventoryItem(req, payload.itemId);
+    await requireStockLocation(req, payload.locationId);
+    result = await prisma.$transaction(async (tx) => applyStockChange(tx, req, {
+      itemId: payload.itemId,
+      locationId: payload.locationId,
+      movementType: payload.movementType,
+      quantity: payload.quantity,
+      unitCost: payload.unitCost,
+      reason: payload.reason,
+      onHandDelta: payload.movementType === 'ADJUSTMENT_IN' ? payload.quantity : -payload.quantity,
+      reservedDelta: 0
+    }));
+  } else if (decided.actionKey === 'contract.cancel') {
+    result = await setContractStatus({ ...req, params: { id: decided.entityId } }, 'CANCELLED', 'CANCEL');
+  } else if (decided.actionKey === 'job.reassign.after_dispatch') {
+    await requireWorker(req, payload.workerId);
+    const job = await requireJob(req, decided.entityId, { assignedOnly: false });
+    result = await prisma.job.update({ where: { id: job.id }, data: { workerId: payload.workerId, status: 'SCHEDULED' } });
+  } else {
+    throw new AppError(400, 'Unsupported approved action');
+  }
+  const updated = await prisma.approvalRequest.update({ where: { id: decided.id }, data: { executedAt: new Date(), executionResult: safeAuditMetadata({ actionKey: decided.actionKey, resultId: result && result.id }) }, include: { policy: true, requestedBy: { select: SAFE_USER_SELECT }, approvedBy: { select: SAFE_USER_SELECT } } });
+  await addEnterpriseAudit(req, 'EXECUTE_APPROVED_ACTION', decided.entityType, decided.entityId, { approvalRequestId: decided.id, actionKey: decided.actionKey, branchId: decided.branchId });
+  return { approval: updated, result };
+}
 
 router.get('/dashboard', asyncHandler(async (req, res) => {
   const companyId = req.companyId;
@@ -3051,6 +3360,9 @@ router.post('/service-contracts/:id/suspend', requireRole(...adminRoles), valida
 }));
 
 router.post('/service-contracts/:id/cancel', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  const approval = await requireApprovalOrProceed(req, { eventType: 'CONTRACT_CANCEL', actionKey: 'contract.cancel', entityType: 'ServiceContract', entityId: contract.id, branchId: contract.branchId, reason: req.body && req.body.reason });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
   sendData(res, normalize(await setContractStatus(req, 'CANCELLED', 'CANCEL')));
 }));
 
@@ -3575,7 +3887,10 @@ router.get('/inventory/items/:id/stock', requireRole(...adminRoles), validate(id
 
 router.post('/inventory/adjustments', requireRole(...adminRoles), validate(stockAdjustmentSchema), asyncHandler(async (req, res) => {
   await requireInventoryItem(req, req.body.itemId);
-  await requireStockLocation(req, req.body.locationId);
+  const location = await requireStockLocation(req, req.body.locationId);
+  const approvalAmount = Number(req.body.quantity || 0) * Number(req.body.unitCost || 1);
+  const approval = await requireApprovalOrProceed(req, { eventType: 'STOCK_ADJUSTMENT', actionKey: 'stock.adjust', entityType: 'InventoryStock', entityId: req.body.itemId, branchId: location && location.branchId, amount: approvalAmount, reason: req.body.reason, actionPayload: req.body });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
   const data = await prisma.$transaction(async (tx) => applyStockChange(tx, req, {
     itemId: req.body.itemId,
     locationId: req.body.locationId,
@@ -3765,7 +4080,11 @@ router.patch('/purchase-orders/:id', requireRole(...adminRoles), validate(idPara
 }));
 
 router.post('/purchase-orders/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
-  await requirePurchaseOrder(req, req.params.id);
+  const order = await prisma.purchaseOrder.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: purchaseOrderInclude });
+  if (!order) throw notFound('Purchase order not found');
+  const orderTotal = (order.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0) * Number(line.unitCost || 0), 0);
+  const approval = await requireApprovalOrProceed(req, { eventType: 'PURCHASE_ORDER_SEND', actionKey: 'purchaseOrder.send', entityType: 'PurchaseOrder', entityId: order.id, branchId: order.branchId, amount: orderTotal, reason: req.body && req.body.reason });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
   const data = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: { status: 'SENT' }, include: purchaseOrderInclude });
   await audit(req, 'SEND', 'PurchaseOrder', data.id);
   sendData(res, normalize(data));
@@ -3998,9 +4317,13 @@ router.patch('/jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'
   sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 
-router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1) })), asyncHandler(async (req, res) => {
+router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1), reason: optionalText(1000) })), asyncHandler(async (req, res) => {
   const existing = await requireJob(req, req.params.id, { assignedOnly: false });
   await requireWorker(req, req.body.workerId);
+  if (existing.workerId && existing.workerId !== req.body.workerId && ['DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED'].includes(existing.status)) {
+    const approval = await requireApprovalOrProceed(req, { eventType: 'JOB_REASSIGN_AFTER_DISPATCH', actionKey: 'job.reassign.after_dispatch', entityType: 'Job', entityId: existing.id, branchId: existing.branchId, reason: req.body.reason, actionPayload: { workerId: req.body.workerId, fromWorkerId: existing.workerId } });
+    if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
+  }
   const data = await prisma.$transaction(async (tx) => {
     const updated = await tx.job.update({ where: { id: req.params.id }, data: { workerId: req.body.workerId, status: 'SCHEDULED' } });
     await addJobActivity(tx, req, updated, 'ASSIGNED', null, { workerId: req.body.workerId });
@@ -4574,6 +4897,9 @@ router.post('/invoices/:id/send', requireRole(...adminRoles), validate(idParam, 
 }));
 
 router.post('/invoices/:id/void', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const invoice = await requireInvoice(req, req.params.id);
+  const approval = await requireApprovalOrProceed(req, { eventType: 'INVOICE_VOID', actionKey: 'invoice.void', entityType: 'Invoice', entityId: invoice.id, branchId: invoice.branchId, amount: invoice.total || invoice.amount, reason: req.body && req.body.reason });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
   const data = await transitionInvoice(req, 'VOID', 'voidedAt', 'Invoice voided');
   await audit(req, 'VOID', 'Invoice', data.id);
   sendData(res, normalize(data));
@@ -4680,6 +5006,8 @@ router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idPara
 router.post('/payments/:id/refund', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const payment = await prisma.payment.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
   if (!payment) throw notFound('Payment not found');
+  const approval = await requireApprovalOrProceed(req, { eventType: 'PAYMENT_REFUND', actionKey: 'payment.refund', entityType: 'Payment', entityId: payment.id, branchId: payment.branchId, amount: payment.amount, reason: req.body && req.body.reason });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
   const data = await prisma.payment.update({ where: { id: payment.id }, data: { status: 'REFUNDED' } });
   await recalcInvoice(prisma, req.companyId, payment.invoiceId);
   await audit(req, 'REFUND', 'Payment', payment.id);

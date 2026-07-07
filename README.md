@@ -142,3 +142,8 @@ FieldCore now supports company-level localization for country, timezone, currenc
 Payment methods are configurable operational options only unless a real provider integration is separately configured. CSV export remains the accounting foundation; live Xero/Sage/QuickBooks sync is not claimed.
 
 Manual QA should verify: finance settings save, payment methods restrict payment capture, public services show currency/tax metadata, invoices get default due dates, quotes get default expiry dates, and new WhatsApp/email template names exist without breaking existing notifications.
+
+
+## Enterprise approval gates
+
+FieldCore includes enforceable enterprise approval gates, granular permission overrides, branch-scoped access, and audit hardening. See `docs/enterprise-approvals-rbac-audit.md`.

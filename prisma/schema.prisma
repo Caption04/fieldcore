@@ -323,12 +323,16 @@ enum OfflineActionType {
 enum ApprovalEventType {
   QUOTE_DISCOUNT
   QUOTE_SEND
+  INVOICE_DISCOUNT
   INVOICE_VOID
   PAYMENT_REFUND
   PURCHASE_ORDER_SEND
+  PURCHASE_ORDER_APPROVE
   STOCK_ADJUSTMENT
   JOB_RESCHEDULE
+  JOB_REASSIGN_AFTER_DISPATCH
   SLA_WAIVE
+  CONTRACT_CANCEL
 }
 
 enum ApprovalStatus {
@@ -415,6 +419,9 @@ model Company {
   branches               Branch[]
   approvalPolicies       ApprovalPolicy[]
   approvalRequests       ApprovalRequest[]
+  permissionRoleTemplates PermissionRoleTemplate[]
+  userPermissionOverrides UserPermissionOverride[]
+  userBranchAccesses      UserBranchAccess[]
 }
 
 model SaaSPlan {
@@ -526,6 +533,8 @@ model User {
   offlineActionQueues         OfflineActionQueue[]
   approvalRequestsMade        ApprovalRequest[]       @relation("ApprovalRequestRequestedBy")
   approvalRequestsDecided     ApprovalRequest[]       @relation("ApprovalRequestDecidedBy")
+  permissionOverrides         UserPermissionOverride[]
+  branchAccesses              UserBranchAccess[]
 
   @@index([companyId])
 }
@@ -556,49 +565,119 @@ model Branch {
   stockLocations   StockLocation[]
   purchaseRequests PurchaseRequest[]
   purchaseOrders   PurchaseOrder[]
+  approvalPolicies ApprovalPolicy[]
+  approvalRequests ApprovalRequest[]
+  userBranchAccesses UserBranchAccess[]
 
   @@unique([companyId, code])
   @@index([companyId, active])
 }
 
 model ApprovalPolicy {
-  id              String            @id @default(cuid())
-  companyId       String
-  name            String
-  eventType       ApprovalEventType
-  thresholdAmount Decimal?          @db.Decimal(12, 2)
-  active          Boolean           @default(true)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  requests        ApprovalRequest[]
+  id                   String            @id @default(cuid())
+  companyId            String
+  branchId             String?
+  name                 String
+  eventType            ApprovalEventType
+  thresholdAmount      Decimal?          @db.Decimal(12, 2)
+  requiredApproverRole Role              @default(OWNER)
+  allowSelfApproval    Boolean           @default(false)
+  reasonRequired       Boolean           @default(false)
+  expiresAfterHours    Int?
+  active               Boolean           @default(true)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  company              Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch               Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  requests             ApprovalRequest[]
 
   @@index([companyId, eventType, active])
+  @@index([companyId, branchId, eventType, active])
 }
 
 model ApprovalRequest {
-  id             String            @id @default(cuid())
-  companyId      String
-  policyId       String?
-  requestedById  String
-  approvedById   String?
-  entityType     String
-  entityId       String
-  eventType      ApprovalEventType
-  status         ApprovalStatus    @default(PENDING)
-  reason         String?
-  decisionNote   String?
-  createdAt      DateTime          @default(now())
-  decidedAt      DateTime?
-  updatedAt      DateTime          @updatedAt
-  company        Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  policy         ApprovalPolicy?   @relation(fields: [policyId], references: [id], onDelete: SetNull)
-  requestedBy    User              @relation("ApprovalRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
-  approvedBy     User?             @relation("ApprovalRequestDecidedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  id              String            @id @default(cuid())
+  companyId       String
+  branchId        String?
+  policyId        String?
+  requestedById   String
+  approvedById    String?
+  entityType      String
+  entityId        String
+  eventType       ApprovalEventType
+  actionKey       String?
+  actionPayload   Json?
+  amount          Decimal?          @db.Decimal(12, 2)
+  thresholdAmount Decimal?          @db.Decimal(12, 2)
+  status          ApprovalStatus    @default(PENDING)
+  reason          String?
+  decisionNote    String?
+  expiresAt       DateTime?
+  executedAt      DateTime?
+  executionResult Json?
+  createdAt       DateTime          @default(now())
+  decidedAt       DateTime?
+  updatedAt       DateTime          @updatedAt
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch          Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  policy          ApprovalPolicy?   @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  requestedBy     User              @relation("ApprovalRequestRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy      User?             @relation("ApprovalRequestDecidedBy", fields: [approvedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, status, createdAt])
+  @@index([companyId, branchId, status, createdAt])
   @@index([companyId, entityType, entityId])
   @@index([companyId, eventType, status])
+  @@index([companyId, actionKey, status])
+}
+
+
+model PermissionRoleTemplate {
+  id          String   @id @default(cuid())
+  companyId   String?
+  role        Role
+  permissions Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  company     Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, role])
+  @@index([companyId])
+}
+
+model UserPermissionOverride {
+  id            String   @id @default(cuid())
+  companyId     String
+  userId        String
+  permissionKey String
+  allowed       Boolean  @default(true)
+  branchId      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId, permissionKey, branchId])
+  @@index([companyId, permissionKey])
+  @@index([companyId, userId])
+}
+
+model UserBranchAccess {
+  id          String   @id @default(cuid())
+  companyId   String
+  userId      String
+  branchId    String
+  permissions Json?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch      Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId, branchId])
+  @@index([companyId, branchId])
+  @@index([companyId, userId, active])
 }
 
 model Customer {
