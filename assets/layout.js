@@ -17,6 +17,7 @@
     ['purchase-orders', 'Purchase Orders', 'purchase-orders.html', 'receipt'],
     ['quotes', 'Quotes', 'quotes.html', 'file'],
     ['invoices', 'Invoices', 'invoices.html', 'receipt'],
+    ['collections', 'Collections', 'collections.html', 'receipt'],
     ['reports', 'Reports', 'reports.html', 'chart'],
     ['settings', 'Settings', 'settings.html', 'settings']
   ];

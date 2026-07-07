@@ -151,3 +151,9 @@ FieldCore includes enforceable enterprise approval gates, granular permission ov
 ### Enterprise accounting integrations
 
 FieldCore includes an accounting-sync foundation for Xero, Sage, and QuickBooks. Xero has the first full provider path and local mock mode; Sage and QuickBooks use the same provider abstraction as safe stubs. Manual CSV export remains available as a fallback. See `docs/accounting-integrations.md`.
+
+## TASK9 payment rails and collections
+
+FieldCore now includes a provider-ready payment rails layer for PayFast, Yoco, Ozow, Paynow/manual bank rails, and mock payment QA. Invoices can generate payment links, provider webhooks can confirm trusted payments, reconciliation imports can be matched manually, reminders are throttled, and refunds are tied into TASK7 approval gates.
+
+See `docs/payment-rails-reconciliation-collections.md`.

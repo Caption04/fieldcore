@@ -104,3 +104,17 @@ Accounting sync now uses `src/services/finance`:
 - idempotent remote links through `ExternalRecordLink`
 
 Do not store provider access tokens, refresh tokens, OAuth secrets, webhook secrets, or API keys in plaintext responses or logs. CSV export remains supported when live accounting sync is not connected.
+
+## TASK9 payment rails, reconciliation, and collections
+
+New payment routes support provider configuration, payment link generation, webhook confirmation, reconciliation imports, aging dashboards, reminder throttling, and approval-gated refunds. Live providers remain disabled unless configured; mock mode is available for QA.
+
+Important routes:
+
+- `POST /api/payment-providers`
+- `POST /api/invoices/:id/payment-links`
+- `POST /api/payment-webhooks/:provider/:companyId`
+- `GET /api/collections`
+- `POST /api/reconciliation/imports`
+- `POST /api/reconciliation/items/:id/match`
+- `POST /api/payments/:id/refund`

@@ -26,6 +26,9 @@ const { getFinanceMapping, saveFinanceMapping } = require('../services/finance/f
 const { clearFinanceTokens, saveFinanceTokens } = require('../services/finance/financeToken.service');
 const { safeFinanceSyncLog, syncFinanceRecord, testFinanceIntegration } = require('../services/finance/financeSync.service');
 const { createFinanceProvider } = require('../services/finance/providers');
+const { createPaymentProvider, safePaymentProviderConnection, verifySharedSecretWebhook } = require('../services/payments/paymentProviderRegistry');
+const { savePaymentProviderSecrets } = require('../services/payments/paymentToken.service');
+const { createOrFlagReconciliationItem, matchReconciliationItem, safeReconciliationItem } = require('../services/payments/reconciliation.service');
 const {
   COOKIE_NAME,
   SAFE_LOGIN_USER_SELECT,
@@ -96,6 +99,10 @@ const financeIntegrationStatusValues = ['DISCONNECTED', 'CONFIGURED', 'ACTIVE', 
 const financeExportTypeValues = ['INVOICES', 'PAYMENTS', 'RECEIPTS', 'CUSTOMERS'];
 const financeExportStatusValues = ['COMPLETED', 'FAILED'];
 const paymentMethodValues = ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'CARD', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'MANUAL_ADJUSTMENT', 'CUSTOM_MANUAL', 'OTHER'];
+const paymentProviderValues = ['PAYFAST', 'YOCO', 'OZOW', 'PAYNOW', 'SNAPSCAN', 'ZAPPER', 'STRIPE', 'MANUAL_BANK', 'ECOCASH_MANUAL', 'MOCK'];
+const paymentProviderConnectionStatusValues = ['DISCONNECTED', 'CONFIGURED', 'ACTIVE', 'ERROR', 'DISABLED'];
+const paymentLinkStatusValues = ['CREATED', 'SENT', 'OPENED', 'PENDING', 'PAID', 'EXPIRED', 'CANCELLED', 'FAILED'];
+const reconciliationStatusValues = ['UNMATCHED', 'MATCHED', 'DUPLICATE', 'SUSPICIOUS', 'IGNORED'];
 const externalLocalTypeValues = ['INVOICE', 'PAYMENT', 'RECEIPT', 'CUSTOMER', 'QUOTE', 'JOB'];
 const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE', 'REJECTED'];
 const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'PART_USED', 'PART_SHORTAGE'];
@@ -557,6 +564,9 @@ function financeSettingsDefaults(companyId) {
     invoiceFooter: null,
     allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'CARD', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'MANUAL_ADJUSTMENT', 'CUSTOM_MANUAL', 'OTHER'],
     paymentInstructions: null,
+    enforceQuoteDepositBeforeScheduling: false,
+    defaultQuoteDepositPercent: 0,
+    reminderThrottleHours: 24,
     createdAt: null,
     updatedAt: null
   };
@@ -579,7 +589,10 @@ function financeLocalization(settings) {
     quoteExpiryDays: Number(merged.quoteExpiryDays || 14),
     paymentTermsDays: Number(merged.paymentTermsDays || 14),
     allowedPaymentMethods: Array.isArray(merged.allowedPaymentMethods) ? merged.allowedPaymentMethods : financeSettingsDefaults().allowedPaymentMethods,
-    paymentInstructions: merged.paymentInstructions || null
+    paymentInstructions: merged.paymentInstructions || null,
+    enforceQuoteDepositBeforeScheduling: Boolean(merged.enforceQuoteDepositBeforeScheduling),
+    defaultQuoteDepositPercent: Number(merged.defaultQuoteDepositPercent || 0),
+    reminderThrottleHours: Number(merged.reminderThrottleHours || 24)
   };
 }
 
@@ -613,6 +626,47 @@ async function requireFinanceIntegration(req, id) {
   const record = await prisma.financeIntegration.findFirst({ where: { id, companyId: req.companyId } });
   if (!record) throw notFound('Finance integration not found');
   return record;
+}
+
+
+async function requirePaymentProviderConnection(req, id) {
+  const record = await prisma.paymentProviderConnection.findFirst({ where: { id, companyId: req.companyId } });
+  if (!record) throw notFound('Payment provider connection not found');
+  return record;
+}
+
+async function requireActivePaymentProvider(req, provider, id) {
+  const where = { companyId: req.companyId, status: 'ACTIVE', ...(id ? { id } : { provider }) };
+  const record = await prisma.paymentProviderConnection.findFirst({ where });
+  if (!record) throw new AppError(409, 'Payment provider is not configured or active');
+  return record;
+}
+
+function safePaymentLink(link) {
+  if (!link) return link;
+  return { id: link.id, companyId: link.companyId, branchId: link.branchId || null, invoiceId: link.invoiceId, quoteId: link.quoteId || null, providerConnectionId: link.providerConnectionId || null, provider: link.provider, status: link.status, amount: link.amount, currency: link.currency, reference: link.reference, checkoutUrl: link.checkoutUrl || null, externalId: link.externalId || null, expiresAt: link.expiresAt || null, sentAt: link.sentAt || null, paidAt: link.paidAt || null, createdAt: link.createdAt, updatedAt: link.updatedAt };
+}
+
+function safePaymentRefund(refund) {
+  if (!refund) return refund;
+  return { id: refund.id, companyId: refund.companyId, branchId: refund.branchId || null, paymentId: refund.paymentId, invoiceId: refund.invoiceId, providerConnectionId: refund.providerConnectionId || null, approvalRequestId: refund.approvalRequestId || null, amount: refund.amount, status: refund.status, providerRefundId: refund.providerRefundId || null, reason: refund.reason || null, processedAt: refund.processedAt || null, createdAt: refund.createdAt, updatedAt: refund.updatedAt };
+}
+
+function paymentReference(invoiceId) {
+  return 'FC-' + invoiceId + '-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+}
+
+async function ensureQuoteDepositBeforeScheduling(req, job) {
+  const settings = financeLocalization(await getCompanyFinanceSettings(req.companyId));
+  if (!settings.enforceQuoteDepositBeforeScheduling) return;
+  const quotes = await prisma.quote.findMany({ where: { companyId: req.companyId, jobId: job.id, status: 'ACCEPTED' } });
+  const blocked = quotes.find((quote) => Number(quote.depositRequiredAmount || 0) > 0 && !quote.depositPaidAt);
+  if (blocked) throw new AppError(409, 'Quote deposit must be paid before scheduling this job');
+}
+
+async function createReceiptAndRecalcForConfirmedPayment(tx, payment, invoice) {
+  await createReceiptForPayment(tx, payment, invoice);
+  return recalcInvoice(tx, payment.companyId, invoice.id);
 }
 
 async function requireFinanceIntegrationByProvider(companyId, provider) {
@@ -804,7 +858,10 @@ const financeSettingsSchema = z.object({
   fiscalYearStartMonth: z.coerce.number().int().min(1).max(12).optional(),
   invoiceFooter: optionalText(1000),
   allowedPaymentMethods: z.array(z.enum(paymentMethodValues)).max(20).optional(),
-  paymentInstructions: optionalText(1000)
+  paymentInstructions: optionalText(1000),
+  enforceQuoteDepositBeforeScheduling: z.boolean().optional(),
+  defaultQuoteDepositPercent: z.coerce.number().min(0).max(100).optional(),
+  reminderThrottleHours: z.coerce.number().int().min(1).max(720).optional()
 }).superRefine((value, ctx) => {
   if (value.defaultCurrency && value.allowedCurrencies && !value.allowedCurrencies.includes(value.defaultCurrency)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['allowedCurrencies'], message: 'Allowed currencies must include the default currency' });
@@ -868,6 +925,46 @@ const financeBatchSyncSchema = z.object({
   paymentIds: z.array(z.string().min(1)).max(100).default([])
 });
 const financeWebhookParam = z.object({ provider: z.enum(financeProviderValues), companyId: z.string().min(1) });
+
+const paymentProviderConfigSchema = z.record(z.union([z.string().trim().max(1000), z.boolean(), z.number()])).default({});
+const paymentProviderConnectionSchema = z.object({
+  provider: z.enum(paymentProviderValues),
+  displayName: optionalText(120),
+  status: z.enum(paymentProviderConnectionStatusValues).optional(),
+  config: paymentProviderConfigSchema,
+  secrets: z.record(z.string().trim().max(2000)).optional()
+});
+const paymentProviderPatchSchema = z.object({
+  displayName: optionalText(120),
+  status: z.enum(paymentProviderConnectionStatusValues).optional(),
+  config: paymentProviderConfigSchema.optional(),
+  secrets: z.record(z.string().trim().max(2000)).optional()
+});
+const paymentLinkSchema = z.object({
+  provider: z.enum(paymentProviderValues).optional(),
+  providerConnectionId: z.string().min(1).optional(),
+  amount: amount.optional(),
+  currency: currencyCode.optional(),
+  expiresAt: optionalDate,
+  sendNow: z.boolean().optional()
+});
+const paymentWebhookParam = z.object({ provider: z.enum(paymentProviderValues), companyId: z.string().min(1) });
+const reconciliationImportSchema = z.object({
+  provider: z.enum(paymentProviderValues),
+  providerConnectionId: z.string().min(1).optional(),
+  providerPaymentId: optionalText(160),
+  reference: optionalText(200),
+  payerName: optionalText(200),
+  payerEmail: optionalEmail,
+  amount: amount,
+  currency: currencyCode.default('USD'),
+  paidAt: optionalDate,
+  raw: z.record(z.any()).optional()
+});
+const reconciliationMatchSchema = z.object({ invoiceId: z.string().min(1), method: z.enum(paymentMethodValues).default('BANK_TRANSFER') });
+const refundSchema = z.object({ amount: amount.optional(), reason: optionalText(1000), providerConnectionId: z.string().min(1).optional() });
+const reminderSchema = z.object({ channel: z.enum(['EMAIL', 'WHATSAPP', 'SMS']).default('EMAIL'), reminderType: optionalText(80), force: z.boolean().optional() });
+const promisePaymentSchema = z.object({ promisedPaymentDate: optionalDate, paymentPlanNotes: optionalText(1000) });
 
 const workerDeviceRegisterSchema = z.object({
   platform: z.string().trim().min(2).max(40).transform((value) => value.toUpperCase()),
@@ -1438,7 +1535,7 @@ const lineItemSchema = z.object({
 });
 const lineItemsSchema = z.array(lineItemSchema).max(100).optional();
 const quoteInclude = { customer: true, service: true, job: true, lineItems: { orderBy: { sortOrder: 'asc' } }, statusHistory: { orderBy: { createdAt: 'desc' } } };
-const invoiceInclude = { customer: true, service: true, job: true, quote: true, payments: true, receipts: true, lineItems: { orderBy: { sortOrder: 'asc' } }, statusHistory: { orderBy: { createdAt: 'desc' } } };
+const invoiceInclude = { customer: true, service: true, job: true, quote: true, payments: true, receipts: true, paymentLinks: { orderBy: { createdAt: 'desc' } }, lineItems: { orderBy: { sortOrder: 'asc' } }, statusHistory: { orderBy: { createdAt: 'desc' } } };
 const quoteDeleteRetentionDays = 30;
 
 function quoteDeletedFilter(req) {
@@ -1475,7 +1572,14 @@ async function recalcInvoice(tx, companyId, invoiceId) {
   const paid = confirmed.reduce((sum, payment) => sum.plus(toDecimal(payment.amount)), toDecimal(0));
   const balanceDue = totals.total.minus(paid);
   if (balanceDue.lessThan(0)) throw new AppError(400, 'Payment exceeds invoice balance');
-  const data = { ...totals, balanceDue };
+  const data = {
+    amount: totals.amount.toNumber(),
+    subtotal: totals.subtotal.toNumber(),
+    discountTotal: totals.discountTotal.toNumber(),
+    taxTotal: totals.taxTotal.toNumber(),
+    total: totals.total.toNumber(),
+    balanceDue: balanceDue.toNumber()
+  };
   if (paid.greaterThan(0)) {
     data.status = balanceDue.equals(0) ? 'PAID' : 'PARTIALLY_PAID';
     data.paidAt = balanceDue.equals(0) ? new Date() : null;
@@ -2201,7 +2305,7 @@ function clientJobSummary(job) { return job && { id: job.id, title: job.title, s
 function clientQuote(quote) { return quote && { id: quote.id, quoteNumber: quote.id, customerId: quote.customerId, title: quote.title, description: quote.description, status: quote.status, service: quote.service && { id: quote.service.id, name: quote.service.name }, customer: clientCustomer(quote.customer), job: clientJobSummary(quote.job), createdAt: quote.createdAt, updatedAt: quote.updatedAt, validUntil: quote.validUntil, sentAt: quote.sentAt, acceptedAt: quote.acceptedAt, rejectedAt: quote.rejectedAt, subtotal: quote.subtotal, tax: quote.taxTotal, discount: quote.discountTotal, total: quote.total, amount: quote.amount, lineItems: (quote.lineItems || []).map(clientLine) }; }
 function clientPayment(payment) { return payment && { id: payment.id, invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, status: payment.status, reference: payment.reference, receivedAt: payment.receivedAt, confirmedAt: payment.confirmedAt, createdAt: payment.createdAt }; }
 function clientReceipt(receipt) { return receipt && { id: receipt.id, receiptNumber: receipt.receiptNumber, invoiceId: receipt.invoiceId, paymentId: receipt.paymentId, amount: receipt.amount, issuedAt: receipt.issuedAt, createdAt: receipt.createdAt, invoice: receipt.invoice && { id: receipt.invoice.id, number: receipt.invoice.number, status: receipt.invoice.status }, payment: clientPayment(receipt.payment) }; }
-function clientInvoice(invoice) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
+function clientInvoice(invoice) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), paymentLinks: (invoice.paymentLinks || []).map((link) => ({ id: link.id, status: link.status, provider: link.provider, amount: link.amount, currency: link.currency, checkoutUrl: link.checkoutUrl, expiresAt: link.expiresAt })), payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
 function clientAsset(asset) { return asset && { id: asset.id, customerId: asset.customerId, propertyId: asset.propertyId, serviceId: asset.serviceId, name: asset.name, assetType: asset.assetType, assetTag: asset.assetTag, serialNumber: asset.serialNumber, manufacturer: asset.manufacturer, modelNumber: asset.modelNumber, locationLabel: asset.locationLabel, installedAt: asset.installedAt, warrantyStartAt: asset.warrantyStartAt, warrantyEndAt: asset.warrantyEndAt, warrantyStatus: warrantyStatus(asset), status: asset.status, notes: asset.notes, service: asset.service && { id: asset.service.id, name: asset.service.name }, property: asset.property && { id: asset.property.id, label: asset.property.label, address: asset.property.address }, jobHistory: (asset.jobAssets || []).map((item) => clientJobSummary(item.job)).filter(Boolean) }; }
 function clientContract(contract) { return contract && { id: contract.id, customerId: contract.customerId, propertyId: contract.propertyId, contractNumber: contract.contractNumber, name: contract.name, status: contract.status, startDate: contract.startDate, endDate: contract.endDate, currency: contract.currency, responseSlaHours: contract.responseSlaHours, completionSlaHours: contract.completionSlaHours, includedVisits: contract.includedVisits, notes: contract.notes, assets: (contract.assets || []).map((item) => clientAsset(item.asset)).filter(Boolean), serviceLines: (contract.serviceLines || []).map((line) => ({ id: line.id, title: line.title, service: line.service && { id: line.service.id, name: line.service.name }, frequency: line.frequency, interval: line.interval, visitsPerPeriod: line.visitsPerPeriod, nextDueAt: line.nextDueAt, defaultDurationMinutes: line.defaultDurationMinutes, requiresProofPhotos: line.requiresProofPhotos, requiresSignature: line.requiresSignature, requiresLocation: line.requiresLocation })), upcomingDueWork: contractDueItems(contract, new Date()) }; }
 function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresBeforePhotos: job.requiresBeforePhotos, requiresAfterPhotos: job.requiresAfterPhotos, requiresSignature: job.requiresSignature, requiresLocation: job.requiresLocation, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, contract: job.contract && { id: job.contract.id, contractNumber: job.contract.contractNumber, name: job.contract.name, status: job.contract.status }, responseDueAt: job.responseDueAt, completionDueAt: job.completionDueAt, slaStatus: job.slaStatus, slaBreachedAt: job.slaBreachedAt, assets: (job.jobAssets || []).map((item) => clientAsset(item.asset)).filter(Boolean), total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature), proofSummary: proofSummary(jobWithEvidenceStatus(job), true) }; }
@@ -2441,6 +2545,55 @@ router.post('/finance/webhooks/:provider/:companyId', validate(financeWebhookPar
   sendData(res, normalize({ received: true, event: safeFinanceWebhookEvent(event) }));
 }));
 
+
+router.post('/payment-webhooks/:provider/:companyId', validate(paymentWebhookParam, 'params'), asyncHandler(async (req, res) => {
+  const connection = await prisma.paymentProviderConnection.findFirst({ where: { companyId: req.params.companyId, provider: req.params.provider } });
+  if (!connection || connection.status === 'DISABLED') throw notFound('Payment provider connection not found');
+  const signatureValid = verifySharedSecretWebhook(connection, req);
+  const eventId = req.body && (req.body.eventId || req.body.id || req.body.providerPaymentId) || null;
+  if (!signatureValid) {
+    await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId, eventType: req.body && (req.body.eventType || req.body.type) || null, status: 'REJECTED', signatureValid: false, payload: req.body || {}, errorMessage: 'Invalid webhook signature' } });
+    throw new AppError(401, 'Invalid payment webhook signature');
+  }
+  if (eventId) {
+    const existingEvent = await prisma.paymentProviderEvent.findFirst({ where: { companyId: connection.companyId, provider: connection.provider, eventId } });
+    if (existingEvent && existingEvent.status === 'PROCESSED') {
+      const duplicate = await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId, eventType: req.body && (req.body.eventType || req.body.type) || 'duplicate', status: 'DUPLICATE', signatureValid: true, payload: req.body || {} } });
+      return sendData(res, normalize({ duplicate: true, event: duplicate }));
+    }
+  }
+  const provider = createPaymentProvider(connection.provider, { connection });
+  const parsed = await provider.handleWebhookEvent(req.body || {});
+  const reference = parsed.reference || (req.body && (req.body.reference || req.body.paymentReference));
+  const link = reference ? await prisma.paymentLink.findFirst({ where: { companyId: connection.companyId, reference } }) : null;
+  let payment = null;
+  let invoice = null;
+  let eventStatus = 'PROCESSED';
+  if (!link) {
+    await createOrFlagReconciliationItem({ companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, providerPaymentId: parsed.providerPaymentId || eventId, reference, amount: parsed.amount || 0, currency: parsed.currency || 'USD', paidAt: new Date(), raw: req.body || {}, status: 'UNMATCHED' });
+  } else if (['CONFIRMED', 'PAID', 'SUCCESS', 'SUCCEEDED'].includes(String(parsed.status || '').toUpperCase())) {
+    invoice = await prisma.invoice.findFirst({ where: { id: link.invoiceId, companyId: connection.companyId } });
+    if (!invoice) throw notFound('Invoice not found');
+    const duplicatePayment = parsed.providerPaymentId ? await prisma.payment.findFirst({ where: { companyId: connection.companyId, provider: connection.provider, providerPaymentId: parsed.providerPaymentId } }) : null;
+    if (!duplicatePayment) {
+      payment = await prisma.$transaction(async (tx) => {
+        const created = await tx.payment.create({ data: { companyId: connection.companyId, branchId: invoice.branchId || link.branchId || null, invoiceId: invoice.id, amount: parsed.amount || link.amount, method: link.provider === 'PAYFAST' ? 'PAYFAST' : link.provider === 'YOCO' ? 'YOCO' : link.provider === 'OZOW' ? 'OZOW' : link.provider === 'PAYNOW' ? 'PAYNOW' : 'EXTERNAL_PAYMENT_LINK', status: 'CONFIRMED', reference: link.reference, provider: link.provider, providerPaymentId: parsed.providerPaymentId || eventId || null, paymentLinkId: link.id, receivedAt: new Date(), confirmedAt: new Date(), notes: 'Confirmed by trusted payment provider webhook' } });
+        await tx.paymentLink.update({ where: { id: link.id }, data: { status: 'PAID', paidAt: new Date(), externalId: parsed.providerPaymentId || link.externalId } });
+        if (link.quoteId) await tx.quote.update({ where: { id: link.quoteId }, data: { depositPaidAt: new Date() } });
+        await createReceiptForPayment(tx, created, invoice);
+        await recalcInvoice(tx, connection.companyId, invoice.id);
+        return created;
+      });
+    } else {
+      eventStatus = 'DUPLICATE';
+    }
+  } else if (link) {
+    await prisma.paymentLink.update({ where: { id: link.id }, data: { status: 'FAILED' } });
+  }
+  const event = await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId: parsed.eventId || eventId, eventType: parsed.eventType || req.body && (req.body.eventType || req.body.type) || 'payment.webhook', status: eventStatus, signatureValid: true, paymentLinkId: link && link.id || null, invoiceId: invoice && invoice.id || link && link.invoiceId || null, paymentId: payment && payment.id || null, payload: req.body || {}, processedAt: new Date() } });
+  sendData(res, normalize({ received: true, event, payment }));
+}));
+
 router.use(requireAuth);
 
 router.post('/worker/devices/register', requireRole('WORKER'), validate(workerDeviceRegisterSchema), asyncHandler(async (req, res) => {
@@ -2657,6 +2810,134 @@ router.get('/finance/sync-logs', requireRole(...adminRoles), asyncHandler(async 
 router.get('/finance/webhook-events', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const result = await paged(prisma.financeWebhookEvent, req, { where: { companyId: req.companyId }, orderBy: { receivedAt: 'desc' } });
   sendData(res, normalize(result.data.map(safeFinanceWebhookEvent)), 200, result.meta);
+}));
+
+
+router.get('/payment-providers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await prisma.paymentProviderConnection.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(data.map(safePaymentProviderConnection)));
+}));
+
+router.post('/payment-providers', requireRole(...adminRoles), validate(paymentProviderConnectionSchema), asyncHandler(async (req, res) => {
+  const data = await prisma.paymentProviderConnection.upsert({
+    where: { companyId_provider: { companyId: req.companyId, provider: req.body.provider } },
+    update: { displayName: req.body.displayName, status: req.body.status || 'CONFIGURED', config: req.body.config || {} },
+    create: { companyId: req.companyId, provider: req.body.provider, displayName: req.body.displayName, status: req.body.status || 'CONFIGURED', config: req.body.config || {}, createdById: req.user.id }
+  });
+  if (req.body.secrets) await savePaymentProviderSecrets(data, req.body.secrets);
+  await audit(req, 'UPSERT', 'PaymentProviderConnection', data.id, { provider: data.provider, secretsStored: Boolean(req.body.secrets) });
+  sendData(res, normalize(safePaymentProviderConnection(data)), 201);
+}));
+
+router.patch('/payment-providers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentProviderPatchSchema), asyncHandler(async (req, res) => {
+  const existing = await requirePaymentProviderConnection(req, req.params.id);
+  const data = await prisma.paymentProviderConnection.update({ where: { id: existing.id }, data: { displayName: req.body.displayName, status: req.body.status, config: req.body.config } });
+  if (req.body.secrets) await savePaymentProviderSecrets(data, req.body.secrets);
+  await audit(req, 'UPDATE', 'PaymentProviderConnection', data.id, { provider: data.provider });
+  sendData(res, normalize(safePaymentProviderConnection(data)));
+}));
+
+router.post('/payment-providers/:id/test', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const connection = await requirePaymentProviderConnection(req, req.params.id);
+  const provider = createPaymentProvider(connection.provider, { connection });
+  const result = await provider.testConnection();
+  const data = await prisma.paymentProviderConnection.update({ where: { id: connection.id }, data: { lastTestedAt: new Date(), lastTestStatus: result.ok ? 'OK' : 'FAILED', lastTestError: result.ok ? null : result.message, status: result.ok ? connection.status : 'ERROR' } });
+  if (!result.ok) throw new AppError(409, result.message || 'Payment provider is not configured');
+  await audit(req, 'TEST', 'PaymentProviderConnection', data.id, { provider: data.provider, mockMode: Boolean(result.mockMode) });
+  sendData(res, normalize({ connection: safePaymentProviderConnection(data), test: result }));
+}));
+
+router.get('/payment-links', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.invoiceId) where.invoiceId = req.query.invoiceId;
+  if (req.query.status) where.status = req.query.status;
+  const result = await paged(prisma.paymentLink, req, { where, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data.map(safePaymentLink)), 200, result.meta);
+}));
+
+router.post('/invoices/:id/payment-links', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentLinkSchema), asyncHandler(async (req, res) => {
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { quote: true } });
+  if (!invoice) throw notFound('Invoice not found');
+  if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Payment links can only be generated for open invoices');
+  const providerName = req.body.provider || 'MOCK';
+  const connection = await requireActivePaymentProvider(req, providerName, req.body.providerConnectionId);
+  const linkAmount = req.body.amount || invoice.balanceDue || invoice.total || invoice.amount;
+  if (toDecimal(linkAmount).greaterThan(toDecimal(invoice.balanceDue || invoice.total || invoice.amount))) throw new AppError(400, 'Payment link amount exceeds invoice balance');
+  const currency = req.body.currency || financeLocalization(await getCompanyFinanceSettings(req.companyId)).defaultCurrency;
+  const reference = paymentReference(invoice.id);
+  const provider = createPaymentProvider(connection.provider, { connection });
+  const providerLink = await provider.createPaymentLink({ invoice, amount: linkAmount, currency, reference });
+  const data = await prisma.paymentLink.create({ data: { companyId: req.companyId, branchId: invoice.branchId || null, invoiceId: invoice.id, quoteId: invoice.quoteId || null, providerConnectionId: connection.id, provider: connection.provider, status: req.body.sendNow ? 'SENT' : 'CREATED', amount: linkAmount, currency, reference, checkoutUrl: providerLink.checkoutUrl, externalId: providerLink.externalId, expiresAt: req.body.expiresAt || null, sentAt: req.body.sendNow ? new Date() : null, createdById: req.user.id } });
+  await audit(req, 'CREATE', 'PaymentLink', data.id, { invoiceId: invoice.id, provider: data.provider });
+  sendData(res, normalize(safePaymentLink(data)), 201);
+}));
+
+router.post('/invoices/:id/payment-promise', requireRole(...adminRoles), validate(idParam, 'params'), validate(promisePaymentSchema), asyncHandler(async (req, res) => {
+  const invoice = await requireInvoice(req, req.params.id);
+  const data = await prisma.invoice.update({ where: { id: invoice.id }, data: { promisedPaymentDate: req.body.promisedPaymentDate, paymentPlanNotes: req.body.paymentPlanNotes } });
+  await audit(req, 'UPDATE_PAYMENT_PROMISE', 'Invoice', invoice.id, { promisedPaymentDate: req.body.promisedPaymentDate });
+  sendData(res, normalize(data));
+}));
+
+router.get('/collections', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const now = new Date();
+  const branch = branchFilterFromQuery(req);
+  const invoices = await prisma.invoice.findMany({ where: { companyId: req.companyId, status: { in: ['SENT', 'PARTIALLY_PAID', 'OVERDUE'] }, ...branch }, include: { customer: true, payments: true }, orderBy: { dueDate: 'asc' } });
+  const buckets = { current: 0, days0to30: 0, days31to60: 0, days61to90: 0, days90plus: 0 };
+  const rows = invoices.map((invoice) => {
+    const due = invoice.dueDate ? new Date(invoice.dueDate) : null;
+    const daysOverdue = due ? Math.max(0, Math.floor((now - due) / 86400000)) : 0;
+    const balance = Number(invoice.balanceDue || invoice.total || invoice.amount || 0);
+    if (!due || due >= now) buckets.current += balance;
+    else if (daysOverdue <= 30) buckets.days0to30 += balance;
+    else if (daysOverdue <= 60) buckets.days31to60 += balance;
+    else if (daysOverdue <= 90) buckets.days61to90 += balance;
+    else buckets.days90plus += balance;
+    return { id: invoice.id, number: invoice.number, customer: invoice.customer && invoice.customer.name, branchId: invoice.branchId || null, status: invoice.status, balanceDue: invoice.balanceDue, dueDate: invoice.dueDate, daysOverdue, promisedPaymentDate: invoice.promisedPaymentDate || null, lastReminderSentAt: invoice.lastReminderSentAt || null, nextReminderAt: invoice.nextReminderAt || null, riskLevel: daysOverdue > 90 ? 'HIGH' : daysOverdue > 30 ? 'MEDIUM' : 'LOW' };
+  });
+  sendData(res, normalize({ buckets, invoices: rows, totalOverdue: buckets.days0to30 + buckets.days31to60 + buckets.days61to90 + buckets.days90plus }));
+}));
+
+router.post('/collections/invoices/:id/reminders', requireRole(...adminRoles), validate(idParam, 'params'), validate(reminderSchema), asyncHandler(async (req, res) => {
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { customer: true } });
+  if (!invoice) throw notFound('Invoice not found');
+  if (['PAID', 'VOID'].includes(invoice.status)) throw new AppError(409, 'Paid or void invoices cannot receive collection reminders');
+  const settings = financeLocalization(await getCompanyFinanceSettings(req.companyId));
+  const last = await prisma.collectionReminderLog.findFirst({ where: { companyId: req.companyId, invoiceId: invoice.id, channel: req.body.channel, status: 'SENT' }, orderBy: { createdAt: 'desc' } });
+  const nextAllowedAt = last && last.nextAllowedAt ? new Date(last.nextAllowedAt) : null;
+  if (!req.body.force && nextAllowedAt && nextAllowedAt > new Date()) {
+    const throttled = await prisma.collectionReminderLog.create({ data: { companyId: req.companyId, invoiceId: invoice.id, channel: req.body.channel, status: 'THROTTLED', reminderType: req.body.reminderType || 'collection', recipient: invoice.customer && (invoice.customer.email || invoice.customer.phone) || null, nextAllowedAt } });
+    return sendData(res, normalize({ sent: false, throttled: true, reminder: throttled }), 202);
+  }
+  const allowedAt = new Date(Date.now() + settings.reminderThrottleHours * 3600000);
+  const reminder = await prisma.collectionReminderLog.create({ data: { companyId: req.companyId, invoiceId: invoice.id, channel: req.body.channel, status: 'SENT', reminderType: req.body.reminderType || 'collection', recipient: invoice.customer && (invoice.customer.email || invoice.customer.phone) || null, sentAt: new Date(), nextAllowedAt: allowedAt } });
+  await prisma.invoice.update({ where: { id: invoice.id }, data: { lastReminderSentAt: new Date(), nextReminderAt: allowedAt } });
+  await audit(req, 'SEND_COLLECTION_REMINDER', 'Invoice', invoice.id, { channel: req.body.channel });
+  sendData(res, normalize({ sent: true, reminder }));
+}));
+
+router.get('/reconciliation/items', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.status) where.status = req.query.status;
+  if (req.query.provider) where.provider = req.query.provider;
+  const result = await paged(prisma.paymentReconciliationItem, req, { where, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data.map(safeReconciliationItem)), 200, result.meta);
+}));
+
+router.post('/reconciliation/imports', requireRole(...adminRoles), validate(reconciliationImportSchema), asyncHandler(async (req, res) => {
+  if (req.body.providerConnectionId) await requirePaymentProviderConnection(req, req.body.providerConnectionId);
+  const item = await createOrFlagReconciliationItem({ companyId: req.companyId, branchId: null, providerConnectionId: req.body.providerConnectionId || null, provider: req.body.provider, providerPaymentId: req.body.providerPaymentId || null, reference: req.body.reference || null, payerName: req.body.payerName || null, payerEmail: req.body.payerEmail || null, amount: req.body.amount, currency: req.body.currency || 'USD', paidAt: req.body.paidAt || null, raw: req.body.raw || {}, status: 'UNMATCHED' });
+  await audit(req, 'IMPORT_RECONCILIATION_ITEM', 'PaymentReconciliationItem', item.id, { provider: item.provider, status: item.status });
+  sendData(res, normalize(safeReconciliationItem(item)), 201);
+}));
+
+router.post('/reconciliation/items/:id/match', requireRole(...adminRoles), validate(idParam, 'params'), validate(reconciliationMatchSchema), asyncHandler(async (req, res) => {
+  const invoice = await requireInvoice(req, req.body.invoiceId);
+  const result = await matchReconciliationItem({ companyId: req.companyId, itemId: req.params.id, invoice, userId: req.user.id, method: req.body.method });
+  await createReceiptForPayment(prisma, result.payment, invoice);
+  const updatedInvoice = await recalcInvoice(prisma, req.companyId, invoice.id);
+  await audit(req, 'MATCH_RECONCILIATION_ITEM', 'PaymentReconciliationItem', req.params.id, { invoiceId: invoice.id, paymentId: result.payment.id });
+  sendData(res, normalize({ item: safeReconciliationItem(result.item), payment: result.payment, invoice: updatedInvoice }));
 }));
 
 router.get('/finance/export/invoices.csv', requireRole(...adminRoles), validate(financeExportQuerySchema, 'query'), asyncHandler(async (req, res) => {
@@ -4805,6 +5086,9 @@ const quoteSchema = z.object({
   description: z.string().optional(),
   validUntil: optionalDate,
   amount: amount.optional(),
+  depositRequiredAmount: amount.optional(),
+  depositRequiredPercent: z.coerce.number().min(0).max(100).optional(),
+  paymentPlanNotes: optionalText(1000),
   lineItems: lineItemsSchema
 });
 
@@ -5006,6 +5290,10 @@ const invoiceSchema = z.object({
   quoteId: z.string().optional(),
   number: z.string().optional(),
   dueDate: optionalDate,
+  promisedPaymentDate: optionalDate,
+  depositRequiredAmount: amount.optional(),
+  depositRequiredPercent: z.coerce.number().min(0).max(100).optional(),
+  paymentPlanNotes: optionalText(1000),
   amount: amount.optional(),
   lineItems: lineItemsSchema
 });
@@ -5219,15 +5507,34 @@ router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idPara
   sendData(res, normalize(data));
 }));
 
-router.post('/payments/:id/refund', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/payments/:id/refund', requireRole(...adminRoles), validate(idParam, 'params'), validate(refundSchema), asyncHandler(async (req, res) => {
   const payment = await prisma.payment.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
   if (!payment) throw notFound('Payment not found');
-  const approval = await requireApprovalOrProceed(req, { eventType: 'PAYMENT_REFUND', actionKey: 'payment.refund', entityType: 'Payment', entityId: payment.id, branchId: payment.branchId, amount: payment.amount, reason: req.body && req.body.reason });
-  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
-  const data = await prisma.payment.update({ where: { id: payment.id }, data: { status: 'REFUNDED' } });
+  if (payment.status === 'REFUNDED') throw new AppError(409, 'Payment is already refunded');
+  const refundAmount = req.body.amount || payment.amount;
+  if (toDecimal(refundAmount).greaterThan(toDecimal(payment.amount))) throw new AppError(400, 'Refund exceeds original payment amount');
+  const approval = await requireApprovalOrProceed(req, { eventType: 'PAYMENT_REFUND', actionKey: 'payment.refund', entityType: 'Payment', entityId: payment.id, branchId: payment.branchId, amount: refundAmount, reason: req.body && req.body.reason });
+  if (approval) {
+    const refund = await prisma.paymentRefund.create({ data: { companyId: req.companyId, branchId: payment.branchId || null, paymentId: payment.id, invoiceId: payment.invoiceId, approvalRequestId: approval.id, amount: refundAmount, status: 'APPROVAL_REQUIRED', reason: req.body.reason, requestedById: req.user.id } });
+    return sendData(res, { ...approvalRequiredPayload(approval), refund: safePaymentRefund(refund) }, 202);
+  }
+  let providerConnection = null;
+  if (req.body.providerConnectionId) providerConnection = await requireActivePaymentProvider(req, null, req.body.providerConnectionId);
+  const data = await prisma.$transaction(async (tx) => {
+    const refund = await tx.paymentRefund.create({ data: { companyId: req.companyId, branchId: payment.branchId || null, paymentId: payment.id, invoiceId: payment.invoiceId, providerConnectionId: providerConnection && providerConnection.id || null, amount: refundAmount, status: 'PROCESSING', reason: req.body.reason, requestedById: req.user.id } });
+    let providerRefund = null;
+    if (providerConnection) {
+      providerRefund = await createPaymentProvider(providerConnection.provider, { connection: providerConnection }).refundPayment(payment, { amount: refundAmount, reason: req.body.reason });
+    }
+    const completed = await tx.paymentRefund.update({ where: { id: refund.id }, data: { status: 'REFUNDED', providerRefundId: providerRefund && providerRefund.providerRefundId || null, processedAt: new Date() } });
+    if (toDecimal(refundAmount).equals(toDecimal(payment.amount))) await tx.payment.update({ where: { id: payment.id }, data: { status: 'REFUNDED' } });
+    const creditCount = await tx.creditNote.count({ where: { companyId: req.companyId } });
+    await tx.creditNote.create({ data: { companyId: req.companyId, invoiceId: payment.invoiceId, paymentRefundId: completed.id, number: 'CN-' + String(creditCount + 1).padStart(4, '0'), amount: refundAmount, status: 'ISSUED', reason: req.body.reason || 'Payment refund' } });
+    return completed;
+  });
   await recalcInvoice(prisma, req.companyId, payment.invoiceId);
-  await audit(req, 'REFUND', 'Payment', payment.id);
-  sendData(res, normalize(data));
+  await audit(req, 'REFUND', 'Payment', payment.id, { refundId: data.id, amount: refundAmount });
+  sendData(res, normalize(safePaymentRefund(data)));
 }));
 
 router.get('/receipts/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
@@ -5343,6 +5650,7 @@ router.delete('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'pa
 
 router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  await ensureQuoteDepositBeforeScheduling(req, job);
   const data = await scheduleJob(req, job, req.body);
   await audit(req, 'SCHEDULE', 'Job', job.id, { scheduleItemId: data.schedule.id });
   await notify('JOB_SCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: data.job.id });
@@ -5351,6 +5659,7 @@ router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 
 
 router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  await ensureQuoteDepositBeforeScheduling(req, job);
   const existing = await prisma.scheduleItem.findFirst({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } }, orderBy: { startsAt: 'desc' } });
   await prisma.scheduleItem.updateMany({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses }, ...(existing ? { id: { not: existing.id } } : {}) }, data: { status: 'RESCHEDULED', conflictStatus: 'CLEAR', updatedById: req.user.id } });
   const data = await scheduleJob(req, job, req.body, { forceNew: true, rescheduleExistingId: existing && existing.id, excludeScheduleId: existing && existing.id });

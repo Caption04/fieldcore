@@ -1338,3 +1338,18 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 9. Send a webhook with a bad signature and confirm it is rejected.
 10. Send a webhook with a valid HMAC signature and confirm it is processed.
 11. Confirm CSV exports still work.
+
+## TASK9 manual QA — payment rails and collections
+
+1. Configure a `MOCK` payment provider in active status with a webhook secret.
+2. Generate a payment link for an invoice.
+3. Confirm client invoice detail shows the payment link metadata.
+4. Send an invalid payment webhook signature and confirm `401` plus rejected event log.
+5. Send a valid mock successful webhook and confirm a confirmed payment, receipt, and reduced balance.
+6. Repeat the same webhook and confirm duplicate handling does not create a second payment.
+7. Import a manual bank payment into reconciliation.
+8. Match it to an invoice and confirm the balance updates.
+9. Try matching the same reconciliation item again and confirm a conflict.
+10. Enable quote deposit enforcement and confirm scheduling blocks accepted quotes with unpaid deposits.
+11. Send a collection reminder twice and confirm the second one is throttled.
+12. Add a refund approval policy and confirm refunds above threshold require approval.

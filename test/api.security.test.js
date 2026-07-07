@@ -274,6 +274,7 @@ function createMockPrisma(seed) {
     if (include && include.service) result.service = clone(serviceById(invoice.serviceId));
     if (include && include.job) result.job = clone(jobById(invoice.jobId));
     if (include && include.payments) result.payments = db.payments.filter((payment) => payment.invoiceId === invoice.id);
+    if (include && include.paymentLinks) result.paymentLinks = db.paymentLinks.filter((link) => link.invoiceId === invoice.id);
     if (include && include.receipts) result.receipts = db.receipts.filter((receipt) => receipt.invoiceId === invoice.id);
     if (include && include.lineItems) result.lineItems = clone(invoiceLineItems(invoice.id));
     if (include && include.statusHistory) result.statusHistory = db.invoiceStatusHistories.filter((item) => item.invoiceId === invoice.id);
@@ -438,6 +439,15 @@ function createMockPrisma(seed) {
     financeWebhookEvent: makeModel('financeWebhookEvents'),
     externalRecordLink: makeModel('externalRecordLinks'),
     financeExportLog: makeModel('financeExportLogs'),
+    paymentProviderConnection: makeModel('paymentProviderConnections'),
+    paymentProviderSecret: makeModel('paymentProviderSecrets'),
+    paymentLink: makeModel('paymentLinks'),
+    paymentProviderEvent: makeModel('paymentProviderEvents'),
+    paymentReconciliationItem: makeModel('paymentReconciliationItems'),
+    paymentRefund: makeModel('paymentRefunds'),
+    creditNote: makeModel('creditNotes'),
+    collectionReminderRule: makeModel('collectionReminderRules'),
+    collectionReminderLog: makeModel('collectionReminderLogs'),
     branch: makeModel('branches'),
     permissionRoleTemplate: makeModel('permissionRoleTemplates'),
     userPermissionOverride: makeModel('userPermissionOverrides'),
@@ -588,6 +598,15 @@ async function buildApp() {
     financeWebhookEvents: [],
     externalRecordLinks: [],
     financeExportLogs: [],
+    paymentProviderConnections: [],
+    paymentProviderSecrets: [],
+    paymentLinks: [],
+    paymentProviderEvents: [],
+    paymentReconciliationItems: [],
+    paymentRefunds: [],
+    creditNotes: [],
+    collectionReminderRules: [],
+    collectionReminderLogs: [],
     branches: [],
     permissionRoleTemplates: [],
     userPermissionOverrides: [],
@@ -679,7 +698,7 @@ async function buildApp() {
 
   const dbPath = require.resolve('../src/db');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { prisma: createMockPrisma(seed) } };
-  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/app']) {
+  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/services/payments/paymentProviderRegistry', '../src/services/payments/paymentToken.service', '../src/services/payments/reconciliation.service', '../src/services/payments/providers/manual.provider', '../src/services/payments/providers/payfast.provider', '../src/services/payments/providers/yoco.provider', '../src/services/payments/providers/ozow.provider', '../src/app']) {
     const resolved = require.resolve(mod);
     delete require.cache[resolved];
   }
@@ -3296,4 +3315,97 @@ test('task8 accounting webhooks reject bad signatures and record good events', a
   const csv = await admin.get('/api/finance/export/invoices.csv');
   assert.equal(csv.status, 200);
   assert.equal(csv.headers['content-type'].includes('text/csv'), true);
+});
+
+
+test('task9 payment link webhook confirms trusted provider payment idempotently', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const client = await loginClient(app);
+
+  const provider = await admin.post('/api/payment-providers').send({ provider: 'MOCK', status: 'ACTIVE', displayName: 'Mock collections', config: { mockMode: true, webhookSecret: 'pay-whsec' }, secrets: { apiKey: 'pay-secret' } });
+  assert.equal(provider.status, 201);
+  assert.equal(JSON.stringify(provider.body).includes('pay-secret'), false);
+  assert.equal(JSON.stringify(provider.body).includes('pay-whsec'), false);
+
+  const link = await admin.post('/api/invoices/invoice-a/payment-links').send({ providerConnectionId: provider.body.data.id, amount: 40, currency: 'USD', sendNow: true });
+  assert.equal(link.status, 201);
+  assert.equal(link.body.data.status, 'SENT');
+  assert.equal(link.body.data.checkoutUrl.includes(link.body.data.reference), true);
+
+  const bad = await request(app).post('/api/payment-webhooks/MOCK/company-a').set('x-fieldcore-payment-signature', 'bad').send({ eventId: 'payevt-bad', reference: link.body.data.reference, providerPaymentId: 'pp-bad', amount: 40, status: 'CONFIRMED' });
+  assert.equal(bad.status, 401);
+
+  const payload = { eventId: 'payevt-good', eventType: 'payment.succeeded', reference: link.body.data.reference, providerPaymentId: 'pp-good', amount: 40, currency: 'USD', status: 'CONFIRMED' };
+  const signature = crypto.createHmac('sha256', 'pay-whsec').update(JSON.stringify(payload)).digest('hex');
+  const good = await request(app).post('/api/payment-webhooks/MOCK/company-a').set('x-fieldcore-payment-signature', signature).send(payload);
+  assert.equal(good.status, 200);
+  assert.equal(app.locals.testDb.payments.filter((payment) => payment.providerPaymentId === 'pp-good').length, 1);
+  assert.equal(app.locals.testDb.receipts.some((receipt) => receipt.paymentId === app.locals.testDb.payments.find((payment) => payment.providerPaymentId === 'pp-good').id), true);
+  assert.equal(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue, 60);
+
+  const duplicate = await request(app).post('/api/payment-webhooks/MOCK/company-a').set('x-fieldcore-payment-signature', signature).send(payload);
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.data.duplicate, true);
+  assert.equal(app.locals.testDb.payments.filter((payment) => payment.providerPaymentId === 'pp-good').length, 1);
+
+  const clientInvoice = await client.get('/api/client/invoices/invoice-a');
+  assert.equal(clientInvoice.status, 200);
+  assert.equal(clientInvoice.body.data.paymentLinks.some((item) => item.status === 'PAID'), true);
+});
+
+test('task9 reconciliation reminders and deposit schedule gate are safe', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const settings = await admin.patch('/api/company/finance-settings').send({ enforceQuoteDepositBeforeScheduling: true, reminderThrottleHours: 24 });
+  assert.equal(settings.status, 200);
+
+  app.locals.testDb.quotes.push({ id: 'quote-deposit-a', companyId: 'company-a', customerId: 'customer-a', serviceId: 'service-a', jobId: 'job-a', title: 'Deposit quote', status: 'ACCEPTED', amount: 100, subtotal: 100, total: 100, balanceDue: 100, depositRequiredAmount: 25, createdAt: '2026-01-01T00:00:00.000Z' });
+  const blockedSchedule = await admin.post('/api/jobs/job-a/schedule').send({ workerId: 'wp-a', startsAt: '2026-01-15T09:00:00.000Z', durationMinutes: 60, adminOverride: true });
+  assert.equal(blockedSchedule.status, 409);
+
+  app.locals.testDb.quotes.find((quote) => quote.id === 'quote-deposit-a').depositPaidAt = '2026-01-02T00:00:00.000Z';
+
+  const imported = await admin.post('/api/reconciliation/imports').send({ provider: 'MANUAL_BANK', providerPaymentId: 'bank-1', reference: 'INV-A', amount: 30, currency: 'USD', payerName: 'Customer A' });
+  assert.equal(imported.status, 201);
+  const matched = await admin.post('/api/reconciliation/items/' + imported.body.data.id + '/match').send({ invoiceId: 'invoice-a', method: 'BANK_TRANSFER' });
+  assert.equal(matched.status, 200);
+  assert.equal(matched.body.data.item.status, 'MATCHED');
+  assert.equal(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue, 70);
+  assert.equal((await admin.post('/api/reconciliation/items/' + imported.body.data.id + '/match').send({ invoiceId: 'invoice-a', method: 'BANK_TRANSFER' })).status, 409);
+
+  const reminder = await admin.post('/api/collections/invoices/invoice-a/reminders').send({ channel: 'EMAIL' });
+  assert.equal(reminder.status, 200);
+  const throttled = await admin.post('/api/collections/invoices/invoice-a/reminders').send({ channel: 'EMAIL' });
+  assert.equal(throttled.status, 202);
+  assert.equal(throttled.body.data.throttled, true);
+
+  const collections = await admin.get('/api/collections');
+  assert.equal(collections.status, 200);
+  assert.equal(typeof collections.body.data.buckets.days0to30, 'number');
+});
+
+test('task9 refunds create approval-gated refund records and credit notes', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const admin = await login(app, 'admin-a@test.local');
+
+  const policy = await owner.post('/api/approval-policies').send({ name: 'Refunds', eventType: 'PAYMENT_REFUND', thresholdAmount: 1, requiredApproverRole: 'OWNER', allowSelfApproval: false });
+  assert.equal(policy.status, 201);
+  const payment = await admin.post('/api/invoices/invoice-a/payments').send({ amount: 10, method: 'CASH', status: 'CONFIRMED', reference: 'cash-refund-test' });
+  assert.equal(payment.status, 201);
+  const paymentId = app.locals.testDb.payments.find((item) => item.reference === 'cash-refund-test').id;
+  const blocked = await admin.post('/api/payments/' + paymentId + '/refund').send({ amount: 10, reason: 'Customer refund' });
+  assert.equal(blocked.status, 202);
+  assert.equal(blocked.body.data.approvalRequired, true);
+  assert.equal(app.locals.testDb.paymentRefunds.some((refund) => refund.paymentId === paymentId && refund.status === 'APPROVAL_REQUIRED'), true);
+
+  app.locals.testDb.approvalPolicies = [];
+  const provider = await owner.post('/api/payment-providers').send({ provider: 'MOCK', status: 'ACTIVE', config: { mockMode: true } });
+  assert.equal(provider.status, 201);
+  const refund = await owner.post('/api/payments/' + paymentId + '/refund').send({ amount: 10, reason: 'Approved refund', providerConnectionId: provider.body.data.id });
+  assert.equal(refund.status, 200);
+  assert.equal(refund.body.data.status, 'REFUNDED');
+  assert.equal(app.locals.testDb.creditNotes.some((note) => note.invoiceId === 'invoice-a' && note.status === 'ISSUED'), true);
 });

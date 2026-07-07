@@ -85,7 +85,7 @@ async function syncFinanceRecord({ integration, localType, record, req }) {
       update: { externalId: result.externalId, lastSyncedAt: new Date() },
       create: { companyId: integration.companyId, provider: integration.provider, localType, localId: record.id, externalId: result.externalId, lastSyncedAt: new Date() }
     });
-    const log = await createSyncLog({ integration, localType, localId: record.id, status: 'COMPLETED', operation: 'SYNC', externalId: result.externalId, metadata: result.providerResponse || {}, req });
+    const log = await createSyncLog({ integration, localType, localId: record.id, status: 'SYNCED', operation: 'SYNC', externalId: result.externalId, metadata: result.providerResponse || {}, req });
     await prisma.financeIntegration.update({ where: { id: integration.id }, data: { lastSyncAt: new Date(), lastError: null } });
     return { skipped: false, link, log: safeFinanceSyncLog(log), providerResponse: redactObject(result.providerResponse || {}) };
   } catch (error) {

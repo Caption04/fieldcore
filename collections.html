@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Collections</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js?v=task9-collections"></script>
+  </head>
+  <body data-page="collections" data-title="Collections">
+    <section class="page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <h2>Collections Dashboard</h2>
+          <p>Track overdue balances, promised payment dates, reminder throttling, provider payment links, and reconciliation exceptions.</p>
+        </div>
+        <div class="toolbar-actions">
+          <a class="secondary-button" href="invoices.html">Invoices</a>
+          <a class="secondary-button" href="/api/finance/export/payments.csv">Export Payments CSV</a>
+        </div>
+      </div>
+      <section class="stats five">
+        <article class="card stat-card"><div class="stat-label">Current</div><div class="stat-value">0</div></article>
+        <article class="card stat-card"><div class="stat-label">0–30 Days</div><div class="stat-value">0</div></article>
+        <article class="card stat-card"><div class="stat-label">31–60 Days</div><div class="stat-value">0</div></article>
+        <article class="card stat-card"><div class="stat-label">61–90 Days</div><div class="stat-value">0</div></article>
+        <article class="card stat-card"><div class="stat-label">90+ Days</div><div class="stat-value">0</div></article>
+      </section>
+      <section class="table-card">
+        <div class="empty-state">
+          <div>
+            <strong>Collections API ready</strong>
+            <span>Use <code>/api/collections</code>, payment links, reconciliation imports, and reminder actions for quote-to-cash QA.</span>
+          </div>
+        </div>
+      </section>
+    </section>
+  </body>
+</html>

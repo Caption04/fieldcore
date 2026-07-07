@@ -91,6 +91,78 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum PaymentProvider {
+  PAYFAST
+  YOCO
+  OZOW
+  PAYNOW
+  SNAPSCAN
+  ZAPPER
+  STRIPE
+  MANUAL_BANK
+  ECOCASH_MANUAL
+  MOCK
+}
+
+enum PaymentProviderConnectionStatus {
+  DISCONNECTED
+  CONFIGURED
+  ACTIVE
+  ERROR
+  DISABLED
+}
+
+enum PaymentLinkStatus {
+  CREATED
+  SENT
+  OPENED
+  PENDING
+  PAID
+  EXPIRED
+  CANCELLED
+  FAILED
+}
+
+enum PaymentProviderEventStatus {
+  RECEIVED
+  PROCESSED
+  REJECTED
+  FAILED
+  DUPLICATE
+}
+
+enum PaymentReconciliationStatus {
+  UNMATCHED
+  MATCHED
+  DUPLICATE
+  SUSPICIOUS
+  IGNORED
+}
+
+enum PaymentRefundStatus {
+  REQUESTED
+  APPROVAL_REQUIRED
+  APPROVED
+  PROCESSING
+  REFUNDED
+  FAILED
+  CANCELLED
+}
+
+enum CreditNoteStatus {
+  DRAFT
+  ISSUED
+  VOID
+}
+
+enum CollectionReminderStatus {
+  QUEUED
+  SENT
+  SKIPPED
+  FAILED
+  THROTTLED
+}
+
 enum TimeOffStatus {
   APPROVED
   PENDING
@@ -382,6 +454,15 @@ model Company {
   invoiceLineItems       InvoiceLineItem[]
   payments               Payment[]
   receipts               Receipt[]
+  paymentProviderConnections PaymentProviderConnection[]
+  paymentProviderSecrets PaymentProviderSecret[]
+  paymentLinks           PaymentLink[]
+  paymentProviderEvents  PaymentProviderEvent[]
+  paymentReconciliationItems PaymentReconciliationItem[]
+  paymentRefunds         PaymentRefund[]
+  creditNotes            CreditNote[]
+  collectionReminderRules CollectionReminderRule[]
+  collectionReminderLogs CollectionReminderLog[]
   invoiceCounter         CompanyInvoiceCounter?
   workerLocations        WorkerLocation[]
   jobProofPhotos         JobProofPhoto[]
@@ -1362,6 +1443,9 @@ model Quote {
   discountTotal   Decimal              @default(0) @db.Decimal(12, 2)
   taxTotal        Decimal              @default(0) @db.Decimal(12, 2)
   total           Decimal              @default(0) @db.Decimal(12, 2)
+  depositRequiredAmount Decimal        @default(0) @db.Decimal(12, 2)
+  depositRequiredPercent Decimal       @default(0) @db.Decimal(7, 4)
+  depositPaidAt   DateTime?
   validUntil      DateTime?
   sentAt          DateTime?
   acceptedAt      DateTime?
@@ -1377,6 +1461,7 @@ model Quote {
   service         Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   job             Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
   invoices        Invoice[]
+  paymentLinks    PaymentLink[]
   lineItems       QuoteLineItem[]
   statusHistory   QuoteStatusHistory[]
 
@@ -1448,6 +1533,13 @@ model Invoice {
   taxTotal      Decimal                @default(0) @db.Decimal(12, 2)
   total         Decimal                @default(0) @db.Decimal(12, 2)
   balanceDue    Decimal                @default(0) @db.Decimal(12, 2)
+  depositRequiredAmount Decimal         @default(0) @db.Decimal(12, 2)
+  depositRequiredPercent Decimal        @default(0) @db.Decimal(7, 4)
+  paymentPlanNotes String?
+  promisedPaymentDate DateTime?
+  lastReminderSentAt DateTime?
+  nextReminderAt DateTime?
+  disputedAt    DateTime?
   dueDate       DateTime?
   sentAt        DateTime?
   paidAt        DateTime?
@@ -1466,6 +1558,10 @@ model Invoice {
   lineItems     InvoiceLineItem[]
   statusHistory InvoiceStatusHistory[]
   messageLogs   MessageLog[]
+  paymentLinks  PaymentLink[]
+  paymentRefunds PaymentRefund[]
+  creditNotes   CreditNote[]
+  collectionReminderLogs CollectionReminderLog[]
 
   @@unique([companyId, number])
   @@index([companyId])
@@ -1518,6 +1614,10 @@ model Payment {
   method      PaymentMethod @default(OTHER)
   status      PaymentStatus @default(PENDING)
   reference   String?
+  provider    PaymentProvider?
+  providerPaymentId String?
+  paymentLinkId String?
+  reconciliationItemId String?
   receivedAt  DateTime?
   confirmedAt DateTime?
   notes       String?
@@ -1528,10 +1628,14 @@ model Payment {
   branch      Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
   invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   createdBy   User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  paymentLink PaymentLink?   @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
   receipt     Receipt?
+  refunds     PaymentRefund[]
 
   @@index([companyId])
   @@index([companyId, branchId])
+  @@index([companyId, provider, providerPaymentId])
+  @@index([paymentLinkId])
 }
 
 model Receipt {
@@ -1553,6 +1657,211 @@ model Receipt {
   @@unique([companyId, receiptNumber])
   @@index([companyId, invoiceId])
   @@index([companyId, branchId])
+}
+
+
+model PaymentProviderConnection {
+  id             String                          @id @default(cuid())
+  companyId      String
+  provider       PaymentProvider
+  displayName    String?
+  status         PaymentProviderConnectionStatus @default(CONFIGURED)
+  config         Json?
+  lastTestedAt   DateTime?
+  lastTestStatus String?
+  lastTestError  String?
+  createdById    String?
+  createdAt      DateTime                        @default(now())
+  updatedAt      DateTime                        @updatedAt
+  company        Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secrets        PaymentProviderSecret[]
+  paymentLinks   PaymentLink[]
+  refunds        PaymentRefund[]
+
+  @@unique([companyId, provider])
+  @@index([companyId])
+  @@index([provider])
+  @@index([status])
+}
+
+model PaymentProviderSecret {
+  id           String                    @id @default(cuid())
+  companyId    String
+  connectionId String
+  keyName      String
+  encryptedValue String
+  iv           String
+  authTag      String
+  keyVersion   String
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connection   PaymentProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, keyName])
+  @@index([companyId])
+  @@index([connectionId])
+}
+
+model PaymentLink {
+  id           String                    @id @default(cuid())
+  companyId    String
+  branchId     String?
+  invoiceId    String
+  quoteId      String?
+  providerConnectionId String?
+  provider     PaymentProvider
+  status       PaymentLinkStatus         @default(CREATED)
+  amount       Decimal                   @db.Decimal(12, 2)
+  currency     String                    @default("USD")
+  reference    String
+  checkoutUrl  String?
+  externalId   String?
+  expiresAt    DateTime?
+  sentAt       DateTime?
+  openedAt     DateTime?
+  paidAt       DateTime?
+  createdById  String?
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice      Invoice                   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  quote        Quote?                    @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  providerConnection PaymentProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
+  payments     Payment[]
+
+  @@unique([companyId, reference])
+  @@index([companyId, invoiceId])
+  @@index([companyId, status])
+  @@index([provider, externalId])
+}
+
+model PaymentProviderEvent {
+  id           String                     @id @default(cuid())
+  companyId    String
+  providerConnectionId String?
+  provider     PaymentProvider
+  eventId      String?
+  eventType    String?
+  status       PaymentProviderEventStatus @default(RECEIVED)
+  signatureValid Boolean                  @default(false)
+  paymentLinkId String?
+  invoiceId    String?
+  paymentId    String?
+  payload      Json?
+  errorMessage String?
+  receivedAt   DateTime                   @default(now())
+  processedAt  DateTime?
+  company      Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, provider])
+  @@index([companyId, eventId])
+  @@index([status])
+}
+
+model PaymentReconciliationItem {
+  id           String                       @id @default(cuid())
+  companyId    String
+  branchId     String?
+  providerConnectionId String?
+  provider     PaymentProvider
+  status       PaymentReconciliationStatus  @default(UNMATCHED)
+  providerPaymentId String?
+  reference    String?
+  payerName    String?
+  payerEmail   String?
+  amount       Decimal                      @db.Decimal(12, 2)
+  currency     String                       @default("USD")
+  paidAt       DateTime?
+  matchedInvoiceId String?
+  matchedPaymentId String?
+  matchedById  String?
+  suspiciousReason String?
+  raw          Json?
+  createdAt    DateTime                     @default(now())
+  updatedAt    DateTime                     @updatedAt
+  company      Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+  @@index([companyId, reference])
+  @@index([provider, providerPaymentId])
+}
+
+model PaymentRefund {
+  id           String              @id @default(cuid())
+  companyId    String
+  branchId     String?
+  paymentId    String
+  invoiceId    String
+  providerConnectionId String?
+  approvalRequestId String?
+  amount       Decimal             @db.Decimal(12, 2)
+  status       PaymentRefundStatus @default(REQUESTED)
+  providerRefundId String?
+  reason       String?
+  requestedById String?
+  processedAt  DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  payment      Payment             @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice      Invoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  providerConnection PaymentProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, paymentId])
+  @@index([companyId, status])
+}
+
+model CreditNote {
+  id           String           @id @default(cuid())
+  companyId    String
+  invoiceId    String
+  paymentRefundId String?
+  number       String
+  amount       Decimal          @db.Decimal(12, 2)
+  status       CreditNoteStatus @default(DRAFT)
+  reason       String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice      Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, number])
+  @@index([companyId, invoiceId])
+}
+
+model CollectionReminderRule {
+  id           String   @id @default(cuid())
+  companyId    String
+  name         String
+  offsetDays   Int      @default(0)
+  channel      String   @default("EMAIL")
+  active       Boolean  @default(true)
+  template     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, active])
+}
+
+model CollectionReminderLog {
+  id           String                   @id @default(cuid())
+  companyId    String
+  invoiceId    String
+  channel      String
+  status       CollectionReminderStatus @default(QUEUED)
+  reminderType String?
+  recipient    String?
+  sentAt       DateTime?
+  nextAllowedAt DateTime?
+  errorMessage String?
+  createdAt    DateTime                 @default(now())
+  company      Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice      Invoice                  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, invoiceId, createdAt])
+  @@index([companyId, status])
 }
 
 model WorkerLocation {
@@ -1840,6 +2149,9 @@ model CompanyFinanceSettings {
   invoiceFooter         String?
   allowedPaymentMethods Json?
   paymentInstructions   String?
+  enforceQuoteDepositBeforeScheduling Boolean @default(false)
+  defaultQuoteDepositPercent Decimal @default(0) @db.Decimal(7, 4)
+  reminderThrottleHours Int @default(24)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
   company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
