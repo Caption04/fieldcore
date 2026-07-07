@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const bcrypt = require('bcryptjs');
@@ -431,6 +432,10 @@ function createMockPrisma(seed) {
     },
     companyFinanceSettings: makeModel('companyFinanceSettings'),
     financeIntegration: makeModel('financeIntegrations'),
+    financeIntegrationSecret: makeModel('financeIntegrationSecrets'),
+    financeMapping: makeModel('financeMappings'),
+    financeSyncLog: makeModel('financeSyncLogs'),
+    financeWebhookEvent: makeModel('financeWebhookEvents'),
     externalRecordLink: makeModel('externalRecordLinks'),
     financeExportLog: makeModel('financeExportLogs'),
     branch: makeModel('branches'),
@@ -577,6 +582,10 @@ async function buildApp() {
     ],
     companyFinanceSettings: [],
     financeIntegrations: [],
+    financeIntegrationSecrets: [],
+    financeMappings: [],
+    financeSyncLogs: [],
+    financeWebhookEvents: [],
     externalRecordLinks: [],
     financeExportLogs: [],
     branches: [],
@@ -2823,10 +2832,16 @@ test('task3 finance integrations are placeholders and export links are scoped', 
   assert.equal(created.status, 201);
   assert.equal(JSON.stringify(created.body).includes('clientSecret'), false);
 
+  const disconnectedTest = await adminA.post('/api/finance/integrations/' + created.body.data.id + '/test').send({});
+  assert.equal(disconnectedTest.status, 409);
+
+  const connected = await adminA.post('/api/finance/integrations/' + created.body.data.id + '/connect').send({ mockMode: true, externalTenantId: 'tenant-a' });
+  assert.equal(connected.status, 200);
+  assert.equal(connected.body.data.integration.status, 'ACTIVE');
+
   const tested = await adminA.post('/api/finance/integrations/' + created.body.data.id + '/test').send({});
   assert.equal(tested.status, 200);
-  assert.equal(tested.body.data.test.verified, false);
-  assert.equal(tested.body.data.test.message.includes('not implemented'), true);
+  assert.equal(tested.body.data.test.mockMode, true);
 
   assert.equal((await adminB.patch('/api/finance/integrations/' + created.body.data.id).send({ status: 'ACTIVE' })).status, 404);
   assert.equal((await adminB.post('/api/finance/integrations/' + created.body.data.id + '/test').send({})).status, 404);
@@ -3200,4 +3215,85 @@ test('task7 audit filters work and redact secret-like metadata', async () => {
   assert.equal(logs.status, 200);
   assert.equal(logs.body.data.length >= 1, true);
   assert.equal(JSON.stringify(logs.body.data).includes('abc'), false);
+});
+
+test('task8 accounting provider connect stores encrypted tokens and syncs invoice idempotently', async () => {
+  const app = await buildApp();
+  const adminA = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+
+  const integration = await adminA.post('/api/finance/integrations').send({ provider: 'XERO', externalTenantId: 'tenant-a', config: { tenantName: 'A Books', webhookSecret: 'whsec-test' } });
+  assert.equal(integration.status, 201);
+  assert.equal(JSON.stringify(integration.body.data).includes('whsec-test'), false);
+
+  const connected = await adminA.post('/api/finance/integrations/' + integration.body.data.id + '/connect').send({ mockMode: true, tokens: { accessToken: 'access-secret', refreshToken: 'refresh-secret' } });
+  assert.equal(connected.status, 200);
+  assert.equal(connected.body.data.integration.status, 'ACTIVE');
+  assert.equal(JSON.stringify(connected.body).includes('access-secret'), false);
+  assert.equal(app.locals.testDb.financeIntegrationSecrets.length, 2);
+  assert.equal(JSON.stringify(app.locals.testDb.financeIntegrationSecrets).includes('access-secret'), false);
+
+  const mapping = await adminA.put('/api/finance/mappings/XERO').send({ integrationId: integration.body.data.id, revenueAccountCode: '200', taxRateId: 'OUTPUT', paymentsAccountCode: '610', customerNamingRule: 'CUSTOMER_NAME' });
+  assert.equal(mapping.status, 200);
+  assert.equal(mapping.body.data.revenueAccountCode, '200');
+
+  const synced = await adminA.post('/api/finance/integrations/' + integration.body.data.id + '/sync/invoices/invoice-a').send({});
+  assert.equal(synced.status, 201);
+  assert.equal(synced.body.data.link.externalId, 'xero-invoice-invoice-a');
+  assert.equal(app.locals.testDb.externalRecordLinks.filter((link) => link.localType === 'INVOICE' && link.localId === 'invoice-a').length, 1);
+
+  const retried = await adminA.post('/api/finance/integrations/' + integration.body.data.id + '/sync/invoices/invoice-a').send({});
+  assert.equal(retried.status, 200);
+  assert.equal(retried.body.data.skipped, true);
+  assert.equal(app.locals.testDb.externalRecordLinks.filter((link) => link.localType === 'INVOICE' && link.localId === 'invoice-a').length, 1);
+
+  assert.equal((await adminB.post('/api/finance/integrations/' + integration.body.data.id + '/sync/invoices/invoice-a').send({})).status, 404);
+});
+
+test('task8 disconnected and failed accounting syncs are logged safely', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const integration = await admin.post('/api/finance/integrations').send({ provider: 'XERO', externalTenantId: 'tenant-a', config: { tenantName: 'A Books' } });
+  assert.equal(integration.status, 201);
+
+  const disconnected = await admin.post('/api/finance/integrations/' + integration.body.data.id + '/sync/invoices/invoice-a').send({});
+  assert.equal(disconnected.status, 409);
+
+  const connected = await admin.post('/api/finance/integrations/' + integration.body.data.id + '/connect').send({ mockMode: true });
+  assert.equal(connected.status, 200);
+  const updated = await admin.patch('/api/finance/integrations/' + integration.body.data.id).send({ config: { mockMode: true, failNextSync: true } });
+  assert.equal(updated.status, 200);
+
+  const failed = await admin.post('/api/finance/integrations/' + integration.body.data.id + '/sync/invoices/invoice-a').send({});
+  assert.equal(failed.status, 502);
+  assert.equal(failed.body.data.log.status, 'FAILED');
+
+  const logs = await admin.get('/api/finance/sync-logs?provider=XERO');
+  assert.equal(logs.status, 200);
+  assert.equal(logs.body.data.some((log) => log.status === 'FAILED' && log.errorMessage.includes('Mock provider failure')), true);
+});
+
+test('task8 accounting webhooks reject bad signatures and record good events', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const integration = await admin.post('/api/finance/integrations').send({ provider: 'XERO', externalTenantId: 'tenant-a', config: { webhookSecret: 'whsec-test', mockMode: true } });
+  assert.equal(integration.status, 201);
+  await admin.post('/api/finance/integrations/' + integration.body.data.id + '/connect').send({ mockMode: true });
+
+  const bad = await request(app).post('/api/finance/webhooks/XERO/company-a').set('x-fieldcore-signature', 'bad').send({ eventId: 'evt-bad', eventType: 'invoice.updated' });
+  assert.equal(bad.status, 401);
+
+  const payload = { eventId: 'evt-good', eventType: 'invoice.updated' };
+  const signature = crypto.createHmac('sha256', 'whsec-test').update(JSON.stringify(payload)).digest('hex');
+  const good = await request(app).post('/api/finance/webhooks/XERO/company-a').set('x-fieldcore-signature', signature).send(payload);
+  assert.equal(good.status, 200);
+  assert.equal(good.body.data.event.status, 'PROCESSED');
+  assert.equal(app.locals.testDb.financeWebhookEvents.some((event) => event.status === 'REJECTED'), true);
+  assert.equal(app.locals.testDb.financeWebhookEvents.some((event) => event.eventId === 'evt-good' && event.signatureValid === true), true);
+
+  const csv = await admin.get('/api/finance/export/invoices.csv');
+  assert.equal(csv.status, 200);
+  assert.equal(csv.headers['content-type'].includes('text/csv'), true);
 });

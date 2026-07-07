@@ -2709,9 +2709,9 @@
     const byProvider = new Map((items || []).map((item) => [item.provider, item]));
     const rows = providers.map((provider) => {
       const item = byProvider.get(provider);
-      return '<div class="list-item"><span class="initials">' + escapeHtml(provider.split('_').map((part) => part[0]).join('').slice(0, 3)) + '</span><div><strong>' + escapeHtml(provider.replace(/_/g, ' ')) + '</strong><small>' + escapeHtml(item ? 'Configured placeholder - live sync not implemented' : 'Not configured') + '</small></div><span class="badge gray">' + escapeHtml(item && item.status || 'DISCONNECTED') + '</span><button class="secondary-button small" type="button" data-finance-test="' + escapeHtml(item && item.id || '') + '" ' + (item ? '' : 'disabled') + '>Test</button></div>';
+      return '<div class="list-item"><span class="initials">' + escapeHtml(provider.split('_').map((part) => part[0]).join('').slice(0, 3)) + '</span><div><strong>' + escapeHtml(provider.replace(/_/g, ' ')) + '</strong><small>' + escapeHtml(item ? 'Configured - connect/test live accounting sync or use mock mode' : 'Not configured') + '</small></div><span class="badge gray">' + escapeHtml(item && item.status || 'DISCONNECTED') + '</span><button class="secondary-button small" type="button" data-finance-connect="' + escapeHtml(item && item.id || '') + '" ' + (item && ['XERO','SAGE','QUICKBOOKS'].includes(provider) ? '' : 'disabled') + '>Mock connect</button><button class="secondary-button small" type="button" data-finance-test="' + escapeHtml(item && item.id || '') + '" ' + (item ? '' : 'disabled') + '>Test</button></div>';
     }).join('');
-    card.innerHTML = '<div class="panel-head"><h3>Accounting Integrations</h3><span class="badge gray">Placeholders only</span></div><form class="form-grid" data-finance-integration-form><div class="field"><label for="financeProvider">Provider</label><select id="financeProvider" name="provider">' + providers.map((provider) => '<option value="' + provider + '">' + provider.replace(/_/g, ' ') + '</option>').join('') + '</select></div><div class="field"><label for="financeExternalTenantId">External Tenant ID</label><input id="financeExternalTenantId" name="externalTenantId" placeholder="Optional"></div><div class="field span-2"><label for="financeConfigNote">Config Note</label><input id="financeConfigNote" name="note" placeholder="Manual CSV export, Xero tenant note, etc."></div><div class="form-actions span-2"><button class="secondary-button" type="submit">Save Placeholder</button></div><p class="fc-form-error span-2" data-finance-integration-message hidden></p></form><div class="settings-list">' + rows + '</div>';
+    card.innerHTML = '<div class="panel-head"><h3>Accounting Integrations</h3><span class="badge blue">CSV + live sync</span></div><form class="form-grid" data-finance-integration-form><div class="field"><label for="financeProvider">Provider</label><select id="financeProvider" name="provider">' + providers.map((provider) => '<option value="' + provider + '">' + provider.replace(/_/g, ' ') + '</option>').join('') + '</select></div><div class="field"><label for="financeExternalTenantId">External Tenant ID</label><input id="financeExternalTenantId" name="externalTenantId" placeholder="Optional"></div><div class="field span-2"><label for="financeConfigNote">Config Note</label><input id="financeConfigNote" name="note" placeholder="Manual CSV export, Xero tenant note, etc."></div><div class="form-actions span-2"><button class="secondary-button" type="submit">Save Integration</button></div><p class="fc-form-error span-2" data-finance-integration-message hidden></p></form><div class="settings-list">' + rows + '</div>';
     bindFinanceIntegrationActions();
   }
 
@@ -2752,7 +2752,7 @@
         const data = Object.fromEntries(new FormData(form).entries());
         try {
           await api('/finance/integrations', { method: 'POST', body: JSON.stringify({ provider: data.provider, externalTenantId: data.externalTenantId || undefined, config: data.note ? { note: data.note } : {} }) });
-          if (message) { message.textContent = 'Finance integration placeholder saved.'; message.classList.add('green'); message.hidden = false; }
+          if (message) { message.textContent = 'Finance integration saved.'; message.classList.add('green'); message.hidden = false; }
           form.reset();
           await loadFinanceSettings();
         } catch (error) {
@@ -2760,6 +2760,18 @@
         }
       });
     }
+    document.querySelectorAll('[data-finance-connect]').forEach((button) => {
+      button.onclick = async () => {
+        if (!button.dataset.financeConnect) return;
+        try {
+          await api('/finance/integrations/' + button.dataset.financeConnect + '/connect', { method: 'POST', body: JSON.stringify({ mockMode: true }) });
+          showToast('Finance integration connected in mock mode.', true);
+          await loadFinanceSettings();
+        } catch (error) {
+          showToast(error.message, false);
+        }
+      };
+    });
     document.querySelectorAll('[data-finance-test]').forEach((button) => {
       button.onclick = async () => {
         if (!button.dataset.financeTest) return;

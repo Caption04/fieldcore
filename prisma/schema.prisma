@@ -289,6 +289,21 @@ enum FinanceExportStatus {
   FAILED
 }
 
+enum FinanceSyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+  RETRYING
+  SKIPPED
+}
+
+enum FinanceWebhookStatus {
+  RECEIVED
+  PROCESSED
+  REJECTED
+  FAILED
+}
+
 enum ExternalLocalType {
   INVOICE
   PAYMENT
@@ -412,6 +427,10 @@ model Company {
   purchaseOrderLines     PurchaseOrderLine[]
   financeSettings        CompanyFinanceSettings?
   financeIntegrations    FinanceIntegration[]
+  financeIntegrationSecrets FinanceIntegrationSecret[]
+  financeMappings        FinanceMapping[]
+  financeSyncLogs        FinanceSyncLog[]
+  financeWebhookEvents   FinanceWebhookEvent[]
   externalRecordLinks    ExternalRecordLink[]
   financeExportLogs      FinanceExportLog[]
   workerDevices          WorkerDevice[]
@@ -529,6 +548,7 @@ model User {
   stockMovementsCreated       StockMovement[]         @relation("StockMovementCreatedBy")
   purchaseRequestsCreated     PurchaseRequest[]       @relation("PurchaseRequestRequestedBy")
   financeExportLogsCreated    FinanceExportLog[]      @relation("FinanceExportLogCreatedBy")
+  financeSyncLogsCreated      FinanceSyncLog[]        @relation("FinanceSyncLogCreatedBy")
   workerDevices               WorkerDevice[]
   offlineActionQueues         OfflineActionQueue[]
   approvalRequestsMade        ApprovalRequest[]       @relation("ApprovalRequestRequestedBy")
@@ -1835,13 +1855,118 @@ model FinanceIntegration {
   externalTenantId String?
   lastSyncAt       DateTime?
   config           Json?
+  connectedAt      DateTime?
+  disconnectedAt   DateTime?
+  lastTestAt       DateTime?
+  lastError        String?
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
   company          Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secrets          FinanceIntegrationSecret[]
+  mappings         FinanceMapping[]
+  syncLogs         FinanceSyncLog[]
+  webhookEvents    FinanceWebhookEvent[]
 
   @@unique([companyId, provider])
   @@index([companyId])
   @@index([provider])
+  @@index([status])
+}
+
+model FinanceIntegrationSecret {
+  id               String             @id @default(cuid())
+  companyId        String
+  integrationId    String
+  secretType       String
+  encryptedValue   String
+  iv               String
+  authTag          String
+  keyVersion       String
+  expiresAt        DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration      FinanceIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, secretType])
+  @@index([companyId])
+  @@index([integrationId])
+  @@index([secretType])
+}
+
+model FinanceMapping {
+  id                      String             @id @default(cuid())
+  companyId               String
+  integrationId           String?
+  provider                FinanceProvider
+  revenueAccountCode      String?
+  taxRateId               String?
+  paymentsAccountCode     String?
+  discountsAccountCode    String?
+  stockAccountCode        String?
+  branchTrackingCategoryId String?
+  trackingCategoryId      String?
+  invoicePrefix           String?
+  customerNamingRule      String?
+  config                  Json?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+  company                 Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration             FinanceIntegration? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, provider])
+  @@index([companyId])
+  @@index([provider])
+  @@index([integrationId])
+}
+
+model FinanceSyncLog {
+  id             String             @id @default(cuid())
+  companyId      String
+  integrationId  String?
+  provider       FinanceProvider
+  localType      ExternalLocalType
+  localId        String
+  status         FinanceSyncStatus  @default(PENDING)
+  operation      String
+  externalId     String?
+  attempt        Int                @default(1)
+  errorCode      String?
+  errorMessage   String?
+  metadata       Json?
+  createdById    String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  company        Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration    FinanceIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  createdBy      User?              @relation("FinanceSyncLogCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, provider, localType, localId])
+  @@index([status])
+  @@index([integrationId])
+}
+
+model FinanceWebhookEvent {
+  id             String              @id @default(cuid())
+  companyId      String
+  integrationId  String?
+  provider       FinanceProvider
+  eventId        String?
+  eventType      String?
+  status         FinanceWebhookStatus @default(RECEIVED)
+  signatureValid Boolean              @default(false)
+  payload        Json?
+  errorMessage   String?
+  receivedAt     DateTime             @default(now())
+  processedAt    DateTime?
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration    FinanceIntegration?  @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, receivedAt])
+  @@index([companyId, provider])
+  @@index([integrationId])
+  @@index([eventId])
   @@index([status])
 }
 

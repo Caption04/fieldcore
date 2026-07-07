@@ -91,3 +91,16 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 ## TASK7 enterprise approvals
 
 Risky actions can be blocked by active approval policies until an authorized approver approves and executes the request. Permission keys and branch access are managed server-side; the frontend must not be trusted for company, user, branch, or approval decisions.
+
+## TASK8 accounting sync backend
+
+Accounting sync now uses `src/services/finance`:
+
+- provider abstraction under `src/services/finance/providers`
+- encrypted finance token storage through `FinanceIntegrationSecret`
+- finance mappings through `FinanceMapping`
+- sync logs through `FinanceSyncLog`
+- webhook logs through `FinanceWebhookEvent`
+- idempotent remote links through `ExternalRecordLink`
+
+Do not store provider access tokens, refresh tokens, OAuth secrets, webhook secrets, or API keys in plaintext responses or logs. CSV export remains supported when live accounting sync is not connected.

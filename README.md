@@ -147,3 +147,7 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 ## Enterprise approval gates
 
 FieldCore includes enforceable enterprise approval gates, granular permission overrides, branch-scoped access, and audit hardening. See `docs/enterprise-approvals-rbac-audit.md`.
+
+### Enterprise accounting integrations
+
+FieldCore includes an accounting-sync foundation for Xero, Sage, and QuickBooks. Xero has the first full provider path and local mock mode; Sage and QuickBooks use the same provider abstraction as safe stubs. Manual CSV export remains available as a fallback. See `docs/accounting-integrations.md`.

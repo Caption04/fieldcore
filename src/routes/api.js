@@ -22,6 +22,10 @@ const {
   testIntegrationConnection,
   updateIntegrationConnection
 } = require('../services/integrations/integrationConnections.service');
+const { getFinanceMapping, saveFinanceMapping } = require('../services/finance/financeMapping.service');
+const { clearFinanceTokens, saveFinanceTokens } = require('../services/finance/financeToken.service');
+const { safeFinanceSyncLog, syncFinanceRecord, testFinanceIntegration } = require('../services/finance/financeSync.service');
+const { createFinanceProvider } = require('../services/finance/providers');
 const {
   COOKIE_NAME,
   SAFE_LOGIN_USER_SELECT,
@@ -611,6 +615,17 @@ async function requireFinanceIntegration(req, id) {
   return record;
 }
 
+async function requireFinanceIntegrationByProvider(companyId, provider) {
+  const record = await prisma.financeIntegration.findFirst({ where: { companyId, provider } });
+  if (!record) throw notFound('Finance integration not found');
+  return record;
+}
+
+function safeFinanceConfig(config = {}) {
+  const secretPattern = /(secret|token|password|apiKey|key|authorization|cookie)/i;
+  return Object.fromEntries(Object.entries(config || {}).map(([key, value]) => [key, secretPattern.test(key) ? '[redacted]' : value]));
+}
+
 function safeFinanceIntegration(record) {
   if (!record) return record;
   return {
@@ -620,10 +635,44 @@ function safeFinanceIntegration(record) {
     status: record.status,
     externalTenantId: record.externalTenantId || null,
     lastSyncAt: record.lastSyncAt || null,
-    config: record.config || {},
+    connectedAt: record.connectedAt || null,
+    disconnectedAt: record.disconnectedAt || null,
+    lastTestAt: record.lastTestAt || null,
+    lastError: record.lastError || null,
+    config: safeFinanceConfig(record.config || {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
+}
+
+function safeFinanceWebhookEvent(record) {
+  if (!record) return record;
+  return {
+    id: record.id,
+    companyId: record.companyId,
+    integrationId: record.integrationId || null,
+    provider: record.provider,
+    eventId: record.eventId || null,
+    eventType: record.eventType || null,
+    status: record.status,
+    signatureValid: Boolean(record.signatureValid),
+    errorMessage: record.errorMessage || null,
+    receivedAt: record.receivedAt,
+    processedAt: record.processedAt || null
+  };
+}
+
+function validFinanceWebhookSignature(integration, req) {
+  const configured = integration && integration.config && integration.config.webhookSecret;
+  if (!configured) return false;
+  const provided = req.get('x-fieldcore-signature') || req.get('x-xero-signature') || req.get('x-signature') || '';
+  if (!provided) return false;
+  const body = JSON.stringify(req.body || {});
+  const expected = crypto.createHmac('sha256', String(configured)).update(body).digest('hex');
+  const providedBuffer = Buffer.from(String(provided));
+  const expectedBuffer = Buffer.from(expected);
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
 function financeDateWhere(query, field = 'createdAt') {
@@ -784,6 +833,41 @@ const financeMarkExportedSchema = z.object({
   externalIds: z.record(z.string().trim().min(1).max(250)).optional(),
   exportedAt: optionalDate
 });
+
+const financeTokenSchema = z.object({
+  accessToken: z.string().trim().min(1).max(5000).optional(),
+  refreshToken: z.string().trim().min(1).max(5000).optional(),
+  expiresAt: optionalDate
+}).refine((value) => !value.accessToken === !value.refreshToken, { message: 'Access token and refresh token must be provided together' });
+
+const financeConnectSchema = z.object({
+  externalTenantId: optionalText(160),
+  mockMode: z.boolean().optional(),
+  tokens: financeTokenSchema.optional()
+});
+
+const financeMappingSchema = z.object({
+  integrationId: optionalText(120),
+  revenueAccountCode: optionalText(80),
+  taxRateId: optionalText(80),
+  paymentsAccountCode: optionalText(80),
+  discountsAccountCode: optionalText(80),
+  stockAccountCode: optionalText(80),
+  branchTrackingCategoryId: optionalText(120),
+  trackingCategoryId: optionalText(120),
+  invoicePrefix: optionalText(20),
+  customerNamingRule: z.enum(['CUSTOMER_NAME', 'COMPANY_NAME_EMAIL', 'ACCOUNT_NUMBER_NAME']).optional(),
+  config: financeIntegrationConfigSchema.optional()
+});
+
+const financeProviderParam = z.object({ provider: z.enum(financeProviderValues) });
+const financeInvoiceSyncParam = z.object({ id: z.string().min(1), invoiceId: z.string().min(1) });
+const financePaymentSyncParam = z.object({ id: z.string().min(1), paymentId: z.string().min(1) });
+const financeBatchSyncSchema = z.object({
+  invoiceIds: z.array(z.string().min(1)).max(100).default([]),
+  paymentIds: z.array(z.string().min(1)).max(100).default([])
+});
+const financeWebhookParam = z.object({ provider: z.enum(financeProviderValues), companyId: z.string().min(1) });
 
 const workerDeviceRegisterSchema = z.object({
   platform: z.string().trim().min(2).max(40).transform((value) => value.toUpperCase()),
@@ -2331,6 +2415,32 @@ router.use((req, res, next) => {
   return next();
 });
 
+router.post('/finance/webhooks/:provider/:companyId', validate(financeWebhookParam, 'params'), asyncHandler(async (req, res) => {
+  const integration = await prisma.financeIntegration.findFirst({ where: { companyId: req.params.companyId, provider: req.params.provider } });
+  if (!integration || integration.status === 'DISABLED') throw notFound('Finance integration not found');
+  const signatureValid = validFinanceWebhookSignature(integration, req);
+  if (!signatureValid) {
+    await prisma.financeWebhookEvent.create({ data: { companyId: integration.companyId, integrationId: integration.id, provider: integration.provider, status: 'REJECTED', signatureValid: false, eventId: req.body && (req.body.eventId || req.body.id) || null, eventType: req.body && (req.body.eventType || req.body.type) || null, errorMessage: 'Invalid webhook signature' } });
+    throw new AppError(401, 'Invalid webhook signature');
+  }
+  const provider = createFinanceProvider(integration.provider, { integration, tokens: {}, mapping: {} });
+  const processed = await provider.handleWebhook(req.body || {});
+  const event = await prisma.financeWebhookEvent.create({
+    data: {
+      companyId: integration.companyId,
+      integrationId: integration.id,
+      provider: integration.provider,
+      eventId: processed.eventId || req.body && (req.body.eventId || req.body.id) || null,
+      eventType: processed.eventType || req.body && (req.body.eventType || req.body.type) || null,
+      status: 'PROCESSED',
+      signatureValid: true,
+      payload: req.body || {},
+      processedAt: new Date()
+    }
+  });
+  sendData(res, normalize({ received: true, event: safeFinanceWebhookEvent(event) }));
+}));
+
 router.use(requireAuth);
 
 router.post('/worker/devices/register', requireRole('WORKER'), validate(workerDeviceRegisterSchema), asyncHandler(async (req, res) => {
@@ -2435,12 +2545,118 @@ router.patch('/finance/integrations/:id', requireRole(...adminRoles), validate(i
   sendData(res, normalize(safeFinanceIntegration(data)));
 }));
 
+router.post('/finance/integrations/:id/connect', requireRole(...adminRoles), validate(idParam, 'params'), validate(financeConnectSchema), asyncHandler(async (req, res) => {
+  const existing = await requireFinanceIntegration(req, req.params.id);
+  if (!['XERO', 'SAGE', 'QUICKBOOKS'].includes(existing.provider)) throw new AppError(400, 'Provider does not support live accounting sync');
+  const config = { ...(existing.config || {}) };
+  if (req.body.mockMode !== undefined) config.mockMode = Boolean(req.body.mockMode);
+  const data = await prisma.financeIntegration.update({
+    where: { id: existing.id },
+    data: { status: 'ACTIVE', externalTenantId: req.body.externalTenantId || existing.externalTenantId, config, connectedAt: new Date(), disconnectedAt: null, lastError: null }
+  });
+  if (req.body.tokens) await saveFinanceTokens(data, req.body.tokens);
+  await audit(req, 'CONNECT', 'FinanceIntegration', data.id, { provider: data.provider, tokenStored: Boolean(req.body.tokens) });
+  sendData(res, normalize({ integration: safeFinanceIntegration(data), connected: true }), 200);
+}));
+
+router.post('/finance/integrations/:id/disconnect', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const existing = await requireFinanceIntegration(req, req.params.id);
+  const cleared = await clearFinanceTokens(existing);
+  const data = await prisma.financeIntegration.update({ where: { id: existing.id }, data: { status: 'DISCONNECTED', connectedAt: null, disconnectedAt: new Date(), lastError: null } });
+  await audit(req, 'DISCONNECT', 'FinanceIntegration', data.id, { provider: data.provider, clearedSecrets: cleared });
+  sendData(res, normalize({ integration: safeFinanceIntegration(data), disconnected: true }));
+}));
+
 router.post('/finance/integrations/:id/test', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const existing = await requireFinanceIntegration(req, req.params.id);
-  const test = { ok: true, verified: false, status: existing.status || 'CONFIGURED', message: existing.provider === 'MANUAL_CSV' ? 'Manual CSV export is available.' : 'Provider record is configured only. Live accounting sync is not implemented yet.' };
-  const data = await prisma.financeIntegration.update({ where: { id: existing.id }, data: { status: existing.status === 'DISABLED' ? 'DISABLED' : 'CONFIGURED' } });
-  await audit(req, 'TEST', 'FinanceIntegration', data.id, { provider: data.provider, verified: false });
-  sendData(res, normalize({ integration: safeFinanceIntegration(data), test }));
+  if (existing.provider !== 'MANUAL_CSV' && existing.status !== 'ACTIVE') {
+    await audit(req, 'TEST_FAILED', 'FinanceIntegration', existing.id, { provider: existing.provider, errorCode: 'NOT_CONNECTED' });
+    throw new AppError(409, 'Finance integration is not connected');
+  }
+  try {
+    const test = existing.provider === 'MANUAL_CSV'
+      ? { ok: true, verified: true, status: 'ACTIVE', message: 'Manual CSV export is available.' }
+      : await testFinanceIntegration(existing);
+    const data = await prisma.financeIntegration.findFirst({ where: { id: existing.id, companyId: req.companyId } });
+    await audit(req, 'TEST', 'FinanceIntegration', existing.id, { provider: existing.provider, verified: Boolean(test.verified), mockMode: Boolean(test.mockMode) });
+    sendData(res, normalize({ integration: safeFinanceIntegration(data || existing), test }));
+  } catch (error) {
+    const data = await prisma.financeIntegration.update({ where: { id: existing.id }, data: { status: 'ERROR', lastTestAt: new Date(), lastError: String(error.message || 'Test failed').slice(0, 500) } });
+    await audit(req, 'TEST_FAILED', 'FinanceIntegration', existing.id, { provider: existing.provider, errorCode: error.code || 'TEST_FAILED' });
+    throw new AppError(error.code === 'NOT_CONNECTED' ? 409 : 400, error.message);
+  }
+}));
+
+router.get('/finance/mappings/:provider', requireRole(...adminRoles), validate(financeProviderParam, 'params'), asyncHandler(async (req, res) => {
+  const mapping = await getFinanceMapping(req.companyId, req.params.provider);
+  sendData(res, normalize(mapping));
+}));
+
+router.put('/finance/mappings/:provider', requireRole(...adminRoles), validate(financeProviderParam, 'params'), validate(financeMappingSchema), asyncHandler(async (req, res) => {
+  let integrationId = req.body.integrationId || null;
+  if (integrationId) await requireFinanceIntegration(req, integrationId);
+  const mapping = await saveFinanceMapping(req.companyId, req.params.provider, { ...req.body, integrationId });
+  await audit(req, 'UPSERT', 'FinanceMapping', mapping.id || req.params.provider, { provider: req.params.provider });
+  sendData(res, normalize(mapping));
+}));
+
+router.post('/finance/integrations/:id/sync/invoices/:invoiceId', requireRole(...adminRoles), validate(financeInvoiceSyncParam, 'params'), asyncHandler(async (req, res) => {
+  const integration = await requireFinanceIntegration(req, req.params.id);
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.invoiceId, companyId: req.companyId }, include: { customer: true, lineItems: true, payments: true } });
+  if (!invoice) throw notFound('Invoice not found');
+  try {
+    const result = await syncFinanceRecord({ integration, localType: 'INVOICE', record: invoice, req });
+    await audit(req, result.skipped ? 'SYNC_SKIPPED' : 'SYNC', 'Invoice', invoice.id, { provider: integration.provider, externalId: result.link && result.link.externalId });
+    sendData(res, normalize(result), result.skipped ? 200 : 201);
+  } catch (error) {
+    if (error.code === 'NOT_CONNECTED') throw new AppError(409, error.message);
+    if (error.syncLog) return sendData(res, normalize({ log: error.syncLog, error: { code: error.code || 'SYNC_FAILED', message: error.message } }), 502);
+    throw error;
+  }
+}));
+
+router.post('/finance/integrations/:id/sync/payments/:paymentId', requireRole(...adminRoles), validate(financePaymentSyncParam, 'params'), asyncHandler(async (req, res) => {
+  const integration = await requireFinanceIntegration(req, req.params.id);
+  const payment = await prisma.payment.findFirst({ where: { id: req.params.paymentId, companyId: req.companyId }, include: { receipt: true } });
+  if (!payment) throw notFound('Payment not found');
+  try {
+    const result = await syncFinanceRecord({ integration, localType: 'PAYMENT', record: payment, req });
+    await audit(req, result.skipped ? 'SYNC_SKIPPED' : 'SYNC', 'Payment', payment.id, { provider: integration.provider, externalId: result.link && result.link.externalId });
+    sendData(res, normalize(result), result.skipped ? 200 : 201);
+  } catch (error) {
+    if (error.code === 'NOT_CONNECTED') throw new AppError(409, error.message);
+    if (error.syncLog) return sendData(res, normalize({ log: error.syncLog, error: { code: error.code || 'SYNC_FAILED', message: error.message } }), 502);
+    throw error;
+  }
+}));
+
+router.post('/finance/integrations/:id/sync/batch', requireRole(...adminRoles), validate(idParam, 'params'), validate(financeBatchSyncSchema), asyncHandler(async (req, res) => {
+  const integration = await requireFinanceIntegration(req, req.params.id);
+  const results = [];
+  for (const invoiceId of req.body.invoiceIds || []) {
+    const invoice = await prisma.invoice.findFirst({ where: { id: invoiceId, companyId: req.companyId }, include: { customer: true, lineItems: true, payments: true } });
+    if (invoice) results.push({ localType: 'INVOICE', localId: invoiceId, ...(await syncFinanceRecord({ integration, localType: 'INVOICE', record: invoice, req })) });
+  }
+  for (const paymentId of req.body.paymentIds || []) {
+    const payment = await prisma.payment.findFirst({ where: { id: paymentId, companyId: req.companyId }, include: { receipt: true } });
+    if (payment) results.push({ localType: 'PAYMENT', localId: paymentId, ...(await syncFinanceRecord({ integration, localType: 'PAYMENT', record: payment, req })) });
+  }
+  await audit(req, 'BATCH_SYNC', 'FinanceIntegration', integration.id, { provider: integration.provider, count: results.length });
+  sendData(res, normalize({ count: results.length, results }));
+}));
+
+router.get('/finance/sync-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.provider) where.provider = req.query.provider;
+  if (req.query.status) where.status = req.query.status;
+  if (req.query.localType) where.localType = req.query.localType;
+  const result = await paged(prisma.financeSyncLog, req, { where, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data.map(safeFinanceSyncLog)), 200, result.meta);
+}));
+
+router.get('/finance/webhook-events', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const result = await paged(prisma.financeWebhookEvent, req, { where: { companyId: req.companyId }, orderBy: { receivedAt: 'desc' } });
+  sendData(res, normalize(result.data.map(safeFinanceWebhookEvent)), 200, result.meta);
 }));
 
 router.get('/finance/export/invoices.csv', requireRole(...adminRoles), validate(financeExportQuerySchema, 'query'), asyncHandler(async (req, res) => {

@@ -1324,3 +1324,17 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 5. Approve and execute as owner.
 6. Confirm replaying the approval fails.
 7. Confirm audit logs include the approval history and do not expose secret-like metadata.
+
+## TASK8 accounting integration QA
+
+1. Create a Xero finance integration from Settings > Finance.
+2. Connect it in mock mode.
+3. Configure mapping values: revenue account, tax rate, payments account, and customer naming rule.
+4. Test the connection.
+5. Sync an invoice once and confirm an external record link is created.
+6. Sync the same invoice again and confirm it is skipped/idempotent, not duplicated.
+7. Sync a payment.
+8. Set `failNextSync` in the integration config and confirm a failed sync creates a safe sync log.
+9. Send a webhook with a bad signature and confirm it is rejected.
+10. Send a webhook with a valid HMAC signature and confirm it is processed.
+11. Confirm CSV exports still work.
