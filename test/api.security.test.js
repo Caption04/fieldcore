@@ -735,7 +735,7 @@ async function buildApp() {
 
   const dbPath = require.resolve('../src/db');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { prisma: createMockPrisma(seed) } };
-  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/services/payments/paymentProviderRegistry', '../src/services/payments/paymentToken.service', '../src/services/payments/reconciliation.service', '../src/services/payments/providers/manual.provider', '../src/services/payments/providers/payfast.provider', '../src/services/payments/providers/yoco.provider', '../src/services/payments/providers/ozow.provider', '../src/app']) {
+  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/services/payments/paymentProviderRegistry', '../src/services/payments/paymentToken.service', '../src/services/payments/reconciliation.service', '../src/services/payments/providers/manual.provider', '../src/services/payments/providers/payfast.provider', '../src/services/payments/providers/yoco.provider', '../src/services/payments/providers/ozow.provider', '../src/services/executiveAnalytics.service', '../src/app']) {
     const resolved = require.resolve(mod);
     delete require.cache[resolved];
   }
@@ -3672,4 +3672,63 @@ test('task12 stock controls vehicle stock PR PO and job costing are safe', async
 
   const tenantBlocked = await adminB.get('/api/jobs/job-a/costing');
   assert.equal(tenantBlocked.status, 404);
+});
+
+
+test('task13 executive analytics are scoped exportable and block workers', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+
+  app.locals.testDb.branches.push({ id: 'branch-task13-a', companyId: 'company-a', name: 'Task13 Harare', code: 'T13A', city: 'Harare', country: 'ZW', timezone: 'Africa/Harare', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.branches.push({ id: 'branch-task13-b', companyId: 'company-b', name: 'Task13 Other Tenant', code: 'T13B', city: 'Other', country: 'ZW', timezone: 'Africa/Harare', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').branchId = 'branch-task13-a';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').status = 'COMPLETED';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').completedAt = '2026-01-09T10:00:00.000Z';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').startedAt = '2026-01-09T08:00:00.000Z';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').requiresProofPhotos = true;
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').minimumProofPhotos = 1;
+  app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').branchId = 'branch-task13-a';
+  app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').dueDate = '2026-01-03T00:00:00.000Z';
+  app.locals.testDb.quotes.find((quote) => quote.id === 'quote-a').branchId = 'branch-task13-a';
+  app.locals.testDb.quotes.find((quote) => quote.id === 'quote-a').status = 'ACCEPTED';
+  app.locals.testDb.quotes.find((quote) => quote.id === 'quote-a').acceptedAt = '2026-01-02T00:00:00.000Z';
+  app.locals.testDb.payments.push({ id: 'payment-task13', companyId: 'company-a', branchId: 'branch-task13-a', invoiceId: 'invoice-a', amount: 40, method: 'CASH', status: 'CONFIRMED', receivedAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-10T00:00:00.000Z' });
+  app.locals.testDb.payments.push({ id: 'payment-task13-b', companyId: 'company-b', branchId: 'branch-task13-b', invoiceId: 'invoice-b', amount: 999, method: 'CASH', status: 'CONFIRMED', receivedAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-10T00:00:00.000Z' });
+  app.locals.testDb.approvalRequests.push({ id: 'approval-task13', companyId: 'company-a', branchId: 'branch-task13-a', eventType: 'INVOICE_VOID', entityType: 'Invoice', entityId: 'invoice-a', status: 'PENDING', requestedById: 'admin-a', createdAt: '2026-01-05T00:00:00.000Z' });
+  app.locals.testDb.inventoryItems.push({ id: 'item-task13', companyId: 'company-a', sku: 'T13', name: 'Task13 Filter', unitCost: 10, minStockLevel: 5, active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.stockLocations.push({ id: 'stock-location-task13', companyId: 'company-a', branchId: 'branch-task13-a', name: 'Task13 Store', type: 'BRANCH', active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.inventoryStocks.push({ id: 'stock-task13', companyId: 'company-a', itemId: 'item-task13', locationId: 'stock-location-task13', quantityOnHand: 2, quantityReserved: 0, createdAt: '2026-01-01T00:00:00.000Z' });
+
+  const query = 'startDate=2026-01-01&endDate=2026-01-31&branchId=branch-task13-a';
+  const executive = await admin.get('/api/analytics/executive?' + query);
+  assert.equal(executive.status, 200);
+  assert.equal(executive.body.data.overview.periodRevenue, 40);
+  assert.equal(executive.body.data.overview.completedJobs, 1);
+  assert.equal(executive.body.data.overview.pendingApprovals, 1);
+  assert.equal(executive.body.data.overview.lowStockCriticalItems, 1);
+  assert.equal(executive.body.data.overview.proofMissingCount, 1);
+
+  const branches = await admin.get('/api/analytics/branches?' + query);
+  assert.equal(branches.status, 200);
+  assert.equal(branches.body.data.branchPerformance.some((row) => row.branchName === 'Task13 Other Tenant'), false);
+  assert.equal(branches.body.data.branchPerformance[0].branchId, 'branch-task13-a');
+
+  const funnel = await admin.get('/api/analytics/quote-to-cash?' + query);
+  assert.equal(funnel.status, 200);
+  assert.equal(funnel.body.data.quoteToCash.conversionRate, 100);
+
+  const csv = await admin.get('/api/analytics/export.csv?section=branches&' + query);
+  assert.equal(csv.status, 200);
+  assert.equal(csv.headers['content-type'].includes('text/csv'), true);
+  assert.equal(csv.text.includes('Task13 Harare'), true);
+  assert.equal(csv.text.includes('Task13 Other Tenant'), false);
+
+  assert.equal((await worker.get('/api/analytics/executive?' + query)).status, 403);
+  assert.equal((await adminB.get('/api/analytics/executive?' + query)).status, 404);
+
+  const schedule = await admin.post('/api/analytics/report-schedules').send({ reportKey: 'executive', cadence: 'WEEKLY', recipients: ['owner@test.local'], filters: { branchId: 'branch-task13-a' } });
+  assert.equal(schedule.status, 201);
+  assert.equal(schedule.body.data.deliveryStatus, 'CONFIGURED_NOT_SENT');
 });

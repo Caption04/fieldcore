@@ -180,3 +180,5 @@ See `docs/contract-asset-sla-automation.md`.
 ### TASK12 enterprise inventory and job costing
 
 FieldCore now includes deeper inventory/procurement controls: preferred suppliers, min stock, vehicle stock, purchase request lines, PO approval lifecycle, partial receipts/backorders, inventory valuation, supplier performance, and job costing.
+
+- TASK13 executive dashboards add owner/admin analytics for revenue leakage, branch performance, technician productivity, quote-to-cash, contract/SLA, and inventory/procurement risk.

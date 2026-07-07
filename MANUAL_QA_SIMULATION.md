@@ -1387,3 +1387,11 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 4. Create low-stock and vehicle replenishment purchase requests.
 5. Approve a PR, convert it to a PO, receive a partial quantity, and verify backorder quantity.
 6. Open Procurement Costing and review inventory valuation, supplier performance, and job costing.
+
+## TASK13 Executive dashboards QA
+
+1. Log in as owner/admin and open `executive-dashboard.html`.
+2. Confirm revenue, overdue invoices, SLA risk, proof missing, approvals, and low-stock cards load.
+3. Filter by branch and confirm another tenant branch cannot be loaded.
+4. Export executive/branch/technician/quote-to-cash CSV files and confirm no other company data appears.
+5. Log in as a worker and confirm analytics endpoints return 403.

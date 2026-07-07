@@ -145,3 +145,7 @@ SLA waiver and warranty override flows preserve TASK7 approval behavior. Planned
 ## TASK12 inventory/procurement/job costing API
 
 Added purchase request line items, low-stock replenishment request creation, worker vehicle-stock replenishment requests, PO approval/partial-receipt/backorder fields, job costing, inventory valuation, stock adjustment reports, parts-used reports, and supplier performance reporting. Tenant scoping remains company-based.
+
+## TASK13 Executive analytics
+
+Owner/admin analytics endpoints live under `/api/analytics/*`. They are company-scoped, support branch filters, and include CSV export plus a scheduled-report foundation endpoint. Workers and clients are blocked.

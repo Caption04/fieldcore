@@ -22,6 +22,7 @@
     ['collections', 'Collections', 'collections.html', 'receipt'],
     ['mobile-sync', 'Mobile Sync', 'mobile-sync.html', 'settings'],
     ['reports', 'Reports', 'reports.html', 'chart'],
+    ['executive-dashboard', 'Executive Dashboard', 'executive-dashboard.html', 'chart'],
     ['settings', 'Settings', 'settings.html', 'settings']
   ];
 

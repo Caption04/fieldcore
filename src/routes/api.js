@@ -12,6 +12,7 @@ const { configStatus } = require('../config/env');
 const { notify } = require('../services/notification.service');
 const { billingSummary, cancelSubscription, changePlan, createCheckout } = require('../services/saasBilling.service');
 const { reportCsv, reportData } = require('../services/reporting.service');
+const { analyticsCsv, buildExecutiveAnalytics } = require('../services/executiveAnalytics.service');
 const { canUseFeature, getUsage, listPlans, requireFeature, requirePlanLimit } = require('../services/subscription.service');
 const { getStorageObjectForCompany, readStorageObject, storeUploadedFile } = require('../services/integrations/storage.service');
 const {
@@ -3846,6 +3847,26 @@ router.get('/reports/accounts-receivable-aging', requireRole(...adminRoles), asy
   sendData(res, normalize({ buckets, rows }));
 }));
 
+
+async function analyticsBranchScope(req) {
+  const branchId = req.query && req.query.branchId ? String(req.query.branchId).trim() : '';
+  const accessRecords = req.user.role === 'OWNER' ? [] : await prisma.userBranchAccess.findMany({ where: { companyId: req.companyId, userId: req.user.id, active: true } });
+  const scopedBranchIds = accessRecords.map((record) => record.branchId);
+  if (branchId) {
+    await requireBranch(req, branchId);
+    if (scopedBranchIds.length && !scopedBranchIds.includes(branchId)) throw new AppError(403, 'Branch report access denied.');
+    await requirePermission(req, 'report.enterprise.view', { branchId });
+    return [branchId];
+  }
+  await requirePermission(req, 'report.enterprise.view');
+  return scopedBranchIds.length ? scopedBranchIds : null;
+}
+
+async function analyticsPayload(req) {
+  const branchIds = await analyticsBranchScope(req);
+  return buildExecutiveAnalytics(req.companyId, req.query, { branchIds });
+}
+
 router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const section = String(req.query.section || 'revenue');
   if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'Unsupported report export section.');
@@ -3854,6 +3875,66 @@ router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (re
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="fieldcore-${section}-report.csv"`);
   return res.status(200).send(reportCsv(section, data));
+}));
+
+
+router.get('/analytics/executive', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req);
+  sendData(res, normalize({ filters: data.filters, definitions: data.definitions, overview: data.overview, accountsReceivable: data.accountsReceivable, generatedAt: data.generatedAt }));
+}));
+
+router.get('/analytics/branches', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req);
+  sendData(res, normalize({ filters: data.filters, branchPerformance: data.branchPerformance, generatedAt: data.generatedAt }));
+}));
+
+router.get('/analytics/technicians', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req);
+  sendData(res, normalize({ filters: data.filters, technicianProductivity: data.technicianProductivity, generatedAt: data.generatedAt }));
+}));
+
+router.get('/analytics/quote-to-cash', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req);
+  sendData(res, normalize({ filters: data.filters, quoteToCash: data.quoteToCash, generatedAt: data.generatedAt }));
+}));
+
+router.get('/analytics/contracts-sla', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req);
+  sendData(res, normalize({ filters: data.filters, contractsSla: data.contractsSla, generatedAt: data.generatedAt }));
+}));
+
+router.get('/analytics/inventory-procurement', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req);
+  sendData(res, normalize({ filters: data.filters, inventoryProcurement: data.inventoryProcurement, generatedAt: data.generatedAt }));
+}));
+
+router.get('/analytics/export.csv', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const section = String(req.query.section || 'executive');
+  if (!['executive', 'branches', 'technicians', 'quote-to-cash', 'inventory'].includes(section)) throw new AppError(400, 'Unsupported analytics export section.');
+  const data = await analyticsPayload(req);
+  await audit(req, 'EXPORT', 'EnterpriseAnalytics', section, { section, startDate: data.filters.startDate, endDate: data.filters.endDate, branchId: data.filters.branchId });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="fieldcore-${section}-analytics.csv"`);
+  return res.status(200).send(analyticsCsv(section, data));
+}));
+
+router.post('/analytics/report-schedules', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'report.enterprise.view');
+  const schedule = {
+    id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
+    companyId: req.companyId,
+    reportKey: String(req.body.reportKey || 'executive'),
+    cadence: String(req.body.cadence || 'WEEKLY').toUpperCase(),
+    recipients: Array.isArray(req.body.recipients) ? req.body.recipients.filter(Boolean).map(String) : [],
+    filters: req.body.filters && typeof req.body.filters === 'object' ? req.body.filters : {},
+    active: req.body.active !== false,
+    deliveryStatus: 'CONFIGURED_NOT_SENT',
+    createdAt: new Date().toISOString()
+  };
+  if (!['executive', 'branches', 'technicians', 'quote-to-cash', 'contracts-sla', 'inventory-procurement'].includes(schedule.reportKey)) throw new AppError(400, 'Unsupported scheduled report.');
+  if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(schedule.cadence)) throw new AppError(400, 'Unsupported report cadence.');
+  await audit(req, 'CREATE', 'ReportSchedule', schedule.id, { reportKey: schedule.reportKey, cadence: schedule.cadence, recipients: schedule.recipients.length, filters: schedule.filters });
+  sendData(res, normalize(schedule), 201);
 }));
 
 const customerSchema = z.object({
