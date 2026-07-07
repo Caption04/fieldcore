@@ -1395,3 +1395,14 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 3. Filter by branch and confirm another tenant branch cannot be loaded.
 4. Export executive/branch/technician/quote-to-cash CSV files and confirm no other company data appears.
 5. Log in as a worker and confirm analytics endpoints return 403.
+
+## TASK14 manual QA
+
+1. Open `onboarding.html` and confirm the checklist percentage loads.
+2. Download the customers CSV template and run a preview with a valid row and an invalid email row.
+3. Confirm dry-run preview does not create customers.
+4. Run the same import with `dryRun:false` and confirm the customer is created.
+5. Check duplicate detection after creating duplicate customer phone/email/name data.
+6. Save implementation settings and onboarding package values as owner.
+7. Confirm worker users cannot import CSV data.
+8. Create solar O&M demo data and confirm demo services and inventory appear.

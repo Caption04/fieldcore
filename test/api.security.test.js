@@ -347,6 +347,13 @@ function createMockPrisma(seed) {
     return result;
   }
 
+  function enrichDataImportJob(job, include) {
+    if (!job) return null;
+    const result = { ...job };
+    if (include && include.errors) result.errors = db.dataImportRowErrors.filter((error) => error.importJobId === job.id);
+    return result;
+  }
+
   function list(name, args = {}, enrich = (x) => x) {
     let records = db[name].filter((record) => matchesWhere(record, args.where));
     if (args.orderBy && args.orderBy.createdAt === 'desc') records = records.sort(byCreatedDesc);
@@ -448,6 +455,10 @@ function createMockPrisma(seed) {
         return clone(db.companyBrandings[index]);
       }
     },
+    companyImplementationSettings: makeModel('companyImplementationSettings'),
+    companyOnboardingPackage: makeModel('companyOnboardingPackages'),
+    dataImportJob: makeModel('dataImportJobs', enrichDataImportJob),
+    dataImportRowError: makeModel('dataImportRowErrors'),
     companyFinanceSettings: makeModel('companyFinanceSettings'),
     financeIntegration: makeModel('financeIntegrations'),
     financeIntegrationSecret: makeModel('financeIntegrationSecrets'),
@@ -619,6 +630,10 @@ async function buildApp() {
       { id: 'branding-a', companyId: 'company-a', brandName: 'Brand A', primaryColor: '#111111', secondaryColor: '#222222', accentColor: '#333333', supportEmail: 'support@a.test', supportPhone: '+1 A', invoiceFooter: 'Footer A', invoiceTerms: 'Terms A' },
       { id: 'branding-b', companyId: 'company-b', brandName: 'Brand B', primaryColor: '#444444', secondaryColor: '#555555', accentColor: '#666666', supportEmail: 'support@b.test', supportPhone: '+1 B', invoiceFooter: 'Footer B', invoiceTerms: 'Terms B' }
     ],
+    companyImplementationSettings: [],
+    companyOnboardingPackages: [],
+    dataImportJobs: [],
+    dataImportRowErrors: [],
     companyFinanceSettings: [],
     financeIntegrations: [],
     financeIntegrationSecrets: [],
@@ -3731,4 +3746,58 @@ test('task13 executive analytics are scoped exportable and block workers', async
   const schedule = await admin.post('/api/analytics/report-schedules').send({ reportKey: 'executive', cadence: 'WEEKLY', recipients: ['owner@test.local'], filters: { branchId: 'branch-task13-a' } });
   assert.equal(schedule.status, 201);
   assert.equal(schedule.body.data.deliveryStatus, 'CONFIGURED_NOT_SENT');
+});
+
+test('task14 onboarding checklist imports duplicates and implementation settings are safe', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const owner = await login(app, 'owner-a@test.local');
+  const worker = await login(app, 'worker-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+
+  const checklist = await admin.get('/api/onboarding/checklist');
+  assert.equal(checklist.status, 200);
+  assert.equal(Array.isArray(checklist.body.data.items), true);
+  assert.equal(typeof checklist.body.data.percentage, 'number');
+
+  const settings = await owner.patch('/api/onboarding/implementation-settings').send({ implementationMode: true, hideDemoData: true, implementationNotes: 'Migrate customer CSV first', goLiveDate: '2026-08-01T00:00:00.000Z' });
+  assert.equal(settings.status, 200);
+  assert.equal(settings.body.data.implementationMode, true);
+  assert.equal(settings.body.data.hideDemoData, true);
+
+  const packageResponse = await owner.put('/api/onboarding/package').send({ onboardingFeeAmount: 1200, migrationFeeAmount: 800, currency: 'USD', trainingPackage: 'Admin + technician training', implementationStatus: 'MIGRATION', goLiveChecklist: { dataSignedOff: false } });
+  assert.equal(packageResponse.status, 201);
+  assert.equal(packageResponse.body.data.implementationStatus, 'MIGRATION');
+
+  const template = await admin.get('/api/onboarding/import-templates/customers.csv');
+  assert.equal(template.status, 200);
+  assert.equal(template.text.startsWith('name,email,phone'), true);
+
+  const beforeCustomers = app.locals.testDb.customers.length;
+  const preview = await admin.post('/api/onboarding/imports/customers/preview').send({ csv: 'name,email,phone\nImported Customer,imported@test.local,+263771111111\nBroken Customer,not-an-email,+263772222222' });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.data.summary.totalRows, 2);
+  assert.equal(preview.body.data.summary.validRows, 1);
+  assert.equal(preview.body.data.summary.errorRows, 1);
+  assert.equal(app.locals.testDb.customers.length, beforeCustomers);
+
+  const imported = await admin.post('/api/onboarding/imports/customers').send({ dryRun: false, csv: 'name,email,phone,address\nImported Customer,imported@test.local,+263771111111,Harare' });
+  assert.equal(imported.status, 201);
+  assert.equal(imported.body.data.summary.importedRows, 1);
+  assert.equal(app.locals.testDb.customers.some((customer) => customer.email === 'imported@test.local' && customer.companyId === 'company-a'), true);
+  assert.equal(app.locals.testDb.auditLogs.some((log) => log.action === 'IMPORT' && log.entity === 'DataImportJob'), true);
+
+  const importId = imported.body.data.job.id;
+  assert.equal((await adminB.get('/api/onboarding/imports/' + importId)).status, 404);
+  assert.equal((await worker.post('/api/onboarding/imports/customers').send({ csv: 'name,email\nWorker Blocked,blocked@test.local' })).status, 403);
+
+  app.locals.testDb.customers.push({ id: 'customer-task14-dup', companyId: 'company-a', name: 'Imported Customer', email: 'imported-duplicate@test.local', phone: '+263771111111', createdAt: '2026-01-01T00:00:00.000Z' });
+  const duplicates = await admin.get('/api/onboarding/duplicates/customers');
+  assert.equal(duplicates.status, 200);
+  assert.equal(duplicates.body.data.groups.some((group) => group.count >= 2), true);
+
+  const demo = await owner.post('/api/onboarding/demo-data/solar-om');
+  assert.equal(demo.status, 201);
+  assert.equal(demo.body.data.vertical, 'solar-om');
+  assert.equal(demo.body.data.created.services.length, 3);
 });

@@ -575,6 +575,10 @@ model Company {
   permissionRoleTemplates PermissionRoleTemplate[]
   userPermissionOverrides UserPermissionOverride[]
   userBranchAccesses      UserBranchAccess[]
+  implementationSettings  CompanyImplementationSettings?
+  onboardingPackages      CompanyOnboardingPackage[]
+  dataImportJobs          DataImportJob[]
+  dataImportRowErrors     DataImportRowError[]
 }
 
 model SaaSPlan {
@@ -2848,4 +2852,77 @@ model CompanySecuritySettings {
   company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
+}
+
+model CompanyImplementationSettings {
+  id                        String   @id @default(cuid())
+  companyId                 String   @unique
+  implementationMode        Boolean  @default(true)
+  hideDemoData              Boolean  @default(false)
+  resetAllowed              Boolean  @default(true)
+  goLiveDate                DateTime?
+  implementationOwnerUserId String?
+  implementationNotes       String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+  company                   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, implementationMode])
+}
+
+model CompanyOnboardingPackage {
+  id                   String   @id @default(cuid())
+  companyId            String
+  onboardingFeeAmount  Decimal  @default(0) @db.Decimal(12, 2)
+  migrationFeeAmount   Decimal  @default(0) @db.Decimal(12, 2)
+  currency             String   @default("USD")
+  trainingPackage      String?
+  implementationStatus String   @default("PLANNING")
+  goLiveChecklist      Json?
+  notes                String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  company              Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, implementationStatus])
+}
+
+model DataImportJob {
+  id           String               @id @default(cuid())
+  companyId    String
+  importType   String
+  status       String               @default("PREVIEWED")
+  dryRun       Boolean              @default(true)
+  fileName     String?
+  totalRows    Int                  @default(0)
+  validRows    Int                  @default(0)
+  errorRows    Int                  @default(0)
+  importedRows Int                  @default(0)
+  duplicates   Int                  @default(0)
+  mapping      Json?
+  summary      Json?
+  createdById  String?
+  createdAt    DateTime             @default(now())
+  completedAt  DateTime?
+  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  errors       DataImportRowError[]
+
+  @@index([companyId, importType, createdAt])
+  @@index([companyId, status])
+}
+
+model DataImportRowError {
+  id          String        @id @default(cuid())
+  companyId   String
+  importJobId String
+  rowNumber   Int
+  field       String?
+  message     String
+  rawRow      Json?
+  createdAt   DateTime      @default(now())
+  company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  importJob   DataImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, importJobId])
+  @@index([companyId, rowNumber])
 }

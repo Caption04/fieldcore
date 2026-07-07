@@ -149,3 +149,14 @@ Added purchase request line items, low-stock replenishment request creation, wor
 ## TASK13 Executive analytics
 
 Owner/admin analytics endpoints live under `/api/analytics/*`. They are company-scoped, support branch filters, and include CSV export plus a scheduled-report foundation endpoint. Workers and clients are blocked.
+
+## TASK14 enterprise onboarding APIs
+
+- `GET /api/onboarding/checklist` computes setup completion from company records.
+- `GET/PATCH /api/onboarding/implementation-settings` stores implementation mode, go-live date, notes, and reset policy.
+- `GET/PUT /api/onboarding/package` stores onboarding fee, migration fee, training package, implementation status, and go-live checklist metadata.
+- `GET /api/onboarding/import-templates` and `GET /api/onboarding/import-templates/:type.csv` provide CSV templates.
+- `POST /api/onboarding/imports/:type/preview` validates CSV rows without writing business data.
+- `POST /api/onboarding/imports/:type` runs dry-run by default; send `dryRun:false` for a real import.
+- `GET /api/onboarding/duplicates/:type` returns manual merge suggestions for customers, workers, assets, and inventory.
+- `POST /api/onboarding/demo-data/:vertical` creates sales demo data for supported verticals.

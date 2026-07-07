@@ -1590,6 +1590,26 @@ const bookingPhotoUpload = multer({
   }
 });
 
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['text/csv', 'application/csv', 'application/vnd.ms-excel', 'text/plain'];
+    if (!allowed.includes(file.mimetype) && !String(file.originalname || '').toLowerCase().endsWith('.csv')) return cb(new AppError(400, 'Only CSV files are allowed'));
+    cb(null, true);
+  }
+});
+
+function csvUploadMiddleware(req, res, next) {
+  if (!String(req.headers['content-type'] || '').startsWith('multipart/form-data')) return next();
+  csvUpload.single('file')(req, res, (error) => {
+    if (!error) return next();
+    if (error instanceof AppError) return next(error);
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') return next(new AppError(400, 'Uploaded CSV is too large'));
+    return next(error);
+  });
+}
+
 function bookingPhotoUploadMiddleware(req, res, next) {
   if (!String(req.headers['content-type'] || '').startsWith('multipart/form-data')) return next();
   bookingPhotoUpload.array('photos', 5)(req, res, (error) => {
@@ -3935,6 +3955,474 @@ router.post('/analytics/report-schedules', requireRole(...adminRoles), asyncHand
   if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(schedule.cadence)) throw new AppError(400, 'Unsupported report cadence.');
   await audit(req, 'CREATE', 'ReportSchedule', schedule.id, { reportKey: schedule.reportKey, cadence: schedule.cadence, recipients: schedule.recipients.length, filters: schedule.filters });
   sendData(res, normalize(schedule), 201);
+}));
+
+const onboardingImportTypes = ['customers', 'properties', 'workers', 'assets', 'inventory-items', 'suppliers', 'stock-levels', 'service-contracts', 'contract-assets'];
+const onboardingVerticals = ['hvac-refrigeration', 'solar-om', 'fire-access-control', 'facilities-maintenance'];
+const onboardingTemplateColumns = {
+  customers: ['name', 'email', 'phone', 'address', 'branchCode', 'notes'],
+  properties: ['customerEmail', 'customerName', 'label', 'address', 'city', 'branchCode', 'notes', 'isDefault'],
+  workers: ['name', 'email', 'phone', 'title', 'branchCode', 'active'],
+  assets: ['customerEmail', 'propertyAddress', 'name', 'assetType', 'assetTag', 'serialNumber', 'manufacturer', 'modelNumber', 'locationLabel', 'branchCode', 'status', 'notes'],
+  'inventory-items': ['sku', 'name', 'description', 'category', 'unitOfMeasure', 'unitCost', 'salePrice', 'minStockLevel', 'reorderPoint', 'active'],
+  suppliers: ['name', 'email', 'phone', 'address', 'taxNumber', 'leadTimeDays', 'notes', 'active'],
+  'stock-levels': ['sku', 'itemName', 'locationName', 'locationType', 'quantityOnHand', 'quantityReserved', 'unitCost'],
+  'service-contracts': ['customerEmail', 'customerName', 'propertyAddress', 'contractNumber', 'name', 'status', 'startDate', 'endDate', 'currency', 'contractValue', 'includedVisits', 'responseSlaHours', 'completionSlaHours', 'branchCode', 'notes'],
+  'contract-assets': ['contractNumber', 'assetSerialNumber', 'assetTag', 'assetName']
+};
+const onboardingChecklistDefinition = [
+  { key: 'companyProfile', label: 'Company profile' },
+  { key: 'branches', label: 'Branches' },
+  { key: 'usersWorkers', label: 'Users and workers' },
+  { key: 'customers', label: 'Customers' },
+  { key: 'properties', label: 'Properties/sites' },
+  { key: 'services', label: 'Services' },
+  { key: 'assets', label: 'Assets' },
+  { key: 'contracts', label: 'Contracts' },
+  { key: 'inventory', label: 'Inventory' },
+  { key: 'financeSettings', label: 'Finance settings' },
+  { key: 'paymentMethods', label: 'Payment methods' },
+  { key: 'notifications', label: 'Notifications' },
+  { key: 'approvals', label: 'Approvals' },
+  { key: 'firstTestJob', label: 'First test job' }
+];
+
+const implementationSettingsSchema = z.object({
+  implementationMode: z.boolean().optional(),
+  hideDemoData: z.boolean().optional(),
+  resetAllowed: z.boolean().optional(),
+  goLiveDate: optionalDate,
+  implementationOwnerUserId: optionalText(160),
+  implementationNotes: optionalText(5000)
+});
+const onboardingPackageSchema = z.object({
+  onboardingFeeAmount: amount.optional(),
+  migrationFeeAmount: amount.optional(),
+  currency: z.string().trim().min(3).max(3).optional(),
+  trainingPackage: optionalText(500),
+  implementationStatus: z.enum(['PLANNING', 'DATA_COLLECTION', 'MIGRATION', 'TRAINING', 'UAT', 'GO_LIVE_READY', 'LIVE', 'ON_HOLD']).optional(),
+  goLiveChecklist: z.record(z.union([z.boolean(), z.string(), z.number(), z.null()])).optional(),
+  notes: optionalText(5000)
+});
+
+function assertOnboardingImportType(type) {
+  if (!onboardingImportTypes.includes(type)) throw new AppError(400, 'Unsupported import type.');
+  return type;
+}
+
+function csvEscape(value) {
+  const text = value == null ? '' : String(value);
+  return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+}
+
+function parseCsvLine(line) {
+  const cells = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (quoted) {
+      if (char === '"' && line[i + 1] === '"') { cell += '"'; i += 1; }
+      else if (char === '"') quoted = false;
+      else cell += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ',') { cells.push(cell); cell = ''; }
+    else cell += char;
+  }
+  cells.push(cell);
+  return cells.map((item) => item.trim());
+}
+
+function parseCsv(text) {
+  const raw = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line.trim().length);
+  if (!raw.length) throw new AppError(400, 'CSV file is empty.');
+  const headers = parseCsvLine(raw[0]);
+  const rows = raw.slice(1).map((line, index) => {
+    const values = parseCsvLine(line);
+    const row = {};
+    headers.forEach((header, i) => { row[header] = values[i] == null ? '' : values[i]; });
+    return { rowNumber: index + 2, raw: row };
+  });
+  return { headers, rows };
+}
+
+function csvTextFromRequest(req) {
+  if (req.file && req.file.buffer) return req.file.buffer.toString('utf8');
+  if (typeof req.body.csv === 'string') return req.body.csv;
+  if (typeof req.body.content === 'string') return req.body.content;
+  if (typeof req.body === 'string') return req.body;
+  throw new AppError(400, 'CSV content or file is required.');
+}
+
+function normalizedColumn(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function mappedRow(raw, type, mapping = {}) {
+  const aliases = {
+    customerEmail: ['customeremail', 'email', 'clientemail'],
+    customerName: ['customername', 'clientname', 'accountname'],
+    branchCode: ['branchcode', 'branch'],
+    propertyAddress: ['propertyaddress', 'siteaddress', 'address'],
+    itemName: ['itemname', 'name'],
+    locationName: ['locationname', 'stocklocation', 'warehouse'],
+    assetSerialNumber: ['assetserialnumber', 'serialnumber'],
+    assetName: ['assetname', 'name']
+  };
+  const lookup = new Map(Object.entries(raw).map(([key, value]) => [normalizedColumn(key), value]));
+  const result = {};
+  for (const wanted of onboardingTemplateColumns[type] || []) {
+    const configured = mapping[wanted] ? normalizedColumn(mapping[wanted]) : null;
+    const candidates = [configured, normalizedColumn(wanted), ...(aliases[wanted] || [])].filter(Boolean);
+    result[wanted] = '';
+    for (const key of candidates) {
+      if (lookup.has(key)) { result[wanted] = String(lookup.get(key) || '').trim(); break; }
+    }
+  }
+  return result;
+}
+
+function isTruthyImportValue(value) {
+  return ['true', 'yes', '1', 'active'].includes(String(value || '').trim().toLowerCase());
+}
+
+function importNumber(value, fallback) {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+async function branchIdForImport(req, branchCode) {
+  if (!branchCode) return undefined;
+  const branch = await prisma.branch.findFirst({ where: { companyId: req.companyId, code: branchCode } }) || await prisma.branch.findFirst({ where: { companyId: req.companyId, name: branchCode } });
+  return branch && branch.id;
+}
+
+async function customerForImport(req, row) {
+  if (row.customerEmail) {
+    const found = await prisma.customer.findFirst({ where: { companyId: req.companyId, email: row.customerEmail } });
+    if (found) return found;
+  }
+  if (row.customerName) return prisma.customer.findFirst({ where: { companyId: req.companyId, name: row.customerName } });
+  return null;
+}
+
+async function propertyForImport(req, customerId, address) {
+  if (!customerId || !address) return null;
+  return prisma.customerProperty.findFirst({ where: { companyId: req.companyId, customerId, address } });
+}
+
+async function validateImportRow(req, type, row) {
+  const errors = [];
+  const requireValue = (field) => { if (!row[field]) errors.push({ field, message: field + ' is required' }); };
+  if (type === 'customers') {
+    requireValue('name');
+    if (row.email && !/^\S+@\S+\.\S+$/.test(row.email)) errors.push({ field: 'email', message: 'Email is invalid' });
+    if (row.email && await prisma.customer.findFirst({ where: { companyId: req.companyId, email: row.email } })) errors.push({ field: 'email', message: 'Duplicate customer email' });
+  } else if (type === 'properties') {
+    requireValue('address');
+    if (!await customerForImport(req, row)) errors.push({ field: 'customerEmail', message: 'Customer could not be matched' });
+  } else if (type === 'workers') {
+    requireValue('name'); requireValue('email');
+    if (row.email && !/^\S+@\S+\.\S+$/.test(row.email)) errors.push({ field: 'email', message: 'Email is invalid' });
+    if (row.email && (await prisma.user.findMany({ where: { companyId: req.companyId, email: row.email } })).length) errors.push({ field: 'email', message: 'Duplicate worker email' });
+  } else if (type === 'assets') {
+    requireValue('name'); requireValue('assetType');
+    if (!await customerForImport(req, row)) errors.push({ field: 'customerEmail', message: 'Customer could not be matched' });
+    if (row.serialNumber && await prisma.asset.findFirst({ where: { companyId: req.companyId, serialNumber: row.serialNumber } })) errors.push({ field: 'serialNumber', message: 'Duplicate asset serial number' });
+  } else if (type === 'inventory-items') {
+    requireValue('name');
+    if (row.sku && await prisma.inventoryItem.findFirst({ where: { companyId: req.companyId, sku: row.sku } })) errors.push({ field: 'sku', message: 'Duplicate inventory SKU' });
+  } else if (type === 'suppliers') {
+    requireValue('name');
+    if (row.email && !/^\S+@\S+\.\S+$/.test(row.email)) errors.push({ field: 'email', message: 'Email is invalid' });
+  } else if (type === 'stock-levels') {
+    requireValue('locationName');
+    if (!row.sku && !row.itemName) errors.push({ field: 'sku', message: 'SKU or itemName is required' });
+  } else if (type === 'service-contracts') {
+    requireValue('contractNumber'); requireValue('name'); requireValue('startDate');
+    if (!await customerForImport(req, row)) errors.push({ field: 'customerEmail', message: 'Customer could not be matched' });
+    if (row.contractNumber && await prisma.serviceContract.findFirst({ where: { companyId: req.companyId, contractNumber: row.contractNumber } })) errors.push({ field: 'contractNumber', message: 'Duplicate contract number' });
+  } else if (type === 'contract-assets') {
+    requireValue('contractNumber');
+    if (!row.assetSerialNumber && !row.assetTag && !row.assetName) errors.push({ field: 'assetSerialNumber', message: 'Asset serial, tag, or name is required' });
+  }
+  return errors;
+}
+
+async function importOneRow(req, type, row) {
+  if (type === 'customers') {
+    const branchId = await branchIdForImport(req, row.branchCode);
+    return prisma.customer.create({ data: { companyId: req.companyId, branchId, name: row.name, email: row.email || undefined, phone: row.phone || undefined, address: row.address || undefined, notes: row.notes || undefined } });
+  }
+  if (type === 'properties') {
+    const customer = await customerForImport(req, row);
+    const branchId = await branchIdForImport(req, row.branchCode);
+    return prisma.customerProperty.create({ data: { companyId: req.companyId, customerId: customer.id, branchId, label: row.label || 'Site', address: row.address, city: row.city || undefined, notes: row.notes || undefined, isDefault: isTruthyImportValue(row.isDefault) } });
+  }
+  if (type === 'workers') {
+    const branchId = await branchIdForImport(req, row.branchCode);
+    return prisma.user.create({ data: { companyId: req.companyId, email: row.email.toLowerCase(), name: row.name, phone: row.phone || undefined, role: 'WORKER', passwordHash: await hashPassword('ChangeMe123!'), worker: { create: { companyId: req.companyId, branchId, title: row.title || 'Technician', phone: row.phone || undefined, active: row.active ? isTruthyImportValue(row.active) : true } } }, select: SAFE_LOGIN_USER_SELECT });
+  }
+  if (type === 'assets') {
+    const customer = await customerForImport(req, row);
+    const property = await propertyForImport(req, customer.id, row.propertyAddress);
+    const branchId = await branchIdForImport(req, row.branchCode);
+    return prisma.asset.create({ data: { companyId: req.companyId, branchId, customerId: customer.id, propertyId: property && property.id, name: row.name, assetType: row.assetType, assetTag: row.assetTag || undefined, serialNumber: row.serialNumber || undefined, manufacturer: row.manufacturer || undefined, modelNumber: row.modelNumber || undefined, locationLabel: row.locationLabel || undefined, status: row.status || 'ACTIVE', notes: row.notes || undefined } });
+  }
+  if (type === 'inventory-items') {
+    return prisma.inventoryItem.create({ data: { companyId: req.companyId, sku: row.sku || undefined, name: row.name, description: row.description || undefined, category: row.category || undefined, unitOfMeasure: row.unitOfMeasure || 'each', unitCost: importNumber(row.unitCost, undefined), salePrice: importNumber(row.salePrice, undefined), minStockLevel: importNumber(row.minStockLevel, undefined), reorderPoint: importNumber(row.reorderPoint, undefined), active: row.active ? isTruthyImportValue(row.active) : true } });
+  }
+  if (type === 'suppliers') {
+    return prisma.supplier.create({ data: { companyId: req.companyId, name: row.name, email: row.email || undefined, phone: row.phone || undefined, address: row.address || undefined, taxNumber: row.taxNumber || undefined, leadTimeDays: importNumber(row.leadTimeDays, undefined), notes: row.notes || undefined, active: row.active ? isTruthyImportValue(row.active) : true } });
+  }
+  if (type === 'stock-levels') {
+    const item = row.sku ? await prisma.inventoryItem.findFirst({ where: { companyId: req.companyId, sku: row.sku } }) : await prisma.inventoryItem.findFirst({ where: { companyId: req.companyId, name: row.itemName } });
+    if (!item) throw new AppError(400, 'Inventory item could not be matched');
+    let location = await prisma.stockLocation.findFirst({ where: { companyId: req.companyId, name: row.locationName } });
+    if (!location) location = await prisma.stockLocation.create({ data: { companyId: req.companyId, name: row.locationName, type: row.locationType || 'WAREHOUSE', active: true } });
+    return prisma.inventoryStock.upsert({ where: { companyId_itemId_locationId: { companyId: req.companyId, itemId: item.id, locationId: location.id } }, update: { quantityOnHand: importNumber(row.quantityOnHand, 0), quantityReserved: importNumber(row.quantityReserved, 0) }, create: { companyId: req.companyId, itemId: item.id, locationId: location.id, quantityOnHand: importNumber(row.quantityOnHand, 0), quantityReserved: importNumber(row.quantityReserved, 0) } });
+  }
+  if (type === 'service-contracts') {
+    const customer = await customerForImport(req, row);
+    const property = await propertyForImport(req, customer.id, row.propertyAddress);
+    const branchId = await branchIdForImport(req, row.branchCode);
+    return prisma.serviceContract.create({ data: { companyId: req.companyId, branchId, customerId: customer.id, propertyId: property && property.id, contractNumber: row.contractNumber, name: row.name, status: row.status || 'ACTIVE', startDate: new Date(row.startDate), endDate: row.endDate ? new Date(row.endDate) : undefined, currency: row.currency || 'USD', contractValue: importNumber(row.contractValue, undefined), includedVisits: importNumber(row.includedVisits, undefined), responseSlaHours: importNumber(row.responseSlaHours, undefined), completionSlaHours: importNumber(row.completionSlaHours, undefined), notes: row.notes || undefined } });
+  }
+  if (type === 'contract-assets') {
+    const contract = await prisma.serviceContract.findFirst({ where: { companyId: req.companyId, contractNumber: row.contractNumber } });
+    if (!contract) throw new AppError(400, 'Contract could not be matched');
+    let asset = null;
+    if (row.assetSerialNumber) asset = await prisma.asset.findFirst({ where: { companyId: req.companyId, serialNumber: row.assetSerialNumber } });
+    if (!asset && row.assetTag) asset = await prisma.asset.findFirst({ where: { companyId: req.companyId, assetTag: row.assetTag } });
+    if (!asset && row.assetName) asset = await prisma.asset.findFirst({ where: { companyId: req.companyId, name: row.assetName } });
+    if (!asset) throw new AppError(400, 'Asset could not be matched');
+    return prisma.serviceContractAsset.upsert({ where: { companyId_contractId_assetId: { companyId: req.companyId, contractId: contract.id, assetId: asset.id } }, update: {}, create: { companyId: req.companyId, contractId: contract.id, assetId: asset.id } });
+  }
+  throw new AppError(400, 'Unsupported import type.');
+}
+
+async function runCsvImport(req, type, options = {}) {
+  assertOnboardingImportType(type);
+  const csv = csvTextFromRequest(req);
+  const mapping = req.body.mapping && typeof req.body.mapping === 'object' ? req.body.mapping : {};
+  const requestedDryRun = !(req.body.dryRun === false || req.body.dryRun === 'false');
+  const dryRun = options.forceDryRun ? true : requestedDryRun;
+  const parsed = parseCsv(csv);
+  const rowResults = [];
+  let validRows = 0;
+  let errorRows = 0;
+  let importedRows = 0;
+  let duplicates = 0;
+  const job = await prisma.dataImportJob.create({ data: { companyId: req.companyId, importType: type, status: dryRun ? 'DRY_RUN' : 'RUNNING', dryRun, fileName: req.file && req.file.originalname || req.body.fileName, totalRows: parsed.rows.length, mapping, createdById: req.user.id } });
+  for (const item of parsed.rows) {
+    const row = mappedRow(item.raw, type, mapping);
+    const errors = await validateImportRow(req, type, row);
+    if (errors.some((error) => /duplicate/i.test(error.message))) duplicates += 1;
+    if (errors.length) {
+      errorRows += 1;
+      for (const error of errors) await prisma.dataImportRowError.create({ data: { companyId: req.companyId, importJobId: job.id, rowNumber: item.rowNumber, field: error.field, message: error.message, rawRow: item.raw } });
+      rowResults.push({ rowNumber: item.rowNumber, status: 'ERROR', errors, row });
+      continue;
+    }
+    validRows += 1;
+    if (!dryRun) {
+      try {
+        const created = await importOneRow(req, type, row);
+        importedRows += 1;
+        rowResults.push({ rowNumber: item.rowNumber, status: 'IMPORTED', id: created && created.id, row });
+      } catch (error) {
+        errorRows += 1;
+        const message = error.status ? error.message : 'Row import failed';
+        await prisma.dataImportRowError.create({ data: { companyId: req.companyId, importJobId: job.id, rowNumber: item.rowNumber, field: null, message, rawRow: item.raw } });
+        rowResults.push({ rowNumber: item.rowNumber, status: 'ERROR', errors: [{ message }], row });
+      }
+    } else rowResults.push({ rowNumber: item.rowNumber, status: 'VALID', row });
+  }
+  const status = errorRows ? dryRun ? 'PREVIEWED_WITH_ERRORS' : 'COMPLETED_WITH_ERRORS' : dryRun ? 'PREVIEWED' : 'COMPLETED';
+  const summary = { headers: parsed.headers, totalRows: parsed.rows.length, validRows, errorRows, importedRows, duplicates };
+  const updated = await prisma.dataImportJob.update({ where: { id: job.id }, data: { status, validRows, errorRows, importedRows, duplicates, summary, completedAt: new Date() } });
+  await audit(req, dryRun ? 'IMPORT_PREVIEW' : 'IMPORT', 'DataImportJob', job.id, { importType: type, summary });
+  return { job: updated, summary, rows: rowResults };
+}
+
+async function countFor(model, where) {
+  return model.count({ where });
+}
+
+async function onboardingChecklist(req) {
+  const company = await prisma.company.findUnique({ where: { id: req.companyId } });
+  const counts = {
+    branches: await countFor(prisma.branch, { companyId: req.companyId, active: true }),
+    users: await countFor(prisma.user, { companyId: req.companyId }),
+    workers: await countFor(prisma.workerProfile, { companyId: req.companyId, active: true }),
+    customers: await countFor(prisma.customer, { companyId: req.companyId }),
+    properties: await countFor(prisma.customerProperty, { companyId: req.companyId }),
+    services: await countFor(prisma.service, { companyId: req.companyId, active: true }),
+    assets: await countFor(prisma.asset, { companyId: req.companyId }),
+    contracts: await countFor(prisma.serviceContract, { companyId: req.companyId }),
+    inventory: await countFor(prisma.inventoryItem, { companyId: req.companyId, active: true }),
+    financeSettings: await countFor(prisma.companyFinanceSettings, { companyId: req.companyId }),
+    paymentMethods: await countFor(prisma.paymentProviderConnection, { companyId: req.companyId }),
+    notifications: await countFor(prisma.integrationConnection, { companyId: req.companyId }),
+    approvals: await countFor(prisma.approvalPolicy, { companyId: req.companyId, active: true }),
+    jobs: await countFor(prisma.job, { companyId: req.companyId })
+  };
+  const completed = {
+    companyProfile: Boolean(company && company.name && (company.email || company.phone) && (company.address || company.legalName || company.tradingName)),
+    branches: counts.branches > 0,
+    usersWorkers: counts.users > 1 && counts.workers > 0,
+    customers: counts.customers > 0,
+    properties: counts.properties > 0,
+    services: counts.services > 0,
+    assets: counts.assets > 0,
+    contracts: counts.contracts > 0,
+    inventory: counts.inventory > 0,
+    financeSettings: counts.financeSettings > 0,
+    paymentMethods: counts.paymentMethods > 0,
+    notifications: counts.notifications > 0,
+    approvals: counts.approvals > 0,
+    firstTestJob: counts.jobs > 0
+  };
+  const items = onboardingChecklistDefinition.map((item) => ({ ...item, completed: Boolean(completed[item.key]), count: counts[item.key] || undefined }));
+  const completeCount = items.filter((item) => item.completed).length;
+  return { percentage: Math.round((completeCount / items.length) * 100), completeCount, totalCount: items.length, items, counts };
+}
+
+function duplicateGroups(records, keyFn, labelFn) {
+  const groups = new Map();
+  for (const record of records) {
+    for (const key of keyFn(record).filter(Boolean)) {
+      const normalized = String(key).trim().toLowerCase();
+      if (!normalized) continue;
+      if (!groups.has(normalized)) groups.set(normalized, []);
+      groups.get(normalized).push(record);
+    }
+  }
+  return Array.from(groups.entries()).filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ key, count: rows.length, records: rows.map(labelFn), mergeSuggestion: 'Review and merge manually only after confirming ownership and history.' }));
+}
+
+async function duplicateDetection(req, type) {
+  if (type === 'customers') {
+    const records = await prisma.customer.findMany({ where: { companyId: req.companyId } });
+    return duplicateGroups(records, (r) => [r.email, r.phone, r.name], (r) => ({ id: r.id, name: r.name, email: r.email, phone: r.phone }));
+  }
+  if (type === 'workers') {
+    const records = await prisma.workerProfile.findMany({ where: { companyId: req.companyId }, include: { user: { select: SAFE_USER_SELECT } } });
+    return duplicateGroups(records, (r) => [r.user && r.user.email, r.phone], (r) => ({ id: r.id, name: r.user && r.user.name, email: r.user && r.user.email, phone: r.phone }));
+  }
+  if (type === 'assets') {
+    const records = await prisma.asset.findMany({ where: { companyId: req.companyId } });
+    return duplicateGroups(records, (r) => [r.serialNumber, r.assetTag, r.name], (r) => ({ id: r.id, name: r.name, serialNumber: r.serialNumber, assetTag: r.assetTag }));
+  }
+  if (type === 'inventory') {
+    const records = await prisma.inventoryItem.findMany({ where: { companyId: req.companyId } });
+    return duplicateGroups(records, (r) => [r.sku, r.name], (r) => ({ id: r.id, sku: r.sku, name: r.name }));
+  }
+  throw new AppError(400, 'Unsupported duplicate type.');
+}
+
+async function createVerticalDemoData(req, vertical) {
+  if (!onboardingVerticals.includes(vertical)) throw new AppError(400, 'Unsupported vertical.');
+  const labels = {
+    'hvac-refrigeration': ['HVAC Preventive Maintenance', 'Refrigeration Leak Check', 'Compressor Replacement'],
+    'solar-om': ['Solar Array Inspection', 'Inverter Health Check', 'Panel Cleaning'],
+    'fire-access-control': ['Fire Panel Inspection', 'Access Control Service', 'Emergency Lighting Test'],
+    'facilities-maintenance': ['General Maintenance Visit', 'Plumbing Callout', 'Electrical Inspection']
+  }[vertical];
+  const created = { services: [], customers: [], inventoryItems: [] };
+  for (const name of labels) {
+    let service = await prisma.service.findFirst({ where: { companyId: req.companyId, name } });
+    service = service ? await prisma.service.update({ where: { id: service.id }, data: { active: true } }) : await prisma.service.create({ data: { companyId: req.companyId, name, description: 'Demo service for ' + vertical, price: 100, active: true } });
+    created.services.push(service.id);
+  }
+  const customerName = labels[0].split(' ')[0] + ' Demo Account';
+  const customer = await prisma.customer.create({ data: { companyId: req.companyId, name: customerName, email: vertical.replace(/[^a-z0-9]/g, '-') + '@demo.fieldcore.local', phone: '+10000000000', notes: 'Vertical demo data' } });
+  created.customers.push(customer.id);
+  const inventory = await prisma.inventoryItem.create({ data: { companyId: req.companyId, sku: vertical.toUpperCase().replace(/[^A-Z0-9]/g, '-') + '-KIT', name: labels[0] + ' Kit', unitOfMeasure: 'kit', unitCost: 25, active: true } });
+  created.inventoryItems.push(inventory.id);
+  await audit(req, 'CREATE_VERTICAL_DEMO_DATA', 'Company', req.companyId, { vertical, created });
+  return created;
+}
+
+router.get('/onboarding/checklist', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, normalize(await onboardingChecklist(req)));
+}));
+
+router.get('/onboarding/implementation-settings', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const data = await prisma.companyImplementationSettings.upsert({ where: { companyId: req.companyId }, update: {}, create: { companyId: req.companyId } });
+  sendData(res, normalize(data));
+}));
+
+router.patch('/onboarding/implementation-settings', requireRole('OWNER'), validate(implementationSettingsSchema), asyncHandler(async (req, res) => {
+  if (req.body.implementationOwnerUserId) await requireCompanyUser(req, req.body.implementationOwnerUserId);
+  const data = await prisma.companyImplementationSettings.upsert({ where: { companyId: req.companyId }, update: req.body, create: { ...req.body, companyId: req.companyId } });
+  await audit(req, 'UPDATE', 'CompanyImplementationSettings', data.id);
+  sendData(res, normalize(data));
+}));
+
+router.post('/onboarding/reset-demo-data', requireRole('OWNER'), asyncHandler(async (req, res) => {
+  if (process.env.NODE_ENV === 'production') throw new AppError(403, 'Implementation reset is disabled in production.');
+  const settings = await prisma.companyImplementationSettings.upsert({ where: { companyId: req.companyId }, update: {}, create: { companyId: req.companyId } });
+  if (!settings.resetAllowed) throw new AppError(403, 'Implementation reset is disabled for this company.');
+  await audit(req, 'RESET_DEMO_DATA_REQUESTED', 'Company', req.companyId, { dryRun: true });
+  sendData(res, { accepted: true, dryRunOnly: true, message: 'Reset request was recorded. Destructive demo reset is intentionally manual in this build.' });
+}));
+
+router.get('/onboarding/package', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const existing = await prisma.companyOnboardingPackage.findFirst({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(existing || null));
+}));
+
+router.put('/onboarding/package', requireRole('OWNER'), validate(onboardingPackageSchema), asyncHandler(async (req, res) => {
+  const existing = await prisma.companyOnboardingPackage.findFirst({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+  const data = existing ? await prisma.companyOnboardingPackage.update({ where: { id: existing.id }, data: req.body }) : await prisma.companyOnboardingPackage.create({ data: { ...req.body, companyId: req.companyId } });
+  await audit(req, 'UPSERT', 'CompanyOnboardingPackage', data.id, { implementationStatus: data.implementationStatus });
+  sendData(res, normalize(data), existing ? 200 : 201);
+}));
+
+router.get('/onboarding/import-templates', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  sendData(res, onboardingImportTypes.map((type) => ({ type, columns: onboardingTemplateColumns[type], url: '/api/onboarding/import-templates/' + type + '.csv' })));
+}));
+
+router.get('/onboarding/import-templates/:type.csv', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const type = assertOnboardingImportType(req.params.type);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="fieldcore-${type}-template.csv"`);
+  res.status(200).send(onboardingTemplateColumns[type].map(csvEscape).join(',') + '\n');
+}));
+
+router.post('/onboarding/imports/:type/preview', requireRole(...adminRoles), csvUploadMiddleware, asyncHandler(async (req, res) => {
+  const result = await runCsvImport(req, req.params.type, { forceDryRun: true });
+  sendData(res, normalize(result), 200);
+}));
+
+router.post('/onboarding/imports/:type', requireRole(...adminRoles), csvUploadMiddleware, asyncHandler(async (req, res) => {
+  const result = await runCsvImport(req, req.params.type);
+  sendData(res, normalize(result), req.body.dryRun === false ? 201 : 200);
+}));
+
+router.get('/onboarding/imports', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = { companyId: req.companyId };
+  if (req.query.type) where.importType = assertOnboardingImportType(String(req.query.type));
+  const result = await paged(prisma.dataImportJob, req, { where, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(result.data), 200, result.meta);
+}));
+
+router.get('/onboarding/imports/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  const job = await prisma.dataImportJob.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { errors: true } });
+  if (!job) throw notFound('Import job not found');
+  sendData(res, normalize(job));
+}));
+
+router.get('/onboarding/duplicates/:type', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const groups = await duplicateDetection(req, req.params.type);
+  sendData(res, normalize({ type: req.params.type, groups }));
+}));
+
+router.post('/onboarding/demo-data/:vertical', requireRole('OWNER'), asyncHandler(async (req, res) => {
+  const created = await createVerticalDemoData(req, req.params.vertical);
+  sendData(res, normalize({ vertical: req.params.vertical, created }), 201);
 }));
 
 const customerSchema = z.object({

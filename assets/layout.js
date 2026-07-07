@@ -23,6 +23,7 @@
     ['mobile-sync', 'Mobile Sync', 'mobile-sync.html', 'settings'],
     ['reports', 'Reports', 'reports.html', 'chart'],
     ['executive-dashboard', 'Executive Dashboard', 'executive-dashboard.html', 'chart'],
+    ['onboarding', 'Onboarding', 'onboarding.html', 'settings'],
     ['settings', 'Settings', 'settings.html', 'settings']
   ];
 
