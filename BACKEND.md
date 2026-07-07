@@ -123,3 +123,20 @@ Important routes:
 ## TASK10 mobile/offline API
 
 Worker sync now supports `/api/worker/mobile/config`, `/api/worker/sync/v2/pull`, and `/api/worker/sync/v2/push`. Devices can be revoked through admin APIs, offline actions are idempotent, stale job snapshots become `CONFLICT`, and required checklist templates block job completion until answered.
+
+## TASK11 enterprise contract automation backend
+
+TASK11 adds backend support for recurring service obligations and SLA controls.
+
+New operational APIs:
+
+- `POST /api/service-contracts/:id/generate-planned-jobs`
+- `POST /api/service-contracts/:id/evaluate-entitlement`
+- `POST /api/jobs/:id/sla/evaluate`
+- `POST /api/jobs/:id/sla/waive`
+- `POST /api/jobs/:id/warranty`
+- `POST /api/assets/:id/incidents`
+- `POST /api/assets/:id/compliance-documents`
+- `GET /api/reports/contract-profitability`
+
+SLA waiver and warranty override flows preserve TASK7 approval behavior. Planned contract work records visit usage to distinguish included visits from overage.

@@ -88,6 +88,11 @@ const assetStatusValues = ['ACTIVE', 'INACTIVE', 'UNDER_REPAIR', 'RETIRED'];
 const serviceContractStatusValues = ['DRAFT', 'ACTIVE', 'SUSPENDED', 'EXPIRED', 'CANCELLED'];
 const billingIntervalValues = ['MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL', 'ON_DEMAND'];
 const slaStatusValues = ['NOT_APPLICABLE', 'ON_TRACK', 'AT_RISK', 'BREACHED', 'MET', 'WAIVED'];
+const contractBillingStatusValues = ['UNKNOWN', 'INCLUDED', 'BILLABLE', 'OVERAGE', 'WARRANTY'];
+const assetIncidentSeverityValues = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+const assetIncidentStatusValues = ['OPEN', 'RESOLVED', 'IGNORED'];
+const complianceDocumentTypeValues = ['PHOTO', 'DOCUMENT', 'CERTIFICATE', 'REPORT', 'OTHER'];
+const preventiveMaintenanceStatusValues = ['PLANNED', 'GENERATED', 'SKIPPED', 'FAILED', 'REVIEW_REQUIRED'];
 const recurrenceValues = ['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'];
 const stockLocationTypeValues = ['WAREHOUSE', 'BRANCH', 'VEHICLE', 'TECHNICIAN', 'OTHER'];
 const stockMovementTypeValues = ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT', 'RESERVED', 'RESERVATION_RELEASED', 'JOB_USED', 'JOB_RETURNED', 'PURCHASE_RECEIVED', 'TRANSFER_IN', 'TRANSFER_OUT'];
@@ -125,7 +130,8 @@ const permissionKeys = [
   'approval.policy.manage',
   'approval.request.decide',
   'audit.view',
-  'mobile.sync.manage'
+  'mobile.sync.manage',
+  'contract.automation.manage'
 ];
 const defaultPermissionBundles = {
   OWNER: permissionKeys,
@@ -798,6 +804,9 @@ async function validateJobRelations(req, body) {
   if (body.contractId) {
     const contract = await requireServiceContract(req, body.contractId);
     if (body.customerId && contract.customerId !== body.customerId) throw new AppError(400, 'Contract must belong to the selected customer');
+    if (body.contractLineId) await requireContractServiceLine(req, contract.id, body.contractLineId);
+  } else if (body.contractLineId) {
+    throw new AppError(400, 'Contract is required when selecting a contract service line');
   }
 }
 
@@ -3437,6 +3446,9 @@ async function executeApprovedAction(req, approval, decisionNote) {
     }));
   } else if (decided.actionKey === 'contract.cancel') {
     result = await setContractStatus({ ...req, params: { id: decided.entityId } }, 'CANCELLED', 'CANCEL');
+  } else if (decided.actionKey === 'contract.sla.override') {
+    const job = await requireJob(req, decided.entityId, { assignedOnly: false });
+    result = await prisma.job.update({ where: { id: job.id }, data: { slaStatus: 'WAIVED', slaWaivedAt: new Date(), slaWaivedById: req.user.id, slaWaiverApprovalId: decided.id }, include: jobDetailInclude });
   } else if (decided.actionKey === 'job.reassign.after_dispatch') {
     await requireWorker(req, payload.workerId);
     const job = await requireJob(req, decided.entityId, { assignedOnly: false });
@@ -3734,6 +3746,25 @@ router.get('/reports/sla-performance', requireRole(...adminRoles), asyncHandler(
   sendData(res, { total: jobs.length, byStatus: rows, breached: rows.BREACHED || 0, waived: rows.WAIVED || 0 });
 }));
 
+router.get('/reports/contract-profitability', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+  const where = await reportBranchWhere(req);
+  const contracts = await prisma.serviceContract.findMany({ where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: contractInclude });
+  const jobs = await prisma.job.findMany({ where: { ...where, contractId: { not: null }, ...dateRangeWhere(req.query) }, include: { contract: true } });
+  const parts = await prisma.jobPartUsage.findMany({ where: { companyId: req.companyId, jobId: { in: jobs.map((job) => job.id) } } });
+  const partsCostByJob = new Map();
+  for (const part of parts) partsCostByJob.set(part.jobId, (partsCostByJob.get(part.jobId) || 0) + Number(part.quantityUsed || 0) * Number(part.unitCost || 0));
+  const rows = contracts.map((contract) => {
+    const contractJobs = jobs.filter((job) => job.contractId === contract.id);
+    const jobsDelivered = contractJobs.filter((job) => job.status === 'COMPLETED').length;
+    const revenue = contractJobs.reduce((sum, job) => sum + (['BILLABLE', 'OVERAGE'].includes(job.contractBillingStatus) ? Number(job.total || 0) : 0), Number(contract.contractMonthlyValue || contract.contractValue || 0));
+    const partsCost = contractJobs.reduce((sum, job) => sum + (partsCostByJob.get(job.id) || 0), 0);
+    const breachCount = contractJobs.filter((job) => job.slaStatus === 'BREACHED').length;
+    const overdueServiceCount = contract.serviceLines ? contract.serviceLines.filter((line) => line.nextDueAt && new Date(line.nextDueAt) < new Date()).length : 0;
+    return { contractId: contract.id, contractNumber: contract.contractNumber, name: contract.name, customerId: contract.customerId, monthlyValue: Number(contract.contractMonthlyValue || 0), jobsDelivered, jobCount: contractJobs.length, includedJobs: contractJobs.filter((job) => job.contractBillingStatus === 'INCLUDED').length, billableJobs: contractJobs.filter((job) => ['BILLABLE', 'OVERAGE'].includes(job.contractBillingStatus)).length, partsCost, revenue, grossMarginEstimate: revenue - partsCost, overdueServiceCount, slaBreachCount: breachCount };
+  });
+  sendData(res, normalize({ rows, totalRevenue: rows.reduce((sum, row) => sum + row.revenue, 0), totalPartsCost: rows.reduce((sum, row) => sum + row.partsCost, 0), totalGrossMarginEstimate: rows.reduce((sum, row) => sum + row.grossMarginEstimate, 0) }));
+}));
+
 router.get('/reports/inventory-value', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const locationWhere = { companyId: req.companyId, ...branchFilterFromQuery(req) };
   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
@@ -3834,6 +3865,11 @@ const assetSchema = z.object({
   installedAt: optionalDate,
   warrantyStartAt: optionalDate,
   warrantyEndAt: optionalDate,
+  warrantyProvider: optionalText(200),
+  warrantyNotes: optionalText(2000),
+  lastServicedAt: optionalDate,
+  nextServiceDueAt: optionalDate,
+  complianceStatus: optionalText(120),
   status: z.enum(assetStatusValues).optional(),
   notes: optionalText(2000),
   customFields: z.record(z.any()).optional()
@@ -3850,10 +3886,20 @@ const contractSchema = z.object({
   endDate: optionalDate,
   currency: z.string().trim().min(3).max(3).optional(),
   contractValue: amount.optional(),
+  contractMonthlyValue: amount.optional(),
+  overageBillingRate: amount.optional(),
   billingInterval: z.enum(billingIntervalValues).optional(),
   responseSlaHours: z.coerce.number().int().positive().max(8760).optional(),
   completionSlaHours: z.coerce.number().int().positive().max(8760).optional(),
   includedVisits: z.coerce.number().int().min(0).optional(),
+  excludedServices: z.array(z.string().trim().min(1).max(120)).optional(),
+  renewalDate: optionalDate,
+  cancellationNoticeDays: z.coerce.number().int().min(0).max(365).optional(),
+  autoGenerateJobs: z.boolean().optional(),
+  reviewBeforeDispatch: z.boolean().optional(),
+  serviceWindowStart: optionalText(20),
+  serviceWindowEnd: optionalText(20),
+  blackoutDates: z.array(z.string().trim().min(4).max(20)).optional(),
   notes: optionalText(2000)
 });
 
@@ -3873,9 +3919,24 @@ const contractLineSchema = z.object({
   requiresProofPhotos: z.boolean().optional(),
   requiresSignature: z.boolean().optional(),
   requiresLocation: z.boolean().optional(),
-  notes: optionalText(2000)
+  notes: optionalText(2000),
+  autoGenerate: z.boolean().optional(),
+  leadTimeDays: z.coerce.number().int().min(0).max(365).optional(),
+  serviceWindowStart: optionalText(20),
+  serviceWindowEnd: optionalText(20),
+  blackoutDates: z.array(z.string().trim().min(4).max(20)).optional(),
+  preferredWorkerId: optionalText(80),
+  preferredBranchId: optionalText(80),
+  generatedJobStatus: z.enum(jobStatusValues).optional()
 });
 const dueWorkSchema = z.object({ through: optionalDate, limit: z.coerce.number().int().min(1).max(100).optional() });
+const preventiveGenerateSchema = z.object({ through: optionalDate, limit: z.coerce.number().int().min(1).max(100).optional(), reviewBeforeDispatch: z.boolean().optional() });
+const assetIncidentSchema = z.object({ jobId: optionalText(80), title: z.string().trim().min(2).max(200), description: optionalText(2000), severity: z.enum(assetIncidentSeverityValues).optional(), status: z.enum(assetIncidentStatusValues).optional(), occurredAt: optionalDate, technicianNotes: optionalText(2000) });
+const assetComplianceDocumentSchema = z.object({ jobId: optionalText(80), documentType: z.enum(complianceDocumentTypeValues).optional(), title: z.string().trim().min(2).max(200), url: z.string().trim().min(1).max(2000), filename: optionalText(240), mimeType: optionalText(120), notes: optionalText(2000), capturedAt: optionalDate });
+const contractEntitlementSchema = z.object({ jobId: optionalText(80), serviceId: optionalText(80), contractLineId: optionalText(80), warrantyRelated: z.boolean().optional() });
+const slaEvaluateSchema = z.object({ now: optionalDate, atRiskHours: z.coerce.number().int().min(1).max(720).optional() });
+const slaWaiveSchema = z.object({ reason: z.string().trim().min(2).max(1000) });
+const warrantyFlagSchema = z.object({ warrantyRelated: z.boolean().default(true), warrantyBillingOverride: z.boolean().optional(), reason: optionalText(1000) });
 
 async function validateAssetRelations(req, body) {
   await requireCustomer(req, body.customerId);
@@ -3890,6 +3951,8 @@ async function validateContractRelations(req, body) {
 
 async function validateContractLineRelations(req, body) {
   if (body.serviceId) await requireService(req, body.serviceId);
+  if (body.preferredWorkerId) await requireWorker(req, body.preferredWorkerId);
+  if (body.preferredBranchId) await requireBranch(req, body.preferredBranchId);
 }
 
 function addHours(date, hours) {
@@ -3935,6 +3998,88 @@ function contractDueItems(contract, through = new Date(), limit = 50) {
       requiresSignature: line.requiresSignature,
       requiresLocation: line.requiresLocation
     }));
+}
+
+
+function contractPeriod(date = new Date(), interval = 'MONTHLY') {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  if (interval === 'ANNUAL') start.setMonth(0, 1);
+  else if (interval === 'QUARTERLY') start.setMonth(Math.floor(start.getMonth() / 3) * 3, 1);
+  else if (interval === 'SEMIANNUAL') start.setMonth(start.getMonth() < 6 ? 0 : 6, 1);
+  else start.setDate(1);
+  const end = new Date(start);
+  if (interval === 'ANNUAL') end.setFullYear(end.getFullYear() + 1);
+  else if (interval === 'QUARTERLY') end.setMonth(end.getMonth() + 3);
+  else if (interval === 'SEMIANNUAL') end.setMonth(end.getMonth() + 6);
+  else end.setMonth(end.getMonth() + 1);
+  return { start, end };
+}
+
+function parseBlackoutDates(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === 'string') {
+    try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; }
+  }
+  return [];
+}
+
+function isBlackoutDate(date, ...blackoutSources) {
+  const key = new Date(date).toISOString().slice(0, 10);
+  return blackoutSources.flatMap(parseBlackoutDates).includes(key);
+}
+
+async function assessContractEntitlement(req, options = {}) {
+  const contract = options.contract || (options.contractId ? await requireServiceContract(req, options.contractId) : null);
+  if (!contract) return { billingStatus: 'UNKNOWN', billable: true, reason: 'No contract selected.' };
+  if (contract.status !== 'ACTIVE') return { billingStatus: 'BILLABLE', billable: true, reason: 'Contract is not active.' };
+  if (options.warrantyRelated) return { billingStatus: 'WARRANTY', billable: false, reason: 'Warranty-related work is protected from accidental billing.' };
+
+  let line = options.line || null;
+  if (!line && options.contractLineId) line = await requireContractServiceLine(req, contract.id, options.contractLineId);
+  if (!line && options.serviceId) line = await prisma.contractServiceLine.findFirst({ where: { companyId: req.companyId, contractId: contract.id, serviceId: options.serviceId } });
+
+  const excluded = Array.isArray(contract.excludedServices) ? contract.excludedServices : [];
+  if (options.serviceId && excluded.includes(options.serviceId)) return { billingStatus: 'BILLABLE', billable: true, reason: 'Service is excluded from this contract.', contractLineId: line && line.id };
+  if (!line) return { billingStatus: 'BILLABLE', billable: true, reason: 'No covered service line matched this job.' };
+
+  const visitsAllowed = Number(line.visitsPerPeriod || contract.includedVisits || 0);
+  if (!visitsAllowed) return { billingStatus: 'INCLUDED', billable: false, reason: 'Covered service line has no visit cap.', contractLineId: line.id };
+  const period = contractPeriod(new Date(), contract.billingInterval || 'MONTHLY');
+  const used = await prisma.contractVisitUsage.count({ where: { companyId: req.companyId, contractId: contract.id, contractLineId: line.id, countedVisit: true, billingStatus: 'INCLUDED', periodStart: { gte: period.start, lt: period.end } } });
+  if (used < visitsAllowed) return { billingStatus: 'INCLUDED', billable: false, reason: `${used + 1}/${visitsAllowed} included visit(s) for this period.`, contractLineId: line.id, used, visitsAllowed, periodStart: period.start, periodEnd: period.end };
+  return { billingStatus: 'OVERAGE', billable: true, reason: `Included visits exhausted (${used}/${visitsAllowed}).`, contractLineId: line.id, used, visitsAllowed, periodStart: period.start, periodEnd: period.end };
+}
+
+async function recordContractVisit(tx, req, job, entitlement) {
+  if (!job.contractId || !entitlement || !entitlement.contractLineId) return null;
+  const period = contractPeriod(new Date(), job.contract && job.contract.billingInterval || 'MONTHLY');
+  return tx.contractVisitUsage.upsert({
+    where: { companyId_contractId_jobId: { companyId: req.companyId, contractId: job.contractId, jobId: job.id } },
+    update: { contractLineId: entitlement.contractLineId, billingStatus: entitlement.billingStatus, countedVisit: entitlement.billingStatus === 'INCLUDED' },
+    create: { companyId: req.companyId, contractId: job.contractId, contractLineId: entitlement.contractLineId, jobId: job.id, periodStart: period.start, periodEnd: period.end, billingStatus: entitlement.billingStatus, countedVisit: entitlement.billingStatus === 'INCLUDED' }
+  }).catch(() => null);
+}
+
+function calculateSlaStatus(job, now = new Date(), atRiskHours = 4) {
+  if (job.slaStatus === 'WAIVED') return 'WAIVED';
+  if (job.status === 'COMPLETED') return 'MET';
+  const due = job.completionDueAt || job.responseDueAt;
+  if (!due) return 'NOT_APPLICABLE';
+  const dueAt = new Date(due).getTime();
+  const current = new Date(now).getTime();
+  if (current > dueAt) return 'BREACHED';
+  if ((dueAt - current) <= atRiskHours * 60 * 60 * 1000) return 'AT_RISK';
+  return 'ON_TRACK';
+}
+
+async function updateAssetServiceDates(tx, req, job) {
+  const links = await tx.jobAsset.findMany({ where: { companyId: req.companyId, jobId: job.id } });
+  const servedAt = job.completedAt || job.scheduledStart || new Date();
+  for (const link of links) {
+    await tx.asset.update({ where: { id: link.assetId }, data: { lastServicedAt: servedAt } }).catch(() => null);
+  }
 }
 
 router.get('/assets', requireRole(...adminRoles), asyncHandler(async (req, res) => {
@@ -3997,7 +4142,48 @@ router.get('/assets/:id/history', requireRole(...adminRoles), validate(idParam, 
   const asset = await prisma.asset.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: assetInclude });
   if (!asset) throw notFound('Asset not found');
   const history = (asset.jobAssets || []).map((item) => item.job).filter(Boolean);
-  sendData(res, normalize({ asset: assetResponse(asset), jobs: history, proofPhotos: history.flatMap((job) => job.proofPhotos || []), invoices: history.flatMap((job) => job.invoices || []) }));
+  const [incidents, complianceDocuments, parts] = await Promise.all([
+    prisma.assetIncident.findMany({ where: { companyId: req.companyId, assetId: asset.id }, orderBy: { createdAt: 'desc' } }),
+    prisma.assetComplianceDocument.findMany({ where: { companyId: req.companyId, assetId: asset.id }, orderBy: { createdAt: 'desc' } }),
+    prisma.jobPartUsage.findMany({ where: { companyId: req.companyId, jobId: { in: history.map((job) => job.id) } }, include: { item: true }, orderBy: { createdAt: 'desc' } })
+  ]);
+  sendData(res, normalize({
+    asset: assetResponse(asset),
+    jobs: history,
+    proofPhotos: history.flatMap((job) => job.proofPhotos || []),
+    invoices: history.flatMap((job) => job.invoices || []),
+    incidents,
+    complianceDocuments,
+    partsUsed: parts,
+    serviceSummary: {
+      lastServicedAt: asset.lastServicedAt || (history[0] && (history[0].completedAt || history[0].scheduledStart)),
+      nextServiceDueAt: asset.nextServiceDueAt,
+      openIncidentCount: incidents.filter((item) => item.status === 'OPEN').length,
+      complianceDocumentCount: complianceDocuments.length
+    }
+  }));
+}));
+
+router.post('/assets/:id/incidents', requireRole(...adminRoles), validate(idParam, 'params'), validate(assetIncidentSchema), asyncHandler(async (req, res) => {
+  const asset = await requireAsset(req, req.params.id);
+  if (req.body.jobId) await requireJob(req, req.body.jobId, { assignedOnly: false });
+  const data = await prisma.$transaction(async (tx) => {
+    const incident = await tx.assetIncident.create({ data: { ...req.body, companyId: req.companyId, assetId: asset.id, severity: req.body.severity || 'MEDIUM', status: req.body.status || 'OPEN', createdById: req.user.id } });
+    await addAuditLog(tx, req, 'CREATE', 'AssetIncident', incident.id, { assetId: asset.id, severity: incident.severity, status: incident.status });
+    return incident;
+  });
+  sendData(res, normalize(data), 201);
+}));
+
+router.post('/assets/:id/compliance-documents', requireRole(...adminRoles), validate(idParam, 'params'), validate(assetComplianceDocumentSchema), asyncHandler(async (req, res) => {
+  const asset = await requireAsset(req, req.params.id);
+  if (req.body.jobId) await requireJob(req, req.body.jobId, { assignedOnly: false });
+  const data = await prisma.$transaction(async (tx) => {
+    const document = await tx.assetComplianceDocument.create({ data: { ...req.body, companyId: req.companyId, assetId: asset.id, documentType: req.body.documentType || 'DOCUMENT', createdById: req.user.id } });
+    await addAuditLog(tx, req, 'CREATE', 'AssetComplianceDocument', document.id, { assetId: asset.id, documentType: document.documentType });
+    return document;
+  });
+  sendData(res, normalize(data), 201);
 }));
 
 router.get('/service-contracts', requireRole(...adminRoles), asyncHandler(async (req, res) => {
@@ -4168,6 +4354,77 @@ router.post('/service-contracts/:id/generate-due-jobs', requireRole(...adminRole
       await tx.contractServiceLine.update({ where: { id: item.lineId }, data: { lastGeneratedJobAt: new Date(), nextDueAt: advanceDueDate(dueAt, contract.serviceLines.find((line) => line.id === item.lineId).frequency, contract.serviceLines.find((line) => line.id === item.lineId).interval || 1) } });
       await addAuditLog(tx, req, 'GENERATE_DUE_JOB', 'ServiceContract', contract.id, { jobId: job.id, lineId: item.lineId });
       jobs.push(job);
+    }
+    return jobs;
+  });
+  sendData(res, normalize({ generated }), 201);
+}));
+
+router.post('/service-contracts/:id/evaluate-entitlement', requireRole(...adminRoles), validate(idParam, 'params'), validate(contractEntitlementSchema), asyncHandler(async (req, res) => {
+  const contract = await requireServiceContract(req, req.params.id);
+  if (req.body.jobId) {
+    const job = await requireJob(req, req.body.jobId, { assignedOnly: false });
+    req.body.serviceId = req.body.serviceId || job.serviceId;
+    req.body.contractLineId = req.body.contractLineId || job.contractLineId;
+  }
+  const entitlement = await assessContractEntitlement(req, { contract, serviceId: req.body.serviceId, contractLineId: req.body.contractLineId, warrantyRelated: req.body.warrantyRelated });
+  sendData(res, normalize({ contractId: contract.id, ...entitlement }));
+}));
+
+router.post('/service-contracts/:id/generate-planned-jobs', requireRole(...adminRoles), validate(idParam, 'params'), validate(preventiveGenerateSchema), asyncHandler(async (req, res) => {
+  const contract = await prisma.serviceContract.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: contractInclude });
+  if (!contract) throw notFound('Service contract not found');
+  if (contract.status !== 'ACTIVE') throw new AppError(409, 'Only active contracts can generate planned maintenance jobs.');
+  if (contract.autoGenerateJobs === false) throw new AppError(409, 'Auto-generation is disabled for this contract.');
+  const dueWork = contractDueItems(contract, req.body.through || new Date(), req.body.limit || 50)
+    .filter((item) => {
+      const line = contract.serviceLines.find((candidate) => candidate.id === item.lineId);
+      return !line || line.autoGenerate !== false;
+    });
+  const generated = await prisma.$transaction(async (tx) => {
+    const jobs = [];
+    for (const item of dueWork) {
+      const line = contract.serviceLines.find((candidate) => candidate.id === item.lineId) || {};
+      const dueAt = new Date(item.nextDueAt);
+      if (isBlackoutDate(dueAt, contract.blackoutDates, line.blackoutDates)) {
+        await tx.preventiveMaintenanceRun.upsert({ where: { companyId_contractLineId_dueAt: { companyId: req.companyId, contractLineId: item.lineId, dueAt } }, update: { status: 'SKIPPED', skippedReason: 'Blackout date' }, create: { companyId: req.companyId, contractId: contract.id, contractLineId: item.lineId, dueAt, status: 'SKIPPED', skippedReason: 'Blackout date' } }).catch(() => null);
+        continue;
+      }
+      const entitlement = await assessContractEntitlement(req, { contract, line, serviceId: item.service && item.service.id });
+      const run = await tx.preventiveMaintenanceRun.upsert({ where: { companyId_contractLineId_dueAt: { companyId: req.companyId, contractLineId: item.lineId, dueAt } }, update: { status: 'PLANNED' }, create: { companyId: req.companyId, contractId: contract.id, contractLineId: item.lineId, dueAt, status: contract.reviewBeforeDispatch || req.body.reviewBeforeDispatch ? 'REVIEW_REQUIRED' : 'PLANNED' } });
+      const job = await tx.job.create({
+        data: {
+          companyId: req.companyId,
+          branchId: line.preferredBranchId || contract.branchId || null,
+          customerId: contract.customerId,
+          serviceId: item.service && item.service.id || undefined,
+          workerId: line.preferredWorkerId || undefined,
+          contractId: contract.id,
+          contractLineId: item.lineId,
+          preventiveMaintenanceRunId: run.id,
+          title: item.title,
+          description: 'Preventive maintenance generated from service contract ' + contract.contractNumber,
+          status: contract.reviewBeforeDispatch || req.body.reviewBeforeDispatch ? 'NEW' : (line.generatedJobStatus || 'NEW'),
+          scheduledStart: dueAt,
+          durationMinutes: item.defaultDurationMinutes || 60,
+          responseDueAt: addHours(new Date(), contract.responseSlaHours),
+          completionDueAt: addHours(dueAt, contract.completionSlaHours),
+          slaStatus: contract.responseSlaHours || contract.completionSlaHours ? 'ON_TRACK' : 'NOT_APPLICABLE',
+          requiresProofPhotos: Boolean(item.requiresProofPhotos),
+          requiresSignature: Boolean(item.requiresSignature),
+          requiresLocation: Boolean(item.requiresLocation),
+          contractBillingStatus: entitlement.billingStatus,
+          total: entitlement.billable ? Number(contract.overageBillingRate || 0) : 0
+        }
+      });
+      for (const [assetIndex, link] of (contract.assets || []).entries()) {
+        await tx.jobAsset.create({ data: { companyId: req.companyId, jobId: job.id, assetId: link.assetId, primaryAsset: assetIndex === 0 } }).catch(() => null);
+      }
+      await tx.preventiveMaintenanceRun.update({ where: { id: run.id }, data: { status: 'GENERATED', generatedJobId: job.id, generatedAt: new Date() } });
+      await tx.contractServiceLine.update({ where: { id: item.lineId }, data: { lastGeneratedJobAt: new Date(), nextDueAt: advanceDueDate(dueAt, line.frequency, line.interval || 1) } });
+      await recordContractVisit(tx, req, { ...job, contract }, entitlement);
+      await addAuditLog(tx, req, 'GENERATE_PREVENTIVE_JOB', 'ServiceContract', contract.id, { jobId: job.id, lineId: item.lineId, billingStatus: entitlement.billingStatus });
+      jobs.push({ ...job, entitlement });
     }
     return jobs;
   });
@@ -4878,7 +5135,12 @@ const jobSchema = z.object({
   requiresAfterPhotos: z.boolean().optional(),
   requiresSignature: z.boolean().optional(),
   requiresLocation: z.boolean().optional(),
-  adminOverride: z.boolean().optional()
+  adminOverride: z.boolean().optional(),
+  contractLineId: optionalText(80),
+  warrantyRelated: z.boolean().optional(),
+  warrantyBillingOverride: z.boolean().optional(),
+  warrantyOverrideReason: optionalText(1000),
+  contractBillingStatus: z.enum(contractBillingStatusValues).optional()
 });
 
 router.get('/jobs', asyncHandler(async (req, res) => {
@@ -4908,7 +5170,9 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateJobRelations(req, req.body);
   const trustedService = req.body.serviceId ? await requireService(req, req.body.serviceId) : null;
-  const trustedJobTotal = trustedService ? trustedService.price : 0;
+  const selectedContract = req.body.contractId ? await requireServiceContract(req, req.body.contractId) : null;
+  const entitlement = selectedContract ? await assessContractEntitlement(req, { contract: selectedContract, serviceId: req.body.serviceId, contractLineId: req.body.contractLineId, warrantyRelated: req.body.warrantyRelated }) : null;
+  const trustedJobTotal = req.body.warrantyRelated && !req.body.warrantyBillingOverride ? 0 : (entitlement && !entitlement.billable ? 0 : (trustedService ? trustedService.price : 0));
   const wantsSchedule = Boolean(req.body.scheduledStart);
 
   if (wantsSchedule && !req.body.workerId) {
@@ -4957,6 +5221,11 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
       durationMinutes: jobData.durationMinutes || settings.defaultJobDurationMinutes,
       travelBufferMinutes: jobData.travelBufferMinutes ?? settings.defaultTravelBufferMinutes,
       total: trustedJobTotal,
+      contractBillingStatus: req.body.warrantyRelated && !req.body.warrantyBillingOverride ? 'WARRANTY' : (entitlement ? entitlement.billingStatus : (jobData.contractBillingStatus || 'UNKNOWN')),
+      contractLineId: entitlement && entitlement.contractLineId || jobData.contractLineId,
+      warrantyRelated: Boolean(req.body.warrantyRelated),
+      warrantyBillingOverride: Boolean(req.body.warrantyBillingOverride),
+      warrantyOverrideReason: req.body.warrantyOverrideReason,
       companyId: req.companyId,
       status: wantsSchedule ? 'NEW' : (jobData.status || settings.defaultJobStatus || 'NEW')
     },
@@ -4977,6 +5246,11 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
       adminOverride: req.body.adminOverride
     });
 
+    if (entitlement) {
+      await prisma.$transaction(async (tx) => {
+        await recordContractVisit(tx, req, { ...scheduled.job, contract: selectedContract }, entitlement);
+      });
+    }
     await audit(req, 'CREATE', 'Job', data.id, { scheduled: true, scheduleItemId: scheduled.schedule.id });
     await notify('JOB_SCHEDULED', { companyId: req.companyId, relatedType: 'Job', relatedId: scheduled.job.id });
 
@@ -4988,6 +5262,11 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
     }), 201);
   }
 
+  if (entitlement) {
+    await prisma.$transaction(async (tx) => {
+      await recordContractVisit(tx, req, { ...data, contract: selectedContract }, entitlement);
+    });
+  }
   await audit(req, 'CREATE', 'Job', data.id);
   sendData(res, normalize(data), 201);
 }));
@@ -5001,6 +5280,42 @@ router.get('/jobs/:id', validate(idParam, 'params'), asyncHandler(async (req, re
 router.get('/worker/jobs/:id', requireRole('WORKER'), validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireJob(req, req.params.id, { assignedOnly: true });
   const data = await prisma.job.findUnique({ where: { id: req.params.id }, include: jobDetailInclude });
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
+}));
+
+router.post('/jobs/:id/sla/evaluate', requireRole(...adminRoles), validate(idParam, 'params'), validate(slaEvaluateSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const status = calculateSlaStatus(job, req.body.now || new Date(), req.body.atRiskHours || 4);
+  const data = await prisma.$transaction(async (tx) => {
+    const updated = await tx.job.update({ where: { id: job.id }, data: { slaStatus: status, slaBreachedAt: status === 'BREACHED' ? (job.slaBreachedAt || new Date()) : job.slaBreachedAt }, include: jobDetailInclude });
+    await addAuditLog(tx, req, 'EVALUATE_SLA', 'Job', job.id, { fromStatus: job.slaStatus, toStatus: status });
+    return updated;
+  });
+  if (status === 'AT_RISK') await notify('SLA_AT_RISK', { companyId: req.companyId, relatedType: 'Job', relatedId: job.id }).catch(() => null);
+  if (status === 'BREACHED') await notify('SLA_BREACHED', { companyId: req.companyId, relatedType: 'Job', relatedId: job.id }).catch(() => null);
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
+}));
+
+router.post('/jobs/:id/sla/waive', requireRole(...adminRoles), validate(idParam, 'params'), validate(slaWaiveSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  const approval = await requireApprovalOrProceed(req, { eventType: 'SLA_WAIVE', actionKey: 'contract.sla.override', entityType: 'Job', entityId: job.id, branchId: job.branchId, reason: req.body.reason, actionPayload: { fromStatus: job.slaStatus } });
+  if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
+  const data = await prisma.$transaction(async (tx) => {
+    const updated = await tx.job.update({ where: { id: job.id }, data: { slaStatus: 'WAIVED', slaWaivedAt: new Date(), slaWaivedById: req.user.id }, include: jobDetailInclude });
+    await addAuditLog(tx, req, 'WAIVE_SLA', 'Job', job.id, { reason: req.body.reason });
+    return updated;
+  });
+  sendData(res, normalize(jobWithEvidenceStatus(data)));
+}));
+
+router.post('/jobs/:id/warranty', requireRole(...adminRoles), validate(idParam, 'params'), validate(warrantyFlagSchema), asyncHandler(async (req, res) => {
+  const job = await requireJob(req, req.params.id, { assignedOnly: false });
+  if (req.body.warrantyRelated && req.body.warrantyBillingOverride) {
+    const approval = await requireApprovalOrProceed(req, { eventType: 'INVOICE_DISCOUNT', actionKey: 'invoice.discount.approve', entityType: 'Job', entityId: job.id, branchId: job.branchId, reason: req.body.reason || 'Override warranty billing protection', amount: Number(job.total || 0), actionPayload: { warrantyBillingOverride: true } });
+    if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
+  }
+  const data = await prisma.job.update({ where: { id: job.id }, data: { warrantyRelated: req.body.warrantyRelated, warrantyBillingOverride: Boolean(req.body.warrantyBillingOverride), warrantyOverrideReason: req.body.reason, contractBillingStatus: req.body.warrantyRelated && !req.body.warrantyBillingOverride ? 'WARRANTY' : job.contractBillingStatus, total: req.body.warrantyRelated && !req.body.warrantyBillingOverride ? 0 : job.total }, include: jobDetailInclude });
+  await audit(req, 'UPDATE_WARRANTY', 'Job', job.id, { warrantyRelated: req.body.warrantyRelated, warrantyBillingOverride: Boolean(req.body.warrantyBillingOverride) });
   sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 

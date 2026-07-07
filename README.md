@@ -162,3 +162,16 @@ See `docs/payment-rails-reconciliation-collections.md`.
 ## TASK10 mobile/offline foundation
 
 FieldCore now includes a native-app-ready mobile API contract, device revoke/trust metadata, sync v2 pull/push endpoints, per-action offline results, conflict detection, checklist templates/answers, and an admin Mobile Sync page for failed or conflicted offline actions. See `docs/mobile-api-contract.md`.
+
+## TASK11 contract, asset, warranty, SLA, and preventive maintenance automation
+
+FieldCore now supports enterprise contract automation on top of assets and service contracts:
+
+- asset service history with jobs, proof, invoices, incidents, compliance documents, and parts used;
+- preventive maintenance generation from active contract service lines;
+- entitlement checks for included, billable, overage, and warranty work;
+- SLA at-risk, breach, met, and waiver handling;
+- warranty billing protection;
+- contract profitability reporting.
+
+See `docs/contract-asset-sla-automation.md`.

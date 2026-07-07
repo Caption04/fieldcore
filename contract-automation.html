@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contract Automation - FieldCore</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body data-page="contract-automation">
+  <main class="page">
+    <section class="hero-card">
+      <p class="eyebrow">Enterprise automation</p>
+      <h1>Contracts, assets, warranties, SLA and preventive maintenance</h1>
+      <p>Generate recurring work, evaluate contract entitlements, watch SLA risk, and review asset service history from one operational layer.</p>
+    </section>
+
+    <section class="grid two">
+      <article class="card">
+        <h2>Preventive maintenance</h2>
+        <p>Use <code>POST /api/service-contracts/:id/generate-planned-jobs</code> to create planned jobs from active contract service lines.</p>
+      </article>
+      <article class="card">
+        <h2>Contract entitlement</h2>
+        <p>Use <code>POST /api/service-contracts/:id/evaluate-entitlement</code> to determine included, billable, overage, or warranty work.</p>
+      </article>
+      <article class="card">
+        <h2>SLA controls</h2>
+        <p>Use <code>POST /api/jobs/:id/sla/evaluate</code> to mark at-risk, breached, met, or waived jobs. Waivers can require approvals.</p>
+      </article>
+      <article class="card">
+        <h2>Asset history</h2>
+        <p>Use <code>GET /api/assets/:id/history</code> to see jobs, proof, invoices, parts, incidents, and compliance documents.</p>
+      </article>
+    </section>
+  </main>
+  <script src="assets/layout.js"></script>
+</body>
+</html>

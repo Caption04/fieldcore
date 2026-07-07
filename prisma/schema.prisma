@@ -285,6 +285,42 @@ enum JobSlaStatus {
   WAIVED
 }
 
+enum ContractBillingStatus {
+  UNKNOWN
+  INCLUDED
+  BILLABLE
+  OVERAGE
+  WARRANTY
+}
+
+enum AssetIncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AssetIncidentStatus {
+  OPEN
+  RESOLVED
+  IGNORED
+}
+
+enum ComplianceDocumentType {
+  PHOTO
+  DOCUMENT
+  CERTIFICATE
+  REPORT
+  OTHER
+}
+
+enum PreventiveMaintenanceStatus {
+  PLANNED
+  GENERATED
+  SKIPPED
+  FAILED
+  REVIEW_REQUIRED
+}
 
 enum StockLocationType {
   WAREHOUSE
@@ -970,6 +1006,15 @@ model Job {
   completionDueAt      DateTime?
   slaStatus            JobSlaStatus           @default(NOT_APPLICABLE)
   slaBreachedAt        DateTime?
+  slaWaivedAt          DateTime?
+  slaWaivedById        String?
+  slaWaiverApprovalId  String?
+  contractLineId       String?
+  preventiveMaintenanceRunId String?
+  contractBillingStatus ContractBillingStatus @default(UNKNOWN)
+  warrantyRelated      Boolean                @default(false)
+  warrantyBillingOverride Boolean              @default(false)
+  warrantyOverrideReason String?
   completedById        String?
   completionNotes      String?
   customerSignatureUrl String?
@@ -1013,6 +1058,8 @@ model Job {
   @@index([companyId, contractId])
   @@index([companyId, slaStatus])
   @@index([companyId, branchId])
+  @@index([companyId, contractBillingStatus])
+  @@index([companyId, contractLineId])
 }
 
 model Asset {
@@ -1032,6 +1079,11 @@ model Asset {
   installedAt           DateTime?
   warrantyStartAt       DateTime?
   warrantyEndAt         DateTime?
+  warrantyProvider      String?
+  warrantyNotes         String?
+  lastServicedAt        DateTime?
+  nextServiceDueAt      DateTime?
+  complianceStatus      String?
   status                AssetStatus            @default(ACTIVE)
   notes                 String?
   customFields          Json?
@@ -1082,10 +1134,20 @@ model ServiceContract {
   endDate            DateTime?
   currency           String                 @default("USD")
   contractValue      Decimal?               @db.Decimal(12, 2)
+  contractMonthlyValue Decimal?             @db.Decimal(12, 2)
+  overageBillingRate Decimal?               @db.Decimal(12, 2)
   billingInterval    BillingInterval?
   responseSlaHours   Int?
   completionSlaHours Int?
   includedVisits     Int?
+  excludedServices   Json?
+  renewalDate        DateTime?
+  cancellationNoticeDays Int?
+  autoGenerateJobs   Boolean                @default(true)
+  reviewBeforeDispatch Boolean              @default(true)
+  serviceWindowStart String?
+  serviceWindowEnd   String?
+  blackoutDates      Json?
   notes              String?
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
@@ -1135,6 +1197,14 @@ model ContractServiceLine {
   requiresSignature      Boolean            @default(false)
   requiresLocation       Boolean            @default(false)
   notes                  String?
+  autoGenerate           Boolean            @default(true)
+  leadTimeDays           Int                @default(7)
+  serviceWindowStart     String?
+  serviceWindowEnd       String?
+  blackoutDates          Json?
+  preferredWorkerId      String?
+  preferredBranchId      String?
+  generatedJobStatus     JobStatus          @default(NEW)
   createdAt              DateTime           @default(now())
   updatedAt              DateTime           @updatedAt
   company                Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -1145,6 +1215,85 @@ model ContractServiceLine {
   @@index([companyId, nextDueAt])
 }
 
+
+
+model AssetIncident {
+  id          String              @id @default(cuid())
+  companyId   String
+  assetId     String
+  jobId       String?
+  title       String
+  description String?
+  severity    AssetIncidentSeverity @default(MEDIUM)
+  status      AssetIncidentStatus   @default(OPEN)
+  occurredAt  DateTime              @default(now())
+  resolvedAt  DateTime?
+  technicianNotes String?
+  createdById String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@index([companyId, assetId])
+  @@index([companyId, jobId])
+  @@index([companyId, status])
+}
+
+model AssetComplianceDocument {
+  id          String                 @id @default(cuid())
+  companyId   String
+  assetId     String
+  jobId       String?
+  documentType ComplianceDocumentType @default(DOCUMENT)
+  title       String
+  url         String
+  filename    String?
+  mimeType    String?
+  notes       String?
+  capturedAt  DateTime?
+  createdById String?
+  createdAt   DateTime               @default(now())
+
+  @@index([companyId, assetId])
+  @@index([companyId, jobId])
+  @@index([companyId, documentType])
+}
+
+model ContractVisitUsage {
+  id            String                @id @default(cuid())
+  companyId     String
+  contractId    String
+  contractLineId String?
+  jobId         String
+  periodStart   DateTime
+  periodEnd     DateTime
+  billingStatus ContractBillingStatus @default(UNKNOWN)
+  countedVisit  Boolean               @default(true)
+  createdAt     DateTime              @default(now())
+
+  @@unique([companyId, contractId, jobId])
+  @@index([companyId, contractId, periodStart])
+  @@index([companyId, contractLineId])
+  @@index([companyId, billingStatus])
+}
+
+model PreventiveMaintenanceRun {
+  id             String                    @id @default(cuid())
+  companyId      String
+  contractId     String
+  contractLineId String
+  generatedJobId String?
+  status         PreventiveMaintenanceStatus @default(PLANNED)
+  dueAt          DateTime
+  generatedAt    DateTime?
+  skippedReason  String?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@index([companyId, contractId])
+  @@index([companyId, contractLineId])
+  @@index([companyId, status])
+  @@unique([companyId, contractLineId, dueAt])
+}
 
 model Supplier {
   id             String          @id @default(cuid())

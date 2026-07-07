@@ -12,6 +12,7 @@
     ['approvals', 'Approvals', 'approvals.html', 'inbox'],
     ['assets', 'Assets', 'assets.html', 'briefcase'],
     ['service-contracts', 'Contracts', 'service-contracts.html', 'file'],
+    ['contract-automation', 'Contract Automation', 'contract-automation.html', 'settings'],
     ['inventory', 'Inventory', 'inventory.html', 'briefcase'],
     ['purchase-requests', 'Purchase Requests', 'purchase-requests.html', 'inbox'],
     ['purchase-orders', 'Purchase Orders', 'purchase-orders.html', 'receipt'],

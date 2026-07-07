@@ -566,6 +566,10 @@ function createMockPrisma(seed) {
     serviceContract: makeModel('serviceContracts', enrichServiceContract),
     serviceContractAsset: makeModel('serviceContractAssets', enrichServiceContractAsset),
     contractServiceLine: makeModel('contractServiceLines', enrichContractServiceLine),
+    assetIncident: makeModel('assetIncidents'),
+    assetComplianceDocument: makeModel('assetComplianceDocuments'),
+    contractVisitUsage: makeModel('contractVisitUsages'),
+    preventiveMaintenanceRun: makeModel('preventiveMaintenanceRuns'),
     $queryRaw: () => Promise.resolve([{ ok: 1 }]),
     $transaction: (fn) => fn(createMockPrisma(db)),
     $disconnect: () => Promise.resolve()
@@ -683,6 +687,10 @@ async function buildApp() {
     serviceContracts: [],
     serviceContractAssets: [],
     contractServiceLines: [],
+    assetIncidents: [],
+    assetComplianceDocuments: [],
+    contractVisitUsages: [],
+    preventiveMaintenanceRuns: [],
     suppliers: [],
     stockLocations: [],
     inventoryItems: [],
@@ -3489,4 +3497,87 @@ test('task10 checklist completion blocks and then allows offline job completion'
   const duplicate = await worker.post('/api/worker/sync/v2/push').send({ deviceId: 'device-task10-checklist', actions: [{ idempotencyKey: 'task10-complete-ok', actionType: 'JOB_COMPLETE', payload: { jobId: 'job-a' } }] });
   assert.equal(duplicate.status, 200);
   assert.equal(duplicate.body.data.results[0].status, 'DUPLICATE');
+});
+
+test('task11 preventive maintenance generates included then overage contract jobs', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  app.locals.testDb.assets.push({ id: 'asset-task11', companyId: 'company-a', customerId: 'customer-a', name: 'RTU 01', assetType: 'HVAC', warrantyEndAt: '2027-01-01T00:00:00.000Z', status: 'ACTIVE', createdAt: '2026-01-01T00:00:00.000Z' });
+
+  const contract = await admin.post('/api/service-contracts').send({ contractNumber: 'TASK11-C-1', name: 'Quarterly HVAC Care', customerId: 'customer-a', status: 'ACTIVE', startDate: '2026-01-01', contractValue: 1200, contractMonthlyValue: 100, billingInterval: 'MONTHLY', includedVisits: 1, overageBillingRate: 75, responseSlaHours: 4, completionSlaHours: 24 });
+  assert.equal(contract.status, 201);
+  const assetLink = await admin.post('/api/service-contracts/' + contract.body.data.id + '/assets').send({ assetId: 'asset-task11' });
+  assert.equal(assetLink.status, 201);
+  const line = await admin.post('/api/service-contracts/' + contract.body.data.id + '/service-lines').send({ serviceId: 'service-a', title: 'Quarterly PM', frequency: 'MONTHLY', visitsPerPeriod: 1, nextDueAt: '2026-01-01T09:00:00.000Z', defaultDurationMinutes: 60, requiresProofPhotos: true });
+  assert.equal(line.status, 201);
+
+  const generated = await admin.post('/api/service-contracts/' + contract.body.data.id + '/generate-planned-jobs').send({ through: '2026-01-02T00:00:00.000Z' });
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.data.generated.length, 1);
+  assert.equal(generated.body.data.generated[0].contractBillingStatus, 'INCLUDED');
+  assert.equal(app.locals.testDb.contractVisitUsages.length, 1);
+
+  const overage = await admin.post('/api/service-contracts/' + contract.body.data.id + '/evaluate-entitlement').send({ serviceId: 'service-a', contractLineId: line.body.data.id });
+  assert.equal(overage.status, 200);
+  assert.equal(overage.body.data.billingStatus, 'OVERAGE');
+});
+
+test('task11 SLA evaluation waiver and warranty billing protection are safe', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  const admin = await login(app, 'admin-a@test.local');
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').completionDueAt = '2026-01-01T10:00:00.000Z';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').slaStatus = 'ON_TRACK';
+
+  const breach = await admin.post('/api/jobs/job-a/sla/evaluate').send({ now: '2026-01-02T10:00:00.000Z' });
+  assert.equal(breach.status, 200);
+  assert.equal(breach.body.data.slaStatus, 'BREACHED');
+
+  const policy = await owner.post('/api/approval-policies').send({ name: 'SLA waiver', eventType: 'SLA_WAIVE', requiredApproverRole: 'OWNER', allowSelfApproval: false });
+  assert.equal(policy.status, 201);
+  const waiver = await admin.post('/api/jobs/job-a/sla/waive').send({ reason: 'Customer approved weather delay' });
+  assert.equal(waiver.status, 202);
+  assert.equal(waiver.body.data.approvalRequired, true);
+
+  app.locals.testDb.approvalPolicies = [];
+  const warranty = await admin.post('/api/jobs/job-a/warranty').send({ warrantyRelated: true });
+  assert.equal(warranty.status, 200);
+  assert.equal(warranty.body.data.contractBillingStatus, 'WARRANTY');
+  assert.equal(warranty.body.data.total, 0);
+});
+
+test('task11 asset history is tenant scoped and contract profitability summarizes margins', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const adminB = await login(app, 'admin-b@test.local');
+  app.locals.testDb.assets.push({ id: 'asset-history-a', companyId: 'company-a', customerId: 'customer-a', name: 'Solar Inverter', assetType: 'Solar', status: 'ACTIVE', createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.assets.push({ id: 'asset-history-b', companyId: 'company-b', customerId: 'customer-b', name: 'Other Asset', assetType: 'Solar', status: 'ACTIVE', createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.jobAssets.push({ id: 'ja-task11', companyId: 'company-a', jobId: 'job-a', assetId: 'asset-history-a', primaryAsset: true, createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.jobPartUsages.push({ id: 'part-task11', companyId: 'company-a', jobId: 'job-a', itemId: 'item-task11', quantityUsed: 2, unitCost: 5, status: 'USED', createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.inventoryItems.push({ id: 'item-task11', companyId: 'company-a', sku: 'FUSE', name: 'Fuse', unitCost: 5, active: true, createdAt: '2026-01-01T00:00:00.000Z' });
+
+  const incident = await admin.post('/api/assets/asset-history-a/incidents').send({ title: 'Breaker fault', severity: 'HIGH' });
+  assert.equal(incident.status, 201);
+  const doc = await admin.post('/api/assets/asset-history-a/compliance-documents').send({ title: 'Completion proof', documentType: 'PHOTO', url: '/uploads/proof/task11.jpg' });
+  assert.equal(doc.status, 201);
+
+  const history = await admin.get('/api/assets/asset-history-a/history');
+  assert.equal(history.status, 200);
+  assert.equal(history.body.data.incidents.length, 1);
+  assert.equal(history.body.data.complianceDocuments.length, 1);
+  assert.equal(history.body.data.partsUsed.length, 1);
+
+  const blocked = await adminB.get('/api/assets/asset-history-a/history');
+  assert.equal(blocked.status, 404);
+
+  app.locals.testDb.serviceContracts.push({ id: 'contract-profit-task11', companyId: 'company-a', customerId: 'customer-a', contractNumber: 'PROFIT-1', name: 'Profit Contract', status: 'ACTIVE', startDate: '2026-01-01T00:00:00.000Z', contractMonthlyValue: 100, contractValue: 1200, billingInterval: 'MONTHLY', createdAt: '2026-01-01T00:00:00.000Z' });
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').contractId = 'contract-profit-task11';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').contractBillingStatus = 'BILLABLE';
+  app.locals.testDb.jobs.find((job) => job.id === 'job-a').status = 'COMPLETED';
+  const report = await admin.get('/api/reports/contract-profitability');
+  assert.equal(report.status, 200);
+  const row = report.body.data.rows.find((item) => item.contractId === 'contract-profit-task11');
+  assert.equal(Boolean(row), true);
+  assert.equal(row.jobsDelivered, 1);
+  assert.equal(row.partsCost, 10);
 });

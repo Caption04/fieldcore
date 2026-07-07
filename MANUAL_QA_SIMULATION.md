@@ -1364,3 +1364,16 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 5. Change a job in admin, then push an action with an older `snapshotUpdatedAt` and confirm `CONFLICT`.
 6. Open `mobile-sync.html`, review the conflict, and resolve it.
 7. Revoke the device and confirm sync returns `403`.
+
+## TASK11 manual QA: contract, asset, SLA, warranty automation
+
+1. Create an active contract with monthly included visits and SLA hours.
+2. Link at least one customer asset to the contract.
+3. Add a service line with a due date inside the generation window.
+4. Generate planned jobs and verify the job is linked to the contract, service line, and asset.
+5. Evaluate entitlement again and verify overage behavior after the included visit is used.
+6. Add an asset incident and compliance document; confirm they appear in asset history.
+7. Force a job due date into the past and run SLA evaluation; confirm breach status.
+8. Create a TASK7 SLA waiver policy and confirm waiver requires approval.
+9. Mark a job as warranty-related; confirm accidental billing is prevented.
+10. Review contract profitability and confirm parts cost and margin estimate appear.
