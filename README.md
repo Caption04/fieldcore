@@ -205,3 +205,9 @@ Key endpoints:
 - `POST /api/admin/security/identity-providers`
 - `GET /api/admin/data-export/:type`
 - `GET /api/ops/status`
+
+### TASK16 — Flutter technician app scaffold
+
+FieldCore now includes an isolated Flutter technician app scaffold under `apps/fieldcore_technician`. The app consumes the TASK10 mobile/offline API contract, registers worker devices, pulls assigned jobs, queues offline field actions, and syncs them back through `/api/worker/sync/v2/push`.
+
+See `docs/flutter-technician-app.md` and `apps/fieldcore_technician/README.md`.

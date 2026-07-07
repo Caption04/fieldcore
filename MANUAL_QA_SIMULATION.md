@@ -1420,3 +1420,16 @@ Manual QA should verify: finance settings save, payment methods restrict payment
 9. Export customers and verify only the current company’s records are returned.
 10. Open ops status and confirm no API keys, tokens, passwords, or ciphertext values are displayed.
 11. Review `docs/disaster-recovery-runbook.md` and verify backup commands contain no credentials.
+
+## TASK16 manual QA — Flutter technician app scaffold
+
+1. Apply the patch and confirm `apps/fieldcore_technician` exists.
+2. Run `cd apps/fieldcore_technician` and `../../scripts/bootstrap_flutter_technician_platforms.sh` if Android/iOS platform folders are missing.
+3. Run `flutter pub get`, `flutter analyze`, and `flutter test`.
+4. Start the backend locally and run the app with `--dart-define=FIELDCORE_API_BASE_URL=http://10.0.2.2:3000` for an Android emulator.
+5. Log in as a worker and confirm device registration succeeds.
+6. Pull assigned jobs and open a job detail screen.
+7. Queue start, checklist, proof photo metadata, signature, parts-used, and complete actions while offline.
+8. Reconnect and use Sync Status to push actions.
+9. Confirm processed actions are removed from the local queue while failed/conflict actions remain visible.
+10. Confirm generated Flutter caches/build folders are not included when zipping the project.

@@ -131,3 +131,9 @@ Required checklist items block `JOB_COMPLETE` until answered. Items with `photoR
 - `404`: record not found in tenant scope
 - `409`: business conflict, duplicate state, incomplete checklist, or offline snapshot conflict
 - per-action `FAILED`, `REJECTED`, `CONFLICT`, `DUPLICATE`, `PROCESSED` are returned inside sync responses
+
+## Flutter app scaffold
+
+The TASK16 Flutter scaffold lives in `apps/fieldcore_technician`. It is a consumer of this contract and should not be mixed into the backend root. Generated Flutter platform/build/cache output is excluded from Git so project zips remain under upload limits.
+
+See `docs/flutter-technician-app.md` for app bootstrap and manual QA.

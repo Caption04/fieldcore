@@ -48,3 +48,14 @@ uploads/
 storage/
 .tmp/
 tmp/
+
+# Flutter app generated files
+apps/*/.dart_tool/
+apps/*/.pub-cache/
+apps/*/build/
+apps/*/android/.gradle/
+apps/*/android/app/build/
+apps/*/ios/Pods/
+apps/*/ios/.symlinks/
+apps/*/.idea/
+apps/*/.vscode/

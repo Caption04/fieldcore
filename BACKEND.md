@@ -181,3 +181,15 @@ Runbooks:
 
 - `docs/security-compliance-reliability.md`
 - `docs/disaster-recovery-runbook.md`
+
+## TASK16 Flutter technician app
+
+The native technician app scaffold lives in `apps/fieldcore_technician` and is intentionally separated from the Node/Express backend. It uses the existing TASK10 mobile/offline API contract:
+
+- `POST /api/auth/login`
+- `POST /api/worker/devices/register`
+- `GET /api/worker/mobile/config`
+- `GET /api/worker/sync/v2/pull`
+- `POST /api/worker/sync/v2/push`
+
+No generated Flutter build output, `.dart_tool`, Android Gradle cache, or iOS Pods should be committed. Use `scripts/bootstrap_flutter_technician_platforms.sh` to generate platform folders locally.
