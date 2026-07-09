@@ -144,7 +144,7 @@
   function searchBox() {
     return `<div class="global-search-shell">
       <label for="globalSearch">System search</label>
-      <input id="globalSearch" type="search" placeholder="Search jobs, clients, invoices..." autocomplete="off" data-global-search>
+      <input id="globalSearch" type="search" placeholder="Search system..." autocomplete="off" data-global-search>
       <div class="global-search-results" data-global-search-results hidden></div>
     </div>`;
   }
@@ -152,7 +152,7 @@
   function marketSwitcher() {
     const value = localStorage.getItem('fieldcore.market') || 'ZW';
     return `<div class="market-switcher" aria-label="Dashboard region">
-      <span>Region</span>
+      <div class="market-switcher-head"><span>Region</span><small>QA only</small></div>
       <button type="button" data-market-value="ZW"${value === 'ZW' ? ' class="active"' : ''}>Zimbabwe</button>
       <button type="button" data-market-value="SA"${value === 'SA' ? ' class="active"' : ''}>South Africa</button>
     </div>`;
@@ -177,19 +177,119 @@
   }
 
   function pageSearchBox() {
-    return `<div class="page-search-shell"><input type="search" placeholder="Search this section..." aria-label="Search this section" data-page-search></div>`;
+    return `<div class="page-search-shell" data-page-search-shell>
+      <input type="search" placeholder="Search this section..." aria-label="Search this section" data-page-search autocomplete="off">
+      <div class="page-search-results" data-page-search-results hidden></div>
+    </div>`;
+  }
+
+  function sectionSearchTargetSelector() {
+    return '.table-wrap tbody tr, .table-scroll tbody tr, .data-table tbody tr, .list-item, .settings-row, .worker-location-card, .asset-card, .panel[data-searchable]';
+  }
+
+  function cleanSearchText(value) {
+    return String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  }
+
+  function searchResultTitle(node) {
+    const titleNode = node.querySelector('[data-search-title], td:first-child, th:first-child, h2, h3, h4, strong, a');
+    const title = cleanSearchText(titleNode ? titleNode.textContent : node.textContent);
+    return title || 'Matching result';
+  }
+
+  function jumpToSectionResult(id) {
+    const node = document.getElementById(id);
+    if (!node) return false;
+    node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    node.classList.add('section-search-highlight');
+    window.setTimeout(() => node.classList.remove('section-search-highlight'), 1600);
+    return true;
   }
 
   function setupPageSearch() {
-    document.addEventListener('input', (event) => {
-      if (!event.target.matches('[data-page-search]')) return;
-      const query = event.target.value.trim().toLowerCase();
-      const targets = document.querySelectorAll('.table-wrap tbody tr, .table-scroll tbody tr, .settings-list > *, .worker-location-card');
-      targets.forEach((node) => {
-        if (!query) node.style.display = '';
-        else node.style.display = node.textContent.toLowerCase().includes(query) ? '' : 'none';
+    const input = document.querySelector('[data-page-search]');
+    const results = document.querySelector('[data-page-search-results]');
+    if (!input || !results) return;
+
+    const runSearch = ({ autoJump = false } = {}) => {
+      const query = input.value.trim().toLowerCase();
+      const targets = Array.from(document.querySelectorAll(sectionSearchTargetSelector()));
+      const matches = [];
+
+      targets.forEach((node, index) => {
+        const text = cleanSearchText(node.textContent);
+        const isMatch = !query || text.toLowerCase().includes(query);
+        node.style.display = isMatch ? '' : 'none';
+        if (query && isMatch && matches.length < 8) {
+          if (!node.id) node.id = `section-search-${Date.now()}-${index}`;
+          matches.push({ id: node.id, title: searchResultTitle(node) });
+        }
       });
+
+      if (!query) {
+        results.hidden = true;
+        results.innerHTML = '';
+        return false;
+      }
+
+      results.hidden = false;
+      results.innerHTML = matches.length
+        ? matches.map((item) => `<button type="button" class="search-result" data-section-result="${escape(item.id)}"><strong>${escape(item.title)}</strong></button>`).join('')
+        : '<div class="search-result muted">No matches in this section.</div>';
+
+      if (autoJump && matches.length) {
+        window.setTimeout(() => jumpToSectionResult(matches[0].id), 40);
+      }
+
+      return matches.length > 0;
+    };
+
+    input.addEventListener('input', () => runSearch());
+
+    results.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-section-result]');
+      if (!button) return;
+      if (jumpToSectionResult(button.dataset.sectionResult)) {
+        results.hidden = true;
+      }
     });
+
+    const params = new URLSearchParams(window.location.search);
+    const initialQuery = params.get('fcSearch');
+    if (initialQuery) {
+      input.value = initialQuery;
+      let attempts = 0;
+      const trySearchAndJump = () => {
+        attempts += 1;
+        const found = runSearch({ autoJump: true });
+        if (!found && attempts < 10) window.setTimeout(trySearchAndJump, 300);
+      };
+      window.setTimeout(trySearchAndJump, 150);
+    }
+  }
+
+  function placePageSearch(shell) {
+    const search = shell.querySelector('[data-page-search-shell]');
+    const mount = shell.querySelector('.page-mount');
+    if (!search || !mount) return;
+
+    const toolbar = mount.querySelector('.toolbar');
+    if (toolbar) {
+      const row = document.createElement('div');
+      row.className = 'section-search-row';
+      toolbar.insertAdjacentElement('afterend', row);
+      row.appendChild(search);
+      return;
+    }
+
+    const page = mount.querySelector('.page');
+    const hero = page && page.querySelector('.hero-row');
+    if (hero) {
+      hero.insertAdjacentElement('afterend', search);
+      return;
+    }
+
+    mount.prepend(search);
   }
 
   const searchResources = [
@@ -217,12 +317,17 @@
     const results = document.querySelector('[data-global-search-results]');
     if (!input || !results) return;
     let timer;
+
+    function hideResults() {
+      results.hidden = true;
+      results.innerHTML = '';
+    }
+
     input.addEventListener('input', () => {
       window.clearTimeout(timer);
       const query = input.value.trim().toLowerCase();
       if (query.length < 2) {
-        results.hidden = true;
-        results.innerHTML = '';
+        hideResults();
         return;
       }
       timer = window.setTimeout(async () => {
@@ -240,8 +345,13 @@
             });
           } catch (error) {}
         }));
-        results.innerHTML = found.slice(0, 8).map((item) => `<a class="search-result" href="${resourceHref(item.key)}"><strong>${escape(item.title)}</strong><span>${escape(item.label)}</span></a>`).join('') || '<div class="search-result muted">No results found.</div>';
+        results.innerHTML = found.slice(0, 8).map((item) => `<a class="search-result" href="${resourceHref(item.key)}?fcSearch=${encodeURIComponent(query)}"><strong>${escape(item.title)}</strong><span>${escape(item.label)}</span></a>`).join('') || '<div class="search-result muted">No results found.</div>';
       }, 220);
+    });
+
+    document.addEventListener('click', (event) => {
+      if (event.target.closest('.global-search-shell')) return;
+      hideResults();
     });
   }
 
@@ -277,6 +387,7 @@
 
     const mount = shell.querySelector('.page-mount');
     content.forEach((node) => mount.appendChild(node));
+    placePageSearch(shell);
 
     document.body.appendChild(shell);
 

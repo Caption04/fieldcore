@@ -3,14 +3,22 @@
   <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Security Center · FieldCore</title><link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1"><script defer src="assets/layout.js"></script><script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script></head>
   <body data-page="security-center" data-title="Security Center">
     <section class="page">
-      <div class="hero-row"><div class="hero-copy"><p class="eyebrow">Enterprise controls</p><h2>Security Center</h2><p>Manage 2FA readiness, sessions, security events, identity providers, data exports, and operational status.</p></div><span class="api-status" data-status>Loading...</span></div>
+      <div class="hero-row"><div class="hero-copy"><p class="eyebrow">Owner / admin controls</p><h2>Security Center</h2><p>This is for the business owner or admin — not developers. Use it to control sign-in rules, check active sessions, and review security events.</p></div><span class="api-status" data-status>Loading...</span></div>
+      <section class="panel security-guide">
+        <div class="panel-head"><h3>What this page is for</h3><span class="badge blue">Admin</span></div>
+        <div class="compact-guide-grid">
+          <article class="mini-card"><strong>Sign-in policy</strong><span>Choose password length, session length, account lockout, and whether admins need 2FA.</span></article>
+          <article class="mini-card"><strong>Active sessions</strong><span>See which browsers/devices are signed in so stale access can be revoked later.</span></article>
+          <article class="mini-card"><strong>Audit trail</strong><span>Review important account/security events without exposing secrets.</span></article>
+        </div>
+      </section>
       <section class="grid two-column">
         <article class="panel"><div class="panel-head"><h3>Security settings</h3><span class="badge gray">Policy</span></div><p class="muted">Password, lockout, 2FA and retention policy defaults.</p><form data-security-form class="form-grid compact-form"><div class="field"><label>Session length hours</label><input name="sessionLengthHours" type="number" min="1" max="24" value="8"></div><div class="field"><label>Minimum password length</label><input name="passwordMinimum" type="number" min="8" max="128" value="8"></div><div class="field"><label>Lockout threshold</label><input name="failedLoginLockoutThreshold" type="number" min="3" max="20" value="5"></div><div class="field"><label>Lockout minutes</label><input name="lockoutDurationMinutes" type="number" min="5" max="1440" value="30"></div><label class="checkbox-field span-2"><input name="twoFactorRequired" type="checkbox"> Require 2FA for owner/admin users</label><div class="form-actions span-2"><button class="primary-button" type="submit">Save settings</button></div></form></article>
         <article class="panel"><div class="panel-head"><h3>My sessions</h3><button class="secondary-button compact" type="button" data-load-sessions>Refresh sessions</button></div><p class="muted">Revoke stale devices immediately after a role or password change.</p><div data-sessions class="settings-list"></div></article>
       </section>
       <section class="grid two-column">
-        <article class="panel"><div class="panel-head"><h3>2FA setup</h3><button class="secondary-button compact" type="button" data-enable-2fa>Enable 2FA</button></div><p class="muted">Foundation supports email-code/TOTP-ready setup and single-use recovery codes.</p><pre data-2fa-output class="code-block"></pre></article>
-        <article class="panel"><div class="panel-head"><h3>Ops status</h3><button class="secondary-button compact" type="button" data-load-status>Refresh status</button></div><pre data-status-output class="code-block"></pre></article>
+        <article class="panel"><div class="panel-head"><h3>2FA setup</h3><button class="secondary-button compact" type="button" data-enable-2fa>Enable 2FA</button></div><p class="muted">For production this should show a QR code/recovery codes. During QA it confirms the backend 2FA setup route works.</p><pre data-2fa-output class="code-block"></pre></article>
+        <article class="panel"><div class="panel-head"><h3>System health</h3><button class="secondary-button compact" type="button" data-load-status>Refresh status</button></div><p class="muted">Admin-safe health summary. It should never display API keys, tokens, or private credentials.</p><pre data-status-output class="code-block"></pre></article>
       </section>
       <section class="panel"><div class="panel-head"><h3>Security events</h3><button class="secondary-button compact" type="button" data-load-events>Load events</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Severity</th><th>Event</th><th>User</th></tr></thead><tbody data-events></tbody></table></div></section>
     </section>

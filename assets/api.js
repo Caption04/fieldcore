@@ -67,8 +67,17 @@
   }
 
   function setStatus(message, ok) {
+    const text = String(message == null ? '' : message);
+    const isRedundantConnectedState = ok === true && /^Connected(\s+as)?\b/i.test(text);
     document.querySelectorAll('[data-api-status]').forEach((node) => {
-      node.textContent = message;
+      if (isRedundantConnectedState) {
+        node.textContent = '';
+        node.hidden = true;
+        node.classList.remove('red');
+        return;
+      }
+      node.hidden = false;
+      node.textContent = text;
       node.classList.toggle('red', ok === false);
     });
   }
@@ -2733,24 +2742,75 @@
     const subscription = summary && summary.subscription || {};
     const plan = summary && summary.plan || {};
     const provider = summary && summary.provider || {};
-    const usageRows = summary && summary.usageRows || [];
-    const plans = summary && summary.plans || [];
-    const events = summary && summary.events || [];
+    const plans = (summary && summary.plans || []).filter((item) => item && item.isActive !== false);
     const status = subscription.status || 'UNKNOWN';
-    const statusBadge = '<span class="badge ' + (status === 'ACTIVE' || status === 'FREE_INTERNAL' ? 'green' : status === 'TRIALING' ? 'blue' : 'gray') + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span>';
-    const trial = subscription.trialDaysRemaining == null ? '-' : subscription.trialDaysRemaining + ' days';
-    const period = [formatDate(subscription.currentPeriodStart), formatDate(subscription.currentPeriodEnd)].filter(Boolean).join(' - ') || '-';
-    const providerText = provider.configured ? (provider.mode === 'manual' ? 'Manual/internal mode' : 'Configured') : 'Provider not configured';
-    const limitLabel = (key) => String(key || '').replace(/^max/, '').replace(/([A-Z])/g, ' $1').trim() || '-';
-    const formatPlanPrice = (item) => escapeHtml(item.currency || 'USD') + ' ' + escapeHtml(item.price == null ? '-' : item.price);
-    const usageTable = usageRows.length ? '<div class="billing-table table-scroll"><table><thead><tr><th>Usage</th><th>Used</th><th>Limit</th></tr></thead><tbody>' + usageRows.map((row) => '<tr><td>' + escapeHtml(limitLabel(row.key)) + '</td><td>' + escapeHtml(row.used == null ? 'Unknown' : row.used) + '</td><td>' + escapeHtml(row.unlimited ? 'Unlimited' : row.limit) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No usage limits.</strong><span>This plan is currently unlimited.</span></div></div>';
-    const planCards = plans.length ? plans.map((item) => {
-      const isCurrent = item.id === subscription.planId;
-      return '<div class="billing-plan-card' + (isCurrent ? ' current' : '') + '"><div class="billing-plan-head"><div><strong>' + escapeHtml(item.name) + '</strong><span>' + escapeHtml(item.description || '') + '</span></div>' + (isCurrent ? '<span class="badge green">Current</span>' : '') + '</div><div class="billing-plan-price"><strong>' + formatPlanPrice(item) + '</strong><span>/' + escapeHtml(item.interval || 'month') + '</span></div><div class="billing-plan-actions"><button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="primary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button></div></div>';
-    }).join('') : '<div class="empty-state compact-empty billing-plan-empty"><div><strong>No available plans.</strong><span>Plan options will appear once billing is configured.</span></div></div>';
-    const eventsTable = events.length ? '<div class="billing-table table-scroll"><table><thead><tr><th>Event</th><th>Status</th><th>Provider</th><th>Time</th></tr></thead><tbody>' + events.slice(0, 8).map((event) => '<tr><td>' + escapeHtml(event.eventType || '-') + '</td><td>' + escapeHtml(event.status || '-') + '</td><td>' + escapeHtml(event.provider || '-') + '</td><td>' + escapeHtml(formatDateTime(event.createdAt)) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty-state compact-empty"><div><strong>No billing events yet.</strong><span>Checkout and plan changes will appear here.</span></div></div>';
+    const statusBadge = '<span class="badge ' + (status === 'ACTIVE' || status === 'FREE_INTERNAL' ? 'green' : status === 'TRIALING' ? 'blue' : status === 'PAST_DUE' ? 'orange' : 'gray') + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span>';
+    const currentPlanId = plan.id || subscription.planId;
+    const currentPlan = plans.find((item) => item.id === currentPlanId) || plan;
+    const effectivePrice = (item) => item && item.features && item.features.customPricing ? Number.POSITIVE_INFINITY : Number(item && item.price || 0);
+    const currentPrice = effectivePrice(currentPlan);
+    const sortedPlans = plans.slice().sort((a, b) => effectivePrice(a) - effectivePrice(b));
+    const upgradePlans = sortedPlans.filter((item) => item.id !== currentPlanId && effectivePrice(item) > currentPrice);
+    const providerText = provider.configured ? (provider.mode === 'manual' ? 'Manual/internal billing mode' : 'Billing provider configured') : 'Billing provider not configured yet';
+    const interval = plan.interval || subscription.interval || 'month';
+    const nextBillingDate = formatDate(subscription.currentPeriodEnd || subscription.trialEndsAt);
+    const trial = subscription.trialDaysRemaining == null ? null : subscription.trialDaysRemaining + ' days remaining';
+    const planPriceText = (item) => item && item.features && item.features.customPricing ? 'Contact us' : (item && item.currency || 'USD') + ' ' + (item && item.price == null ? '-' : item.price) + '/' + (item && item.interval || interval);
+    const priceText = planPriceText(plan);
     const cancelAction = subscription.id ? '<button class="secondary-button compact" type="button" data-billing-cancel>Cancel Plan</button>' : '';
-    card.innerHTML = '<div class="panel-head billing-main-head"><div><h3>FieldCore Subscription</h3><p>' + escapeHtml(providerText) + '</p></div>' + statusBadge + '</div><div class="billing-summary-grid"><div class="billing-summary-item"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(plan.interval ? 'Billed every ' + plan.interval : 'No billing interval') + '</small></div><div class="billing-summary-item"><span>Trial Remaining</span><strong>' + escapeHtml(trial) + '</strong><small>Managed by FieldCore</small></div><div class="billing-summary-item"><span>Billing Period</span><strong>' + escapeHtml(period) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Cancels at period end' : 'Active billing window') + '</small></div></div><div class="billing-section"><div class="billing-section-head"><h3>Usage</h3><span class="badge gray">Company scoped</span></div>' + usageTable + '</div><div class="billing-section"><div class="billing-section-head"><h3>Available Plans</h3>' + cancelAction + '</div><div class="billing-plan-grid">' + planCards + '</div></div><div class="billing-section"><div class="billing-section-head"><h3>Billing Events</h3><span class="badge gray">No secrets</span></div>' + eventsTable + '</div><p class="fc-form-error billing-message" data-billing-message hidden></p>';
+
+    const limitNames = {
+      maxUsers: 'more office/admin users',
+      maxWorkers: 'more field workers',
+      maxClients: 'more client records',
+      maxJobsPerMonth: 'more jobs per month',
+      maxPublicBookingsPerMonth: 'more public bookings',
+      maxStorageMb: 'more storage',
+      maxWhatsAppNotificationsPerMonth: 'higher WhatsApp volume',
+      maxEmailNotificationsPerMonth: 'higher email volume'
+    };
+    const featureNames = {
+      whatsappNotifications: 'WhatsApp notifications',
+      advancedReports: 'advanced reports',
+      customBranding: 'custom branding',
+      multiLocation: 'multi-location controls',
+      apiAccess: 'API access',
+      proofOfWork: 'proof-of-work records',
+      clientPortal: 'client portal',
+      publicBookingPortal: 'public booking portal',
+      annualFirst: 'annual-first commercial terms',
+      implementationFee: 'implementation and training package'
+    };
+    const benefitsFor = (target) => {
+      const benefits = [];
+      const currentLimits = currentPlan && currentPlan.limits || {};
+      const targetLimits = target && target.limits || {};
+      Object.keys(limitNames).forEach((key) => {
+        const currentValue = currentLimits[key];
+        const targetValue = targetLimits[key];
+        if (benefits.length >= 5) return;
+        if (targetValue == null && currentValue != null) benefits.push('unlimited ' + limitNames[key]);
+        else if (Number(targetValue || 0) > Number(currentValue || 0)) benefits.push(limitNames[key]);
+      });
+      const currentFeatures = currentPlan && currentPlan.features || {};
+      const targetFeatures = target && target.features || {};
+      Object.keys(featureNames).forEach((key) => {
+        if (benefits.length >= 5) return;
+        if (!currentFeatures[key] && targetFeatures[key]) benefits.push(featureNames[key]);
+      });
+      if (!benefits.length && target.description) benefits.push(target.description);
+      return benefits.slice(0, 5);
+    };
+    const upgradeCards = upgradePlans.length ? upgradePlans.map((item) => {
+      const benefits = benefitsFor(item);
+      const benefitList = benefits.length ? '<ul class="billing-benefit-list">' + benefits.map((benefit) => '<li>' + escapeHtml(benefit) + '</li>').join('') + '</ul>' : '<p class="muted">Higher limits and workspace capacity.</p>';
+      const isCustom = Boolean(item.features && item.features.customPricing);
+      const annualNote = item.features && item.features.annualFirst ? '<small class="billing-plan-note">Annual-first. Onboarding/training scoped separately.</small>' : '';
+      const action = isCustom ? '<button class="primary-button compact" type="button" data-billing-contact="' + escapeHtml(item.id) + '">Contact us</button>' : '<button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="primary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button>';
+      return '<div class="billing-upgrade-card"><div class="billing-plan-head"><div><strong>' + escapeHtml(item.name) + '</strong><span>' + escapeHtml(item.description || 'Upgrade your FieldCore workspace.') + '</span></div></div><div class="billing-plan-price"><strong>' + escapeHtml(planPriceText(item)) + '</strong></div>' + annualNote + benefitList + '<div class="billing-plan-actions">' + action + '</div></div>';
+    }).join('') : '<div class="empty-state compact-empty"><div><strong>No upgrade available.</strong><span>This workspace is already on the highest available plan.</span></div></div>';
+
+    card.innerHTML = '<div class="panel-head billing-main-head"><div><h3>FieldCore Subscription</h3><p>' + escapeHtml(providerText) + '</p></div>' + statusBadge + '</div><div class="billing-essential-grid"><div class="billing-summary-item"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(priceText) + '</small></div><div class="billing-summary-item"><span>Billing Cycle</span><strong>' + escapeHtml(interval ? 'Every ' + interval : 'Not set') + '</strong><small>' + escapeHtml(nextBillingDate === '-' ? 'Next billing date not set' : 'Next bill: ' + nextBillingDate) + '</small></div><div class="billing-summary-item"><span>Trial / Renewal</span><strong>' + escapeHtml(trial || (subscription.cancelAtPeriodEnd ? 'Cancelling' : 'Active')) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Ends at current period close' : 'Managed by FieldCore') + '</small></div></div><div class="billing-section billing-upgrade-section"><div class="billing-section-head"><div><h3>Upgrade Benefits</h3><p class="muted">Only the useful plan differences are shown here.</p></div>' + cancelAction + '</div><div class="billing-upgrade-grid">' + upgradeCards + '</div></div><p class="fc-form-error billing-message" data-billing-message hidden></p>';
     bindBillingActions();
   }
 
@@ -2786,6 +2846,9 @@
     });
     const cancel = document.querySelector('[data-billing-cancel]');
     if (cancel) cancel.onclick = () => run(() => api('/billing/cancel', { method: 'POST', body: JSON.stringify({}) }));
+    document.querySelectorAll('[data-billing-contact]').forEach((button) => {
+      button.onclick = () => showToast('Enterprise is custom priced. Contact FieldCore to scope onboarding, integrations, SLA controls, and annual terms.', true);
+    });
   }
 
   function financePayload(form) {
