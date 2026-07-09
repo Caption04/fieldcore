@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { createPayFastProvider } = require('./providers/payfast.provider');
 const { createYocoProvider } = require('./providers/yoco.provider');
 const { createOzowProvider } = require('./providers/ozow.provider');
+const { createPaynowProvider } = require('./providers/paynow.provider');
 const { createManualProvider } = require('./providers/manual.provider');
 
 const PROVIDERS = ['PAYFAST', 'YOCO', 'OZOW', 'PAYNOW', 'SNAPSCAN', 'ZAPPER', 'STRIPE', 'MANUAL_BANK', 'ECOCASH_MANUAL', 'MOCK'];
@@ -10,6 +11,7 @@ function createPaymentProvider(provider, options = {}) {
   if (provider === 'PAYFAST') return createPayFastProvider(options);
   if (provider === 'YOCO') return createYocoProvider(options);
   if (provider === 'OZOW') return createOzowProvider(options);
+  if (provider === 'PAYNOW') return createPaynowProvider(options);
   return createManualProvider({ ...options, provider });
 }
 
@@ -27,7 +29,7 @@ function signPayload(secret, payload) {
 function verifySharedSecretWebhook(connection, req) {
   const secret = connection && connection.config && connection.config.webhookSecret;
   if (!secret) return Boolean(connection && connection.config && connection.config.mockMode);
-  const signature = req.headers['x-fieldcore-payment-signature'] || req.headers['x-payfast-signature'] || req.headers['x-yoco-signature'] || req.headers['x-ozow-signature'];
+  const signature = req.headers['x-fieldcore-payment-signature'] || req.headers['x-payfast-signature'] || req.headers['x-yoco-signature'] || req.headers['x-ozow-signature'] || req.headers['x-paynow-signature'];
   return safeCompare(signPayload(secret, req.body || {}), signature);
 }
 

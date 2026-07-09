@@ -11,6 +11,15 @@ dependencies:
     sdk: flutter
   http: ^1.2.2
   shared_preferences: ^2.3.2
+  geolocator: ^13.0.2
+  # Keep image_picker pinned so AndroidX does not jump ahead of AGP 8.6.0.
+  image_picker: 1.1.2
+  http_parser: ^4.0.2
+
+dependency_overrides:
+  # image_picker_android 0.8.13+ pulls AndroidX versions that require AGP 8.9.1+.
+  # FieldCore currently stays on AGP 8.6.0, so use the latest 0.8.12 patch line.
+  image_picker_android: 0.8.12+18
 
 dev_dependencies:
   flutter_test:

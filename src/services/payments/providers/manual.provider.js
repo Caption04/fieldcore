@@ -1,3 +1,29 @@
+const crypto = require('crypto');
+
+function safeCompare(expected, actual) {
+  const left = Buffer.from(String(expected || ''), 'hex');
+  const right = Buffer.from(String(actual || ''), 'hex');
+  if (!left.length || left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function signPayload(secret, payload) {
+  return crypto.createHmac('sha256', String(secret || '')).update(JSON.stringify(payload || {})).digest('hex');
+}
+
+function verifyManualWebhook(connection, req, mockMode) {
+  const secret = connection && connection.config && connection.config.webhookSecret;
+  if (!secret) return mockMode;
+  const signature = req && req.headers && (
+    req.headers['x-fieldcore-payment-signature'] ||
+    req.headers['x-payfast-signature'] ||
+    req.headers['x-yoco-signature'] ||
+    req.headers['x-ozow-signature'] ||
+    req.headers['x-paynow-signature']
+  );
+  return safeCompare(signPayload(secret, req && req.body || {}), signature);
+}
+
 function createManualProvider({ provider = 'MANUAL_BANK', connection = {} } = {}) {
   const mockMode = Boolean(connection && connection.config && connection.config.mockMode) || provider === 'MOCK';
   return {
@@ -18,7 +44,7 @@ function createManualProvider({ provider = 'MANUAL_BANK', connection = {} } = {}
         invoiceId: invoice && invoice.id
       };
     },
-    verifyWebhook() { return mockMode; },
+    verifyWebhook(req) { return verifyManualWebhook(connection, req, mockMode); },
     async handleWebhookEvent(payload = {}) {
       return {
         eventId: payload.eventId || payload.id || null,

@@ -1,46 +1,56 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FieldCore Live Map</title>
     <link rel="stylesheet" href="assets/app.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQbTMCV8d6vEMKLFQbOhVNX4Me0RMgM=" crossorigin="">
     <script defer src="assets/layout.js"></script>
     <script defer src="assets/api.js?v=worker-activity-notes-1"></script>
+    <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script defer src="assets/map.js?v=real-worker-map-1"></script>
   </head>
   <body data-page="map" data-title="Map">
     <section class="page">
       <div class="hero-row">
         <div class="hero-copy">
           <h2>Live Map</h2>
-          <p>Worker locations will show here after location tracking is connected.</p>
+          <p>Track real worker location updates from the technician app. No demo pins or fake routes are shown.</p>
         </div>
-        <span class="api-status" data-api-status>Connecting...</span>
+        <div class="map-actions">
+          <button class="secondary-button" type="button" data-map-refresh>Refresh Map</button>
+          <span class="api-status" data-api-status>Connecting...</span>
+        </div>
       </div>
-      <section class="map-layout">
-        <div class="map-canvas">
-          <div class="map-road" style="left:10%;top:28%;width:78%;transform:rotate(-12deg)">
-          </div>
-          <div class="map-road" style="left:18%;top:58%;width:70%;transform:rotate(18deg)">
-          </div>
-          <div class="map-road" style="left:42%;top:12%;width:14%;height:78%;transform:rotate(8deg)">
-          </div>
-          <div class="zero-map">
+      <section class="map-layout real-map-layout">
+        <div class="map-canvas real-map-canvas">
+          <div id="worker-map" class="leaflet-worker-map" aria-label="Live worker map"></div>
+          <div class="zero-map" data-map-empty>
             <div>
               <strong>No live locations</strong>
-              <span>Connect a maps/location provider to show workers here.</span>
+              <span>No workers have reported a location yet.</span>
             </div>
           </div>
-        </div>
-        <aside class="panel">
-          <div class="panel-head">
-            <h3>Live Workers</h3>
-            <span class="badge gray">0 Online</span>
+          <div class="map-error" data-map-error hidden>
+            <strong>Map unavailable</strong>
+            <span data-map-error-text>Unable to load worker locations.</span>
           </div>
-          <div class="empty-state">
+        </div>
+        <aside class="panel live-workers-panel">
+          <div class="panel-head">
             <div>
-              <strong>No workers found</strong>
-              <span>The fake workers API is empty.</span>
+              <h3>Live Workers</h3>
+              <p data-map-updated>Waiting for locations...</p>
+            </div>
+            <span class="badge gray" data-worker-online-count>0 Online</span>
+          </div>
+          <div class="worker-map-summary" data-worker-map-summary>
+            <div class="empty-state compact-empty-state">
+              <div>
+                <strong>No workers found</strong>
+                <span>Locations will appear after a technician sends GPS from the mobile app.</span>
+              </div>
             </div>
           </div>
         </aside>
@@ -48,4 +58,3 @@
     </section>
   </body>
 </html>
-

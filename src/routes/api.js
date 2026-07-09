@@ -1418,13 +1418,28 @@ async function processOfflineAction(tx, req, queue, action, device) {
   }
   if (action.actionType === 'LOCATION_CAPTURED' || action.actionType === 'GPS_CHECKPOINT') {
     if (payload.latitude == null || payload.longitude == null) throw new AppError(400, 'latitude and longitude are required');
+    const latitude = Number(payload.latitude);
+    const longitude = Number(payload.longitude);
+    const accuracy = payload.accuracy == null ? undefined : Number(payload.accuracy);
+    const source = payload.source || 'OFFLINE_SYNC';
     const location = await tx.jobCompletionLocation.upsert({
       where: { jobId: job.id },
-      update: { capturedById: req.user.id, latitude: Number(payload.latitude), longitude: Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), source: payload.source || 'OFFLINE_SYNC', capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, syncId: meta.syncId },
-      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude: Number(payload.latitude), longitude: Number(payload.longitude), accuracy: payload.accuracy == null ? undefined : Number(payload.accuracy), source: payload.source || 'OFFLINE_SYNC', capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, syncId: meta.syncId }
+      update: { capturedById: req.user.id, latitude, longitude, accuracy, source, capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, syncId: meta.syncId },
+      create: { companyId: req.companyId, jobId: job.id, capturedById: req.user.id, latitude, longitude, accuracy, source, capturedAt: now, offlineCreatedAt: meta.offlineCreatedAt, deviceId: meta.deviceId, syncId: meta.syncId }
     });
-    await addJobActivity(tx, req, job, 'COMPLETION_LOCATION_CAPTURED', null, { offline: true, locationId: location.id }, meta);
-    return { jobId: job.id, locationId: location.id };
+    const workerLocation = await tx.workerLocation.create({
+      data: {
+        companyId: req.companyId,
+        workerId: req.user.worker.id,
+        latitude,
+        longitude,
+        accuracyMeters: accuracy,
+        source,
+        recordedAt: now
+      }
+    });
+    await addJobActivity(tx, req, job, 'COMPLETION_LOCATION_CAPTURED', null, { offline: true, locationId: location.id, workerLocationId: workerLocation.id }, meta);
+    return { jobId: job.id, locationId: location.id, workerLocationId: workerLocation.id };
   }
   if (action.actionType === 'PROOF_PHOTO_UPLOADED') {
     if (!payload.url) throw new AppError(400, 'proof photo url is required');
@@ -3002,38 +3017,49 @@ router.post('/finance/webhooks/:provider/:companyId', validate(financeWebhookPar
 }));
 
 
-router.post('/payment-webhooks/:provider/:companyId', validate(paymentWebhookParam, 'params'), asyncHandler(async (req, res) => {
-  const connection = await prisma.paymentProviderConnection.findFirst({ where: { companyId: req.params.companyId, provider: req.params.provider } });
-  if (!connection || connection.status === 'DISABLED') throw notFound('Payment provider connection not found');
-  const signatureValid = verifySharedSecretWebhook(connection, req);
-  const eventId = req.body && (req.body.eventId || req.body.id || req.body.providerPaymentId) || null;
-  if (!signatureValid) {
-    await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId, eventType: req.body && (req.body.eventType || req.body.type) || null, status: 'REJECTED', signatureValid: false, payload: req.body || {}, errorMessage: 'Invalid webhook signature' } });
-    throw new AppError(401, 'Invalid payment webhook signature');
-  }
-  if (eventId) {
-    const existingEvent = await prisma.paymentProviderEvent.findFirst({ where: { companyId: connection.companyId, provider: connection.provider, eventId } });
-    if (existingEvent && existingEvent.status === 'PROCESSED') {
-      const duplicate = await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId, eventType: req.body && (req.body.eventType || req.body.type) || 'duplicate', status: 'DUPLICATE', signatureValid: true, payload: req.body || {} } });
-      return sendData(res, normalize({ duplicate: true, event: duplicate }));
+
+function paymentMethodForProvider(provider) {
+  if (provider === 'PAYFAST') return 'PAYFAST';
+  if (provider === 'YOCO') return 'YOCO';
+  if (provider === 'OZOW') return 'OZOW';
+  if (provider === 'PAYNOW') return 'PAYNOW';
+  return 'EXTERNAL_PAYMENT_LINK';
+}
+
+function confirmedProviderStatus(status) {
+  return ['CONFIRMED', 'PAID', 'SUCCESS', 'SUCCEEDED', 'SUCCESSFUL', 'COMPLETE', 'COMPLETED'].includes(String(status || '').toUpperCase());
+}
+
+function failedProviderStatus(status) {
+  return ['FAILED', 'FAILURE', 'CANCELLED', 'CANCELED', 'ERROR', 'DECLINED', 'DISPUTED', 'EXPIRED'].includes(String(status || '').toUpperCase());
+}
+
+async function applyPaymentProviderUpdate({ connection, parsed = {}, raw = {}, eventId = null, signatureValid = true }) {
+  const finalEventId = parsed.eventId || eventId || null;
+  if (finalEventId) {
+    const existingEvent = await prisma.paymentProviderEvent.findFirst({ where: { companyId: connection.companyId, provider: connection.provider, eventId: finalEventId, status: 'PROCESSED' } });
+    if (existingEvent) {
+      const duplicate = await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId: finalEventId, eventType: parsed.eventType || 'payment.duplicate', status: 'DUPLICATE', signatureValid, payload: raw || {} } });
+      return { duplicate: true, event: duplicate, payment: null, link: null };
     }
   }
-  const provider = createPaymentProvider(connection.provider, { connection });
-  const parsed = await provider.handleWebhookEvent(req.body || {});
-  const reference = parsed.reference || (req.body && (req.body.reference || req.body.paymentReference));
+
+  const reference = parsed.reference || raw && (raw.reference || raw.Reference || raw.paymentReference || raw.TransactionReference) || null;
   const link = reference ? await prisma.paymentLink.findFirst({ where: { companyId: connection.companyId, reference } }) : null;
   let payment = null;
   let invoice = null;
   let eventStatus = 'PROCESSED';
+  let errorMessage = null;
+
   if (!link) {
-    await createOrFlagReconciliationItem({ companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, providerPaymentId: parsed.providerPaymentId || eventId, reference, amount: parsed.amount || 0, currency: parsed.currency || 'USD', paidAt: new Date(), raw: req.body || {}, status: 'UNMATCHED' });
-  } else if (['CONFIRMED', 'PAID', 'SUCCESS', 'SUCCEEDED'].includes(String(parsed.status || '').toUpperCase())) {
+    await createOrFlagReconciliationItem({ companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, providerPaymentId: parsed.providerPaymentId || finalEventId, reference, amount: parsed.amount || 0, currency: parsed.currency || 'USD', paidAt: new Date(), raw: raw || {}, status: 'UNMATCHED' });
+  } else if (confirmedProviderStatus(parsed.status)) {
     invoice = await prisma.invoice.findFirst({ where: { id: link.invoiceId, companyId: connection.companyId } });
     if (!invoice) throw notFound('Invoice not found');
-    const duplicatePayment = parsed.providerPaymentId ? await prisma.payment.findFirst({ where: { companyId: connection.companyId, provider: connection.provider, providerPaymentId: parsed.providerPaymentId } }) : null;
+    const duplicatePayment = await prisma.payment.findFirst({ where: { companyId: connection.companyId, OR: [ ...(parsed.providerPaymentId ? [{ provider: connection.provider, providerPaymentId: parsed.providerPaymentId }] : []), { paymentLinkId: link.id, status: 'CONFIRMED' } ] } });
     if (!duplicatePayment) {
       payment = await prisma.$transaction(async (tx) => {
-        const created = await tx.payment.create({ data: { companyId: connection.companyId, branchId: invoice.branchId || link.branchId || null, invoiceId: invoice.id, amount: parsed.amount || link.amount, method: link.provider === 'PAYFAST' ? 'PAYFAST' : link.provider === 'YOCO' ? 'YOCO' : link.provider === 'OZOW' ? 'OZOW' : link.provider === 'PAYNOW' ? 'PAYNOW' : 'EXTERNAL_PAYMENT_LINK', status: 'CONFIRMED', reference: link.reference, provider: link.provider, providerPaymentId: parsed.providerPaymentId || eventId || null, paymentLinkId: link.id, receivedAt: new Date(), confirmedAt: new Date(), notes: 'Confirmed by trusted payment provider webhook' } });
+        const created = await tx.payment.create({ data: { companyId: connection.companyId, branchId: invoice.branchId || link.branchId || null, invoiceId: invoice.id, amount: parsed.amount || link.amount, method: paymentMethodForProvider(link.provider), status: 'CONFIRMED', reference: link.reference, provider: link.provider, providerPaymentId: parsed.providerPaymentId || finalEventId || null, paymentLinkId: link.id, receivedAt: new Date(), confirmedAt: new Date(), notes: 'Confirmed by verified payment provider update' } });
         await tx.paymentLink.update({ where: { id: link.id }, data: { status: 'PAID', paidAt: new Date(), externalId: parsed.providerPaymentId || link.externalId } });
         if (link.quoteId) await tx.quote.update({ where: { id: link.quoteId }, data: { depositPaidAt: new Date() } });
         await createReceiptForPayment(tx, created, invoice);
@@ -3041,13 +3067,62 @@ router.post('/payment-webhooks/:provider/:companyId', validate(paymentWebhookPar
         return created;
       });
     } else {
+      payment = duplicatePayment;
       eventStatus = 'DUPLICATE';
     }
-  } else if (link) {
+  } else if (link && failedProviderStatus(parsed.status)) {
     await prisma.paymentLink.update({ where: { id: link.id }, data: { status: 'FAILED' } });
+  } else if (link) {
+    await prisma.paymentLink.update({ where: { id: link.id }, data: { status: link.status === 'PAID' ? 'PAID' : 'PENDING' } });
   }
-  const event = await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId: parsed.eventId || eventId, eventType: parsed.eventType || req.body && (req.body.eventType || req.body.type) || 'payment.webhook', status: eventStatus, signatureValid: true, paymentLinkId: link && link.id || null, invoiceId: invoice && invoice.id || link && link.invoiceId || null, paymentId: payment && payment.id || null, payload: req.body || {}, processedAt: new Date() } });
-  sendData(res, normalize({ received: true, event, payment }));
+
+  const event = await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId: finalEventId, eventType: parsed.eventType || raw && (raw.eventType || raw.type) || 'payment.provider_update', status: eventStatus, signatureValid, paymentLinkId: link && link.id || null, invoiceId: invoice && invoice.id || link && link.invoiceId || null, paymentId: payment && payment.id || null, payload: raw || {}, errorMessage, processedAt: new Date() } });
+  return { duplicate: eventStatus === 'DUPLICATE', event, payment, link };
+}
+
+function paymentReturnHtml({ provider, reference, status, message }) {
+  const safe = (value) => String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment status</title><style>body{font-family:Inter,system-ui,sans-serif;background:#071426;color:#eaf6ff;display:grid;place-items:center;min-height:100vh;margin:0}.card{width:min(520px,92vw);background:#0d213b;border:1px solid rgba(125,211,252,.25);border-radius:24px;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.35)}.badge{display:inline-flex;padding:8px 12px;border-radius:999px;background:#12385f;color:#7dd3fc;font-weight:700}h1{margin:18px 0 8px;font-size:28px}p{color:#bfd4e8;line-height:1.5}.ref{font-family:ui-monospace,monospace;background:#08182c;border-radius:12px;padding:12px;overflow:auto}</style></head><body><main class="card"><span class="badge">' + safe(provider) + '</span><h1>' + safe(status || 'Payment pending') + '</h1><p>' + safe(message || 'Your payment update has been received. You may close this page and return to the portal.') + '</p><div class="ref">Reference: ' + safe(reference || '-') + '</div></main></body></html>';
+}
+
+router.post('/payment-webhooks/:provider/:companyId', validate(paymentWebhookParam, 'params'), asyncHandler(async (req, res) => {
+  const connection = await prisma.paymentProviderConnection.findFirst({ where: { companyId: req.params.companyId, provider: req.params.provider } });
+  if (!connection || connection.status === 'DISABLED') throw notFound('Payment provider connection not found');
+  const provider = createPaymentProvider(connection.provider, { connection });
+  const signatureValid = provider.verifyWebhook ? await provider.verifyWebhook(req) : verifySharedSecretWebhook(connection, req);
+  const rawEventId = req.body && (req.body.eventId || req.body.id || req.body.providerPaymentId || req.body.paynowreference || req.body.PaynowReference || req.body.TransactionId || req.body.transactionId) || null;
+  if (!signatureValid) {
+    await prisma.paymentProviderEvent.create({ data: { companyId: connection.companyId, providerConnectionId: connection.id, provider: connection.provider, eventId: rawEventId, eventType: req.body && (req.body.eventType || req.body.type) || null, status: 'REJECTED', signatureValid: false, payload: req.body || {}, errorMessage: 'Invalid webhook signature' } });
+    throw new AppError(401, 'Invalid payment webhook signature');
+  }
+  const parsed = await provider.handleWebhookEvent(req.body || {});
+  const result = await applyPaymentProviderUpdate({ connection, parsed, raw: req.body || {}, eventId: rawEventId, signatureValid: true });
+  sendData(res, normalize({ received: true, duplicate: Boolean(result.duplicate), event: result.event, payment: result.payment }));
+}));
+
+router.get('/payment-return/:provider/:companyId', validate(paymentWebhookParam, 'params'), asyncHandler(async (req, res) => {
+  const connection = await prisma.paymentProviderConnection.findFirst({ where: { companyId: req.params.companyId, provider: req.params.provider } });
+  if (!connection || connection.status === 'DISABLED') throw notFound('Payment provider connection not found');
+  const reference = req.query.reference || req.query.Reference || req.query.TransactionReference || null;
+  const link = reference ? await prisma.paymentLink.findFirst({ where: { companyId: connection.companyId, reference: String(reference) } }) : null;
+  let status = link && link.status || 'PENDING';
+  let message = 'Your payment is pending. If you completed payment, refresh the portal shortly.';
+  if (link) {
+    const provider = createPaymentProvider(connection.provider, { connection });
+    try {
+      const parsed = provider.getPaymentStatus ? await provider.getPaymentStatus(link) : { status: link.status, reference: link.reference };
+      parsed.reference = parsed.reference || link.reference;
+      if (confirmedProviderStatus(parsed.status) || failedProviderStatus(parsed.status)) await applyPaymentProviderUpdate({ connection, parsed, raw: { source: 'payment-return', reference: link.reference }, eventId: parsed.eventId || null, signatureValid: true });
+      const updated = await prisma.paymentLink.findFirst({ where: { id: link.id } });
+      status = updated && updated.status || status;
+      message = status === 'PAID' ? 'Payment confirmed. Thank you.' : status === 'FAILED' ? 'Payment failed or was cancelled. Please try again or contact the business.' : message;
+    } catch (error) {
+      message = 'Payment return received, but status could not be verified yet. Please refresh the portal shortly.';
+    }
+  } else {
+    message = 'Payment return received, but the payment reference was not found.';
+  }
+  res.status(200).type('html').send(paymentReturnHtml({ provider: req.params.provider, reference, status, message }));
 }));
 
 router.use(requireAuth);
@@ -3393,7 +3468,7 @@ router.get('/payment-links', requireRole(...adminRoles), asyncHandler(async (req
 }));
 
 router.post('/invoices/:id/payment-links', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentLinkSchema), asyncHandler(async (req, res) => {
-  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { quote: true } });
+  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { quote: true, customer: true } });
   if (!invoice) throw notFound('Invoice not found');
   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Payment links can only be generated for open invoices');
   const providerName = req.body.provider || 'MOCK';
@@ -7336,15 +7411,96 @@ router.post('/recurring-jobs/:id/generate-next', requireRole(...adminRoles), val
   sendData(res, normalize({ job: generatedJob, schedule, conflicts }), 201);
 }));
 
-router.post('/worker-location', requireRole('WORKER'), validate(z.object({ latitude: z.coerce.number(), longitude: z.coerce.number() })), asyncHandler(async (req, res) => {
+const workerLocationSchema = z.object({
+  latitude: z.coerce.number().min(-90).max(90),
+  longitude: z.coerce.number().min(-180).max(180),
+  accuracy: z.coerce.number().nonnegative().max(100000).optional(),
+  accuracyMeters: z.coerce.number().nonnegative().max(100000).optional(),
+  capturedAt: optionalDate,
+  source: optionalText(80),
+  jobId: optionalText(160)
+});
+
+function workerMapStatus(recordedAt) {
+  const timestamp = new Date(recordedAt).getTime();
+  if (!Number.isFinite(timestamp)) return 'OFFLINE';
+  const ageMs = Date.now() - timestamp;
+  if (ageMs <= 5 * 60 * 1000) return 'ONLINE';
+  if (ageMs <= 30 * 60 * 1000) return 'RECENTLY_ACTIVE';
+  return 'OFFLINE';
+}
+
+router.post('/worker-location', requireRole('WORKER'), validate(workerLocationSchema), asyncHandler(async (req, res) => {
   if (!req.user.worker) throw new AppError(400, 'Worker profile required');
-  const data = await prisma.workerLocation.create({ data: { companyId: req.companyId, workerId: req.user.worker.id, latitude: req.body.latitude, longitude: req.body.longitude } });
-  sendData(res, normalize(data), 201);
+  const accuracyMeters = req.body.accuracyMeters == null ? req.body.accuracy : req.body.accuracyMeters;
+  const data = await prisma.workerLocation.create({
+    data: {
+      companyId: req.companyId,
+      workerId: req.user.worker.id,
+      latitude: req.body.latitude,
+      longitude: req.body.longitude,
+      accuracyMeters: accuracyMeters == null ? undefined : Number(accuracyMeters),
+      source: req.body.source || 'MOBILE_APP',
+      recordedAt: new Date()
+    }
+  });
+  sendData(res, normalize({ ...data, mapStatus: workerMapStatus(data.recordedAt) }), 201);
 }));
 router.get('/worker-location/latest', asyncHandler(async (req, res) => {
+  const pageInfo = pagination(req);
   const where = { companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) };
-  const result = await paged(prisma.workerLocation, req, { where, distinct: ['workerId'], orderBy: { recordedAt: 'desc' }, include: { worker: { include: SAFE_WORKER_INCLUDE } } });
-  sendData(res, normalize(result.data), 200, result.meta);
+  const locations = await prisma.workerLocation.findMany({
+    where,
+    orderBy: { recordedAt: 'desc' },
+    take: Math.min(pageInfo.take * 20, 1000),
+    include: {
+      worker: {
+        select: {
+          id: true,
+          title: true,
+          phone: true,
+          active: true,
+          branchId: true,
+          user: { select: SAFE_USER_SELECT },
+          role: { select: { id: true, name: true } },
+          branch: { select: { id: true, name: true } }
+        }
+      }
+    }
+  });
+
+  const latestByWorker = [];
+  const seenWorkers = new Set();
+  for (const location of locations) {
+    if (seenWorkers.has(location.workerId)) continue;
+    seenWorkers.add(location.workerId);
+    latestByWorker.push(location);
+    if (latestByWorker.length >= pageInfo.take) break;
+  }
+
+  const workerIds = latestByWorker.map((location) => location.workerId).filter(Boolean);
+  const activeJobs = workerIds.length ? await prisma.job.findMany({
+    where: {
+      companyId: req.companyId,
+      workerId: { in: workerIds },
+      status: { in: ['SCHEDULED', 'DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED', 'ON_HOLD'] }
+    },
+    select: { id: true, title: true, status: true, scheduledStart: true, scheduledEnd: true, workerId: true },
+    orderBy: [{ scheduledStart: 'asc' }, { createdAt: 'desc' }]
+  }) : [];
+  const activeJobByWorker = new Map();
+  for (const job of activeJobs) {
+    if (!activeJobByWorker.has(job.workerId)) activeJobByWorker.set(job.workerId, job);
+  }
+
+  const data = latestByWorker.map((location) => ({
+    ...location,
+    workerName: location.worker && location.worker.user ? location.worker.user.name || location.worker.user.email : undefined,
+    mapStatus: workerMapStatus(location.recordedAt),
+    activeJob: activeJobByWorker.get(location.workerId) || null
+  }));
+
+  sendData(res, normalize(data), 200, paginationMeta(pageInfo, latestByWorker.length));
 }));
 
 const photoSchema = z.object({ url: z.string().url().or(z.string().regex(/^\/uploads\/jobs\/proof\/[a-zA-Z0-9._-]+$/)), caption: optionalText(500), category: z.enum(proofCategoryValues).default('GENERAL') });

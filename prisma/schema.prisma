@@ -2221,6 +2221,8 @@ model WorkerLocation {
   workerId   String
   latitude   Float
   longitude  Float
+  accuracyMeters Float?
+  source     String        @default("MOBILE_APP")
   recordedAt DateTime      @default(now())
   company    Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   worker     WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)

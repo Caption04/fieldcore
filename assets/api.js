@@ -2534,13 +2534,15 @@
   async function loadIntegrations() {
     if (!document.querySelector('[data-integrations-card]')) return;
     try {
-      const [integrations, logs, storage] = await Promise.all([api('/admin/integrations'), api('/admin/integrations/message-logs').catch(() => []), api('/admin/integrations/storage-usage').catch(() => ({ usage: [], objects: [] }))]);
+      const [integrations, logs, storage, paymentProviders] = await Promise.all([api('/admin/integrations'), api('/admin/integrations/message-logs').catch(() => []), api('/admin/integrations/storage-usage').catch(() => ({ usage: [], objects: [] })), api('/payment-providers').catch(() => [])]);
       state.integrations = integrations;
+      state.paymentProviders = paymentProviders;
       state.messageLogs = logs;
       state.storageUsage = storage;
       renderIntegrations();
       renderProviderMessageLogs(logs);
       renderStorageUsage(storage);
+      renderPaymentProviders();
     } catch (error) {
       const card = document.querySelector('[data-integrations-card]');
       if (card) card.innerHTML = '<div class="empty-state"><div><strong>Integrations unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
@@ -2595,6 +2597,91 @@
     if (!card) return;
     const rows = (logs || []).slice(0, 25).map((item) => '<tr><td>' + escapeHtml(item.provider || '-') + '</td><td>' + escapeHtml(item.channel || '-') + '</td><td>' + badge(item.status || '-') + '</td><td>' + escapeHtml(item.recipientMasked || '-') + '</td><td>' + escapeHtml(item.providerMessageId || '-') + '</td><td>' + escapeHtml(formatDateTime(item.sentAt || item.failedAt || item.createdAt)) + '</td><td>' + escapeHtml(item.errorMessageSanitized || '') + '</td></tr>').join('');
     card.innerHTML = '<div class="panel-head card"><h3>Message Logs</h3><span class="badge gray">' + (logs || []).length + '</span></div>' + (rows ? '<div class="table-scroll"><table><thead><tr><th>Provider</th><th>Channel</th><th>Status</th><th>Recipient</th><th>Provider ID</th><th>Time</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<div class="empty-state"><div><strong>No provider messages yet.</strong><span>Email, WhatsApp, and SMS attempts will appear here.</span></div></div>');
+  }
+
+  const paymentProviderDefinitions = [
+    { provider: 'PAYNOW', title: 'Paynow Zimbabwe', initials: 'PN', note: 'Zimbabwe customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['resultUrl', 'Result/webhook URL'], ['returnUrl', 'Return URL'], ['authemail', 'Auth email']], secrets: [['integrationId', 'Integration ID'], ['integrationKey', 'Integration Key']] },
+    { provider: 'OZOW', title: 'Ozow South Africa', initials: 'OZ', note: 'South African customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['countryCode', 'Country code'], ['currencyCode', 'Currency code'], ['notifyUrl', 'Notify/webhook URL'], ['successUrl', 'Success URL'], ['errorUrl', 'Error URL'], ['cancelUrl', 'Cancel URL']], secrets: [['siteCode', 'Site Code'], ['apiKey', 'API Key'], ['privateKey', 'Private Key']] },
+    { provider: 'MOCK', title: 'Mock Provider', initials: 'MK', note: 'Controlled QA payment success/failure', config: [['mockMode', 'Mock mode: true/false'], ['webhookSecret', 'Webhook secret']], secrets: [['apiKey', 'Mock API key']] },
+    { provider: 'MANUAL_BANK', title: 'Manual Bank Transfer', initials: 'BT', note: 'Offline/manual bank transfer records', config: [['instructions', 'Instructions'], ['accountName', 'Account name'], ['bankName', 'Bank name'], ['accountNumber', 'Account number'], ['branchCode', 'Branch code']], secrets: [] }
+  ];
+
+  function paymentProviderByProvider(provider) {
+    return (state.paymentProviders || []).find((item) => item.provider === provider);
+  }
+
+  function paymentProviderPayload(form) {
+    const payload = { provider: form.dataset.paymentProviderForm, status: 'ACTIVE', config: {}, secrets: {} };
+    form.querySelectorAll('input[name^="config."], textarea[name^="config."]').forEach((field) => {
+      const key = field.name.replace('config.', '');
+      if (key === 'mockMode') payload.config[key] = String(field.value || '').toLowerCase() === 'true';
+      else payload.config[key] = field.value || '';
+    });
+    form.querySelectorAll('input[name^="secret."]').forEach((field) => {
+      if (field.value) payload.secrets[field.name.replace('secret.', '')] = field.value;
+    });
+    return payload;
+  }
+
+  function renderPaymentProviders() {
+    const card = document.querySelector('[data-payment-providers-card]');
+    if (!card) return;
+    card.innerHTML = '<div class="panel-head"><h3>Customer Payment Providers</h3><span class="badge gray">Tenant scoped</span></div>' + paymentProviderDefinitions.map((definition) => {
+      const item = paymentProviderByProvider(definition.provider) || {};
+      const config = item.config || {};
+      const status = item.status || 'DISCONNECTED';
+      const statusClass = status === 'ACTIVE' || status === 'CONFIGURED' ? 'green' : status === 'ERROR' ? 'red' : 'gray';
+      const configFields = definition.config.map(([key, label]) => {
+        const value = config[key] == null ? '' : config[key];
+        const input = String(label).toLowerCase().includes('instructions') ? '<textarea name="config.' + escapeHtml(key) + '">' + escapeHtml(value) + '</textarea>' : '<input name="config.' + escapeHtml(key) + '" value="' + escapeHtml(value) + '">';
+        return '<div class="field"><label>' + escapeHtml(label) + '</label>' + input + '</div>';
+      }).join('');
+      const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" placeholder="' + (item.id ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved if previously entered' : 'Not saved') + '"></div>').join('');
+      return '<form class="integration-card" data-payment-provider-form="' + escapeHtml(definition.provider) + '" data-payment-provider-id="' + escapeHtml(item.id || '') + '"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.note + (item.lastTestedAt ? ' / tested ' + formatDateTime(item.lastTestedAt) : ' / not tested')) + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span></div><div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save Provider</button><button class="secondary-button compact" type="button" data-payment-provider-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Test</button></div><p class="fc-form-error span-2" data-payment-provider-message hidden></p></div></form>';
+    }).join('');
+    bindPaymentProviderActions();
+  }
+
+  async function loadPaymentProviders() {
+    if (!document.querySelector('[data-payment-providers-card]')) return;
+    try {
+      state.paymentProviders = await api('/payment-providers');
+      renderPaymentProviders();
+    } catch (error) {
+      const card = document.querySelector('[data-payment-providers-card]');
+      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Payment providers unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+    }
+  }
+
+  function bindPaymentProviderActions() {
+    document.querySelectorAll('[data-payment-provider-form]').forEach((form) => {
+      form.onsubmit = async (event) => {
+        event.preventDefault();
+        const message = form.querySelector('[data-payment-provider-message]');
+        if (message) { message.hidden = true; message.classList.remove('green'); }
+        try {
+          const payload = paymentProviderPayload(form);
+          const id = form.dataset.paymentProviderId;
+          await api(id ? '/payment-providers/' + id : '/payment-providers', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+          if (message) { message.textContent = 'Payment provider saved.'; message.classList.add('green'); message.hidden = false; }
+          await loadPaymentProviders();
+        } catch (error) {
+          if (message) { message.textContent = error.message; message.hidden = false; }
+        }
+      };
+    });
+    document.querySelectorAll('[data-payment-provider-test]').forEach((button) => {
+      button.onclick = async () => {
+        if (!button.dataset.paymentProviderTest) return;
+        try {
+          const result = await api('/payment-providers/' + button.dataset.paymentProviderTest + '/test', { method: 'POST', body: JSON.stringify({}) });
+          showToast(result.test && result.test.ok ? 'Payment provider test passed.' : result.test && result.test.message || 'Payment provider test failed.', Boolean(result.test && result.test.ok));
+          await loadPaymentProviders();
+        } catch (error) {
+          showToast(error.message, false);
+        }
+      };
+    });
   }
 
   function renderStorageUsage(storage) {
@@ -2829,7 +2916,7 @@
         if (target === 'billing') loadBilling();
         if (target === 'finance') loadFinanceSettings();
         if (target === 'notifications') loadNotificationLogs();
-        if (target === 'integrations') loadIntegrations();
+        if (target === 'integrations') { loadIntegrations(); loadPaymentProviders(); }
         if (target === 'admin-tools') loadAdminTools();
         if (target === 'security') loadSecuritySettings();
       });

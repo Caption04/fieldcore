@@ -1,12 +1,18 @@
-import 'package:flutter/material.dart';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+
+import '../../core/api/api_client.dart';
 import '../../core/models/fieldcore_job.dart';
 import '../../core/offline/offline_queue.dart';
 import '../../shared/premium_theme.dart';
 
 class SignatureScreen extends StatefulWidget {
-  const SignatureScreen({super.key, required this.offlineQueue, required this.job});
+  const SignatureScreen({super.key, required this.apiClient, required this.offlineQueue, required this.job});
 
+  final FieldCoreApiClient apiClient;
   final OfflineQueueRepository offlineQueue;
   final FieldCoreJob job;
 
@@ -16,6 +22,7 @@ class SignatureScreen extends StatefulWidget {
 
 class _SignatureScreenState extends State<SignatureScreen> {
   final _signerController = TextEditingController();
+  final _signatureKey = GlobalKey();
   final List<Offset?> _points = <Offset?>[];
   bool _saving = false;
 
@@ -25,32 +32,52 @@ class _SignatureScreenState extends State<SignatureScreen> {
     super.dispose();
   }
 
-  Future<void> _queueSignature() async {
-    if (_signerController.text.trim().isEmpty) {
+  Future<void> _uploadSignature() async {
+    final signerName = _signerController.text.trim();
+    if (signerName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Signer name is required')));
       return;
     }
+    if (_points.whereType<Offset>().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Customer signature is required')));
+      return;
+    }
+
     setState(() => _saving = true);
-    await widget.offlineQueue.enqueue(
-      actionType: 'SIGNATURE_CAPTURED',
-      snapshotUpdatedAt: widget.job.updatedAt,
-      payload: <String, dynamic>{
-        'jobId': widget.job.id,
-        'signerName': _signerController.text.trim(),
-        'signatureUrl': 'local://signature/${DateTime.now().millisecondsSinceEpoch}.png',
-        'mimeType': 'image/png',
-        'sizeBytes': 0,
-        'capturedAt': DateTime.now().toIso8601String(),
-      },
-    );
-    if (!mounted) return;
-    setState(() => _saving = false);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Signature queued for sync')));
-    Navigator.pop(context);
+    try {
+      final bytes = await _signaturePngBytes();
+      await widget.apiClient.uploadSignature(
+        jobId: widget.job.id,
+        imageBytes: bytes,
+        signerName: signerName,
+        filename: 'signature-${DateTime.now().millisecondsSinceEpoch}.png',
+        capturedAt: DateTime.now(),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Signature uploaded')));
+      Navigator.pop(context);
+    } on FieldCoreApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Signature upload failed: ${error.toString()}')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<Uint8List> _signaturePngBytes() async {
+    final boundary = _signatureKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+    if (boundary == null) throw const FieldCoreApiException('Signature pad is not ready');
+    final image = await boundary.toImage(pixelRatio: 3);
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) throw const FieldCoreApiException('Could not export signature image');
+    return data.buffer.asUint8List();
   }
 
   void _addPoint(DragUpdateDetails details) {
-    final box = context.findRenderObject() as RenderBox?;
+    final box = _signatureKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
     setState(() => _points.add(box.globalToLocal(details.globalPosition)));
   }
@@ -94,7 +121,7 @@ class _SignatureScreenState extends State<SignatureScreen> {
                             children: <Widget>[
                               Text('On-site approval', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
                               const SizedBox(height: 4),
-                              const Text('Capture the signer name and handwritten approval.', style: TextStyle(color: FieldCorePalette.muted)),
+                              const Text('Capture and upload a real signature image. Placeholder signature URLs are disabled.', style: TextStyle(color: FieldCorePalette.muted)),
                             ],
                           ),
                         ),
@@ -130,15 +157,21 @@ class _SignatureScreenState extends State<SignatureScreen> {
                       ),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(18),
-                        child: GestureDetector(
-                          onPanUpdate: _addPoint,
-                          onPanEnd: (_) => setState(() => _points.add(null)),
-                          child: CustomPaint(
-                            painter: _SignaturePainter(_points),
-                            child: Center(
-                              child: _points.isEmpty
-                                  ? Text('Sign here', style: TextStyle(color: FieldCorePalette.midnight.withValues(alpha: 0.36), fontWeight: FontWeight.w700))
-                                  : const SizedBox.shrink(),
+                        child: RepaintBoundary(
+                          key: _signatureKey,
+                          child: ColoredBox(
+                            color: const Color(0xFFF7FAFF),
+                            child: GestureDetector(
+                              onPanUpdate: _addPoint,
+                              onPanEnd: (_) => setState(() => _points.add(null)),
+                              child: CustomPaint(
+                                painter: _SignaturePainter(_points),
+                                child: Center(
+                                  child: _points.isEmpty
+                                      ? Text('Sign here', style: TextStyle(color: FieldCorePalette.midnight.withValues(alpha: 0.36), fontWeight: FontWeight.w700))
+                                      : const SizedBox.shrink(),
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -146,11 +179,11 @@ class _SignatureScreenState extends State<SignatureScreen> {
                     ),
                     const SizedBox(height: 18),
                     FilledButton.icon(
-                      onPressed: _saving ? null : _queueSignature,
+                      onPressed: _saving ? null : _uploadSignature,
                       icon: _saving
                           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Icon(Icons.save_outlined),
-                      label: const Text('Queue Signature'),
+                          : const Icon(Icons.cloud_upload_outlined),
+                      label: const Text('Upload Signature'),
                     ),
                   ],
                 ),

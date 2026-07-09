@@ -3,6 +3,7 @@ import 'dart:io' as io;
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../config/environment.dart';
@@ -125,6 +126,92 @@ class FieldCoreApiClient {
     return jobs.whereType<Map>().map((job) => FieldCoreJob.fromJson(job.cast<String, dynamic>())).toList();
   }
 
+
+  Future<Map<String, dynamic>> sendWorkerLocation({
+    required double latitude,
+    required double longitude,
+    double? accuracyMeters,
+    String source = 'MOBILE_APP',
+    String? jobId,
+    DateTime? capturedAt,
+  }) async {
+    final body = <String, dynamic>{
+      'latitude': latitude,
+      'longitude': longitude,
+      if (accuracyMeters != null) 'accuracyMeters': accuracyMeters,
+      if (accuracyMeters != null) 'accuracy': accuracyMeters,
+      if (jobId != null && jobId.isNotEmpty) 'jobId': jobId,
+      if (source.isNotEmpty) 'source': source,
+      if (capturedAt != null) 'capturedAt': capturedAt.toIso8601String(),
+    };
+    final response = await _post('/api/worker-location', body);
+    return _decodeData(response);
+  }
+
+
+  Future<Map<String, dynamic>> uploadProofPhoto({
+    required String jobId,
+    required String filePath,
+    String? filename,
+    String? caption,
+    String category = 'GENERAL',
+    String mimeType = 'image/jpeg',
+    DateTime? capturedAt,
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+  }) async {
+    final request = http.MultipartRequest('POST', Uri.parse('$_baseUrl/api/jobs/$jobId/proof-photos'));
+    request.headers.addAll(_multipartHeaders());
+    request.fields.addAll(<String, String>{
+      'category': category,
+      if (caption != null && caption.trim().isNotEmpty) 'caption': caption.trim(),
+      if (capturedAt != null) 'capturedAt': capturedAt.toIso8601String(),
+      if (_deviceId != null && _deviceId!.isNotEmpty) 'deviceId': _deviceId!,
+      if (latitude != null) 'latitude': latitude.toString(),
+      if (longitude != null) 'longitude': longitude.toString(),
+      if (accuracy != null) 'accuracy': accuracy.toString(),
+    });
+    request.files.add(await http.MultipartFile.fromPath(
+      'photo',
+      filePath,
+      filename: filename,
+      contentType: _mediaType(mimeType),
+    ));
+    final response = await http.Response.fromStream(await _httpClient.send(request));
+    return _decodeData(response);
+  }
+
+  Future<Map<String, dynamic>> uploadSignature({
+    required String jobId,
+    required List<int> imageBytes,
+    required String signerName,
+    String filename = 'signature.png',
+    DateTime? capturedAt,
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+  }) async {
+    final request = http.MultipartRequest('POST', Uri.parse('$_baseUrl/api/jobs/$jobId/signature'));
+    request.headers.addAll(_multipartHeaders());
+    request.fields.addAll(<String, String>{
+      'signerName': signerName.trim(),
+      if (capturedAt != null) 'capturedAt': capturedAt.toIso8601String(),
+      if (_deviceId != null && _deviceId!.isNotEmpty) 'deviceId': _deviceId!,
+      if (latitude != null) 'latitude': latitude.toString(),
+      if (longitude != null) 'longitude': longitude.toString(),
+      if (accuracy != null) 'accuracy': accuracy.toString(),
+    });
+    request.files.add(http.MultipartFile.fromBytes(
+      'signature',
+      imageBytes,
+      filename: filename,
+      contentType: MediaType('image', 'png'),
+    ));
+    final response = await http.Response.fromStream(await _httpClient.send(request));
+    return _decodeData(response);
+  }
+
   Future<List<Map<String, dynamic>>> pushOfflineActions(List<OfflineAction> actions) async {
     if (actions.isEmpty) return <Map<String, dynamic>>[];
     final response = await _post('/api/worker/sync/v2/push', <String, dynamic>{
@@ -147,6 +234,22 @@ class FieldCoreApiClient {
       headers: _headers(includeCookie: includeCookie),
       body: jsonEncode(body),
     );
+  }
+
+
+  Map<String, String> _multipartHeaders({bool includeCookie = true}) {
+    return <String, String>{
+      'Accept': 'application/json',
+      if (includeCookie && _cookie != null) 'Cookie': _cookie!,
+    };
+  }
+
+  MediaType _mediaType(String value) {
+    final parts = value.split('/');
+    if (parts.length == 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+      return MediaType(parts[0], parts[1]);
+    }
+    return MediaType('application', 'octet-stream');
   }
 
   Map<String, String> _headers({bool includeCookie = true}) {

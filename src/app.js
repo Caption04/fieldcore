@@ -29,10 +29,10 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        imgSrc: ["'self'", "data:", "https://www.paynow.co.zw"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        connectSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https://www.paynow.co.zw", "https://pay.ozow.com", "https://*.tile.openstreetmap.org", "https://unpkg.com"],
+        scriptSrc: ["'self'", "https://unpkg.com"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+        connectSrc: ["'self'", "https://*.tile.openstreetmap.org"],
       },
     },
   })
@@ -40,6 +40,7 @@ app.use(
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(cookieParser());
 
 function limiter(options) {

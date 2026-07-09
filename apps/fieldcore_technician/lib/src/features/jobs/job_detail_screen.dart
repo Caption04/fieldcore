@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/location/location_service.dart';
 import '../../core/models/fieldcore_job.dart';
 import '../../core/offline/offline_queue.dart';
 import '../../shared/premium_theme.dart';
@@ -26,6 +28,11 @@ class JobDetailScreen extends StatefulWidget {
 
 class _JobDetailScreenState extends State<JobDetailScreen> {
   bool _saving = false;
+  final ImagePicker _imagePicker = ImagePicker();
+  bool _sendingLocation = false;
+  String? _locationMessage;
+  DateTime? _lastLocationSentAt;
+  bool _locationQueued = false;
 
   Future<void> _queueJobAction(String type, {Map<String, dynamic> extra = const <String, dynamic>{}}) async {
     setState(() => _saving = true);
@@ -44,37 +51,67 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   }
 
   Future<void> _queueProofPhoto() async {
-    final controller = TextEditingController(text: 'local://proof/${DateTime.now().millisecondsSinceEpoch}.jpg');
     final captionController = TextEditingController();
-    final result = await showDialog<Map<String, String>>(
+    final result = await showDialog<_ProofPhotoRequest>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Queue proof photo'),
+        title: const Text('Upload proof photo'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            TextField(controller: controller, decoration: const InputDecoration(labelText: 'Local path or uploaded URL')),
+            const Text('Capture or select a real image. Placeholder URLs are no longer accepted.'),
             const SizedBox(height: 12),
             TextField(controller: captionController, decoration: const InputDecoration(labelText: 'Caption')),
           ],
         ),
         actions: <Widget>[
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, <String, String>{'url': controller.text, 'caption': captionController.text}), child: const Text('Queue')),
+          TextButton.icon(
+            onPressed: () => Navigator.pop(context, _ProofPhotoRequest(source: ImageSource.gallery, caption: captionController.text)),
+            icon: const Icon(Icons.photo_library_outlined),
+            label: const Text('Gallery'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, _ProofPhotoRequest(source: ImageSource.camera, caption: captionController.text)),
+            icon: const Icon(Icons.photo_camera_outlined),
+            label: const Text('Camera'),
+          ),
         ],
       ),
     );
-    controller.dispose();
     captionController.dispose();
-    if (result == null || result['url']!.trim().isEmpty) return;
-    await _queueJobAction('PROOF_PHOTO_UPLOADED', extra: <String, dynamic>{
-      'url': result['url']!.trim(),
-      'filename': result['url']!.split('/').last,
-      'mimeType': 'image/jpeg',
-      'sizeBytes': 0,
-      'caption': result['caption'],
-      'category': 'GENERAL',
-    });
+    if (result == null) return;
+
+    final picked = await _imagePicker.pickImage(
+      source: result.source,
+      imageQuality: 88,
+      maxWidth: 1920,
+      maxHeight: 1920,
+    );
+    if (picked == null) return;
+
+    setState(() => _saving = true);
+    try {
+      await widget.apiClient.uploadProofPhoto(
+        jobId: widget.job.id,
+        filePath: picked.path,
+        filename: picked.name,
+        mimeType: _mimeTypeFor(picked.path),
+        caption: result.caption,
+        category: 'GENERAL',
+        capturedAt: DateTime.now(),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Proof photo uploaded')));
+    } on FieldCoreApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Proof photo upload failed: ${error.toString()}')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   Future<void> _queuePartsUsed() async {
@@ -116,9 +153,91 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
 
   Future<void> _openSignature() async {
     await Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => SignatureScreen(offlineQueue: widget.offlineQueue, job: widget.job),
+      builder: (_) => SignatureScreen(apiClient: widget.apiClient, offlineQueue: widget.offlineQueue, job: widget.job),
     ));
     if (mounted) setState(() {});
+  }
+
+
+  Future<void> _sendCurrentLocation() async {
+    if (_sendingLocation) return;
+    setState(() {
+      _sendingLocation = true;
+      _locationMessage = null;
+      _locationQueued = false;
+    });
+
+    try {
+      final location = await FieldCoreLocationService.currentPosition();
+      try {
+        await widget.apiClient.sendWorkerLocation(
+          latitude: location.latitude,
+          longitude: location.longitude,
+          accuracyMeters: location.accuracyMeters,
+          jobId: widget.job.id,
+          capturedAt: location.capturedAt,
+        );
+        if (!mounted) return;
+        setState(() {
+          _lastLocationSentAt = DateTime.now();
+          _locationMessage = 'Location sent to dispatch.';
+          _locationQueued = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Location sent to dispatch')));
+      } on FieldCoreApiException catch (error) {
+        if (error.statusCode != null && error.statusCode! >= 400 && error.statusCode! < 500) {
+          if (!mounted) return;
+          setState(() {
+            _locationMessage = error.message;
+            _locationQueued = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
+        } else {
+          await _queueLocationForSync(location);
+        }
+      } catch (_) {
+        await _queueLocationForSync(location);
+      }
+    } on FieldCoreLocationException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _locationMessage = error.message;
+        _locationQueued = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      final message = error.toString().replaceFirst('Exception: ', '');
+      setState(() {
+        _locationMessage = message;
+        _locationQueued = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) setState(() => _sendingLocation = false);
+    }
+  }
+
+  Future<void> _queueLocationForSync(FieldCoreLocationReading location) async {
+    await widget.offlineQueue.enqueue(
+      actionType: 'GPS_CHECKPOINT',
+      snapshotUpdatedAt: widget.job.updatedAt,
+      payload: <String, dynamic>{
+        'jobId': widget.job.id,
+        'latitude': location.latitude,
+        'longitude': location.longitude,
+        if (location.accuracyMeters != null) 'accuracy': location.accuracyMeters,
+        'capturedAt': location.capturedAt.toIso8601String(),
+        'source': 'MOBILE_APP_OFFLINE',
+      },
+    );
+    if (!mounted) return;
+    setState(() {
+      _lastLocationSentAt = DateTime.now();
+      _locationMessage = 'Location queued. Sync when online.';
+      _locationQueued = true;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Location queued for sync')));
   }
 
   @override
@@ -137,6 +256,14 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
               _CustomerCard(job: widget.job),
               const SizedBox(height: 14),
               _InfoCard(job: widget.job),
+              const SizedBox(height: 14),
+              _LocationCard(
+                sending: _sendingLocation,
+                message: _locationMessage,
+                queued: _locationQueued,
+                lastSentAt: _lastLocationSentAt,
+                onSend: _sendCurrentLocation,
+              ),
               if (description != null) ...<Widget>[
                 const SizedBox(height: 14),
                 PremiumCard(
@@ -178,6 +305,20 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   }
 
   String _friendlyAction(String type) => type.replaceAll('_', ' ').toLowerCase();
+}
+
+String _mimeTypeFor(String path) {
+  final lower = path.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
+class _ProofPhotoRequest {
+  const _ProofPhotoRequest({required this.source, required this.caption});
+
+  final ImageSource source;
+  final String caption;
 }
 
 class _TopBar extends StatelessWidget {
@@ -363,6 +504,70 @@ class _InfoRow extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+
+class _LocationCard extends StatelessWidget {
+  const _LocationCard({
+    required this.sending,
+    required this.onSend,
+    this.message,
+    this.lastSentAt,
+    this.queued = false,
+  });
+
+  final bool sending;
+  final VoidCallback onSend;
+  final String? message;
+  final DateTime? lastSentAt;
+  final bool queued;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = message ?? 'Send your current GPS position so dispatch can see you on the live map.';
+    final statusColor = queued ? FieldCorePalette.warning : FieldCorePalette.muted;
+    return PremiumCard(
+      glowColor: queued ? FieldCorePalette.warning : FieldCorePalette.cyan,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const PremiumIconTile(icon: Icons.my_location_outlined, color: FieldCorePalette.cyan),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text('Live location', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+                    const SizedBox(height: 4),
+                    Text(status, style: TextStyle(color: statusColor, height: 1.35)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (lastSentAt != null) ...<Widget>[
+            const SizedBox(height: 12),
+            _MetaLine(icon: queued ? Icons.cloud_off_outlined : Icons.cloud_done_outlined, text: '${queued ? 'Queued' : 'Updated'} ${_formatTime(lastSentAt!)}'),
+          ],
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: sending ? null : onSend,
+            icon: sending
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.near_me_outlined),
+            label: Text(sending ? 'Getting GPS...' : 'Send current location'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTime(DateTime value) {
+    final local = value.toLocal();
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 }
 
