@@ -4,6 +4,8 @@ const { cleanError, sendEmail } = require('./emailProvider.service');
 const { normalizePhoneNumber } = require('./phoneNumber.service');
 const { canUseFeature } = require('./subscription.service');
 const { sendWhatsApp, templateName } = require('./whatsappProvider.service');
+const { sendSms } = require('./smsProvider.service');
+const { consoleDeliveryEnabled } = require('./consoleCommunication.service');
 const { sendViaIntegration } = require('./integrations/integrationConnections.service');
 
 const CHANNEL = { EMAIL: 'EMAIL', WHATSAPP: 'WHATSAPP', SMS: 'SMS' };
@@ -146,7 +148,8 @@ async function deliverSms({ companyId, eventType, recipient, template, relatedTy
   if (duplicate) return duplicate;
   const pending = await writeLog({ companyId, eventType, channel: CHANNEL.SMS, recipient: phone, subject, status: 'PENDING', relatedType, relatedId });
   try {
-    const result = await sendViaIntegration({ companyId, channel: CHANNEL.SMS, message: { to: phone, eventType, text: template.text || subject }, relatedType, relatedId, notificationLogId: pending.id });
+    let result = await sendViaIntegration({ companyId, channel: CHANNEL.SMS, message: { to: phone, eventType, text: template.text || subject }, relatedType, relatedId, notificationLogId: pending.id });
+    if (result.status === 'SKIPPED') result = await sendSms({ to: phone, eventType, text: template.text || subject }, { companyId, relatedType, relatedId, notificationLogId: pending.id });
     return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: result.status || 'SENT', error: result.error ? cleanError(result.error) : null, sentAt: result.status === 'SENT' ? new Date() : null } });
   } catch (error) {
     return prisma.notificationLog.update({ where: { id: pending.id }, data: { status: 'FAILED', error: cleanError(error) } });

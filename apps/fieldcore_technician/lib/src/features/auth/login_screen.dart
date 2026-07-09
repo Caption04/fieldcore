@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../config/environment.dart';
 import '../../core/api/api_client.dart';
+import '../../shared/premium_theme.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.apiClient, required this.onAuthenticated});
@@ -63,58 +64,169 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Form(
-                key: _formKey,
-                child: ListView(
-                  shrinkWrap: true,
-                  children: <Widget>[
-                    const Icon(Icons.engineering, size: 56),
-                    const SizedBox(height: 16),
-                    Text('FieldCore Technician', style: Theme.of(context).textTheme.headlineMedium, textAlign: TextAlign.center),
-                    const SizedBox(height: 8),
-                    Text('Offline-ready job cards, proof, parts, and sync.', style: Theme.of(context).textTheme.bodyMedium, textAlign: TextAlign.center),
-                    const SizedBox(height: 32),
-                    TextFormField(
-                      controller: _apiBaseController,
-                      decoration: const InputDecoration(labelText: 'API base URL', border: OutlineInputBorder()),
-                      validator: (value) => value == null || value.trim().isEmpty ? 'Required' : null,
+      body: PremiumBackground(
+        child: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.all(24),
+                children: <Widget>[
+                  const SizedBox(height: 8),
+                  const _LoginBrand(),
+                  const SizedBox(height: 30),
+                  PremiumCard(
+                    glowColor: FieldCorePalette.primary,
+                    padding: const EdgeInsets.all(22),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          Text(
+                            'Technician access',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Connect to your company workspace and register this device.',
+                            style: TextStyle(color: FieldCorePalette.muted, height: 1.35),
+                          ),
+                          const SizedBox(height: 22),
+                          TextFormField(
+                            controller: _apiBaseController,
+                            decoration: const InputDecoration(
+                              labelText: 'API base URL',
+                              prefixIcon: Icon(Icons.cloud_outlined),
+                            ),
+                            validator: (value) => value == null || value.trim().isEmpty ? 'Required' : null,
+                          ),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                            controller: _emailController,
+                            decoration: const InputDecoration(
+                              labelText: 'Technician email',
+                              prefixIcon: Icon(Icons.alternate_email),
+                            ),
+                            keyboardType: TextInputType.emailAddress,
+                            validator: (value) => value == null || value.trim().isEmpty ? 'Required' : null,
+                          ),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                            controller: _passwordController,
+                            decoration: const InputDecoration(
+                              labelText: 'Password',
+                              prefixIcon: Icon(Icons.lock_outline),
+                            ),
+                            obscureText: true,
+                            validator: (value) => value == null || value.isEmpty ? 'Required' : null,
+                          ),
+                          if (_error != null) ...<Widget>[
+                            const SizedBox(height: 16),
+                            _ErrorBanner(message: _error!),
+                          ],
+                          const SizedBox(height: 22),
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(18),
+                              boxShadow: <BoxShadow>[
+                                BoxShadow(
+                                  color: FieldCorePalette.primary.withValues(alpha: 0.34),
+                                  blurRadius: 26,
+                                  offset: const Offset(0, 12),
+                                ),
+                              ],
+                            ),
+                            child: FilledButton.icon(
+                              onPressed: _submitting ? null : _login,
+                              icon: _submitting
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                    )
+                                  : const Icon(Icons.arrow_forward_rounded),
+                              label: const Text('Log in and register device'),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(labelText: 'Technician email', border: OutlineInputBorder()),
-                      keyboardType: TextInputType.emailAddress,
-                      validator: (value) => value == null || value.trim().isEmpty ? 'Required' : null,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _passwordController,
-                      decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder()),
-                      obscureText: true,
-                      validator: (value) => value == null || value.isEmpty ? 'Required' : null,
-                    ),
-                    if (_error != null) ...<Widget>[
-                      const SizedBox(height: 12),
-                      Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+                  const SizedBox(height: 18),
+                  const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: <Widget>[
+                      Icon(Icons.shield_outlined, color: FieldCorePalette.muted, size: 16),
+                      SizedBox(width: 8),
+                      Text('Offline-ready. Secure sync. Field-first.', style: TextStyle(color: FieldCorePalette.muted)),
                     ],
-                    const SizedBox(height: 20),
-                    FilledButton.icon(
-                      onPressed: _submitting ? null : _login,
-                      icon: _submitting ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
-                      label: const Text('Log in and register device'),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _LoginBrand extends StatelessWidget {
+  const _LoginBrand();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: <Widget>[
+        Container(
+          width: 92,
+          height: 92,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(28),
+            color: Colors.white.withValues(alpha: 0.06),
+            border: Border.all(color: FieldCorePalette.border),
+            boxShadow: <BoxShadow>[
+              BoxShadow(color: FieldCorePalette.cyan.withValues(alpha: 0.18), blurRadius: 36, offset: const Offset(0, 18)),
+            ],
+          ),
+          child: const Center(child: FieldCoreMark(size: 58)),
+        ),
+        const SizedBox(height: 20),
+        Text(
+          'FieldCore Technician',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900, letterSpacing: -0.4),
+        ),
+        const SizedBox(height: 8),
+        const Text('Work. Track. Complete.', style: TextStyle(color: FieldCorePalette.muted, fontSize: 16)),
+      ],
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: FieldCorePalette.danger.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: FieldCorePalette.danger.withValues(alpha: 0.36)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Icon(Icons.error_outline, color: FieldCorePalette.danger, size: 20),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message, style: const TextStyle(color: FieldCorePalette.text, height: 1.35))),
+        ],
       ),
     );
   }

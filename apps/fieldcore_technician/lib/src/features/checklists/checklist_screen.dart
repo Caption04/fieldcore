@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/fieldcore_job.dart';
 import '../../core/offline/offline_queue.dart';
+import '../../shared/premium_theme.dart';
 
 class ChecklistScreen extends StatefulWidget {
   const ChecklistScreen({super.key, required this.offlineQueue, required this.job});
@@ -56,28 +57,106 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final completed = _answers.where((answer) => answer.checked).length;
     return Scaffold(
-      appBar: AppBar(title: const Text('Checklist')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: <Widget>[
-          Text(widget.job.title, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
-          ..._answers.map((answer) => CheckboxListTile(
-                value: answer.checked,
-                title: Text(answer.label),
-                subtitle: answer.note.isEmpty ? null : Text(answer.note),
-                onChanged: (value) => setState(() => answer.checked = value ?? false),
-              )),
-          TextField(
-            controller: _noteController,
-            minLines: 2,
-            maxLines: 4,
-            decoration: const InputDecoration(labelText: 'Technician notes', border: OutlineInputBorder()),
+      body: PremiumBackground(
+        child: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  IconButton.filledTonal(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back), tooltip: 'Back'),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text('Checklist', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
+                        Text(widget.job.title, style: const TextStyle(color: FieldCorePalette.muted)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              PremiumCard(
+                glowColor: FieldCorePalette.primaryBright,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        const PremiumIconTile(icon: Icons.checklist, color: FieldCorePalette.primaryBright),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text('$completed of ${_answers.length} completed', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+                              const SizedBox(height: 4),
+                              const Text('Complete the on-site quality checks.', style: TextStyle(color: FieldCorePalette.muted)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(999),
+                      child: LinearProgressIndicator(
+                        value: completed / _answers.length,
+                        minHeight: 7,
+                        backgroundColor: Colors.white.withValues(alpha: 0.08),
+                        valueColor: const AlwaysStoppedAnimation<Color>(FieldCorePalette.primaryBright),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              ..._answers.map(
+                (answer) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: PremiumCard(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    glowColor: answer.checked ? FieldCorePalette.success : null,
+                    child: CheckboxListTile(
+                      value: answer.checked,
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      activeColor: FieldCorePalette.success,
+                      title: Text(answer.label, style: const TextStyle(fontWeight: FontWeight.w800)),
+                      subtitle: answer.note.isEmpty ? null : Text(answer.note, style: const TextStyle(color: FieldCorePalette.muted)),
+                      onChanged: (value) => setState(() => answer.checked = value ?? false),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              PremiumCard(
+                child: TextField(
+                  controller: _noteController,
+                  minLines: 3,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Technician notes',
+                    alignLabelWithHint: true,
+                    prefixIcon: Icon(Icons.notes_outlined),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: _saving ? null : _queueChecklist,
+                icon: _saving
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.save_outlined),
+                label: const Text('Queue Checklist'),
+              ),
+            ],
           ),
-          const SizedBox(height: 16),
-          FilledButton.icon(onPressed: _saving ? null : _queueChecklist, icon: const Icon(Icons.save), label: const Text('Queue checklist')),
-        ],
+        ),
       ),
     );
   }

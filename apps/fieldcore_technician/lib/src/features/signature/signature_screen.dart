@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/models/fieldcore_job.dart';
 import '../../core/offline/offline_queue.dart';
+import '../../shared/premium_theme.dart';
 
 class SignatureScreen extends StatefulWidget {
   const SignatureScreen({super.key, required this.offlineQueue, required this.job});
@@ -57,30 +58,106 @@ class _SignatureScreenState extends State<SignatureScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Customer signature')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: <Widget>[
-          TextField(controller: _signerController, decoration: const InputDecoration(labelText: 'Signer name', border: OutlineInputBorder())),
-          const SizedBox(height: 16),
-          Container(
-            height: 220,
-            decoration: BoxDecoration(border: Border.all(color: Theme.of(context).dividerColor), borderRadius: BorderRadius.circular(12)),
-            child: GestureDetector(
-              onPanUpdate: _addPoint,
-              onPanEnd: (_) => setState(() => _points.add(null)),
-              child: CustomPaint(painter: _SignaturePainter(_points), child: const SizedBox.expand()),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
+      body: PremiumBackground(
+        child: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
             children: <Widget>[
-              TextButton.icon(onPressed: () => setState(_points.clear), icon: const Icon(Icons.delete_outline), label: const Text('Clear')),
-              const Spacer(),
-              FilledButton.icon(onPressed: _saving ? null : _queueSignature, icon: const Icon(Icons.save), label: const Text('Queue signature')),
+              Row(
+                children: <Widget>[
+                  IconButton.filledTonal(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back), tooltip: 'Back'),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text('Customer Signature', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900)),
+                        Text(widget.job.title, style: const TextStyle(color: FieldCorePalette.muted)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              PremiumCard(
+                glowColor: FieldCorePalette.primary,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        const PremiumIconTile(icon: Icons.draw_outlined, color: FieldCorePalette.primaryBright),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text('On-site approval', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+                              const SizedBox(height: 4),
+                              const Text('Capture the signer name and handwritten approval.', style: TextStyle(color: FieldCorePalette.muted)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    TextField(
+                      controller: _signerController,
+                      decoration: const InputDecoration(labelText: 'Signer name', prefixIcon: Icon(Icons.person_outline)),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: <Widget>[
+                        const Text('Customer Signature', style: TextStyle(fontWeight: FontWeight.w900)),
+                        const Spacer(),
+                        TextButton.icon(
+                          onPressed: () => setState(_points.clear),
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          label: const Text('Clear'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 250,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        color: const Color(0xFFF7FAFF),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.65), width: 2),
+                        boxShadow: <BoxShadow>[
+                          BoxShadow(color: FieldCorePalette.primary.withValues(alpha: 0.16), blurRadius: 26, offset: const Offset(0, 12)),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: GestureDetector(
+                          onPanUpdate: _addPoint,
+                          onPanEnd: (_) => setState(() => _points.add(null)),
+                          child: CustomPaint(
+                            painter: _SignaturePainter(_points),
+                            child: Center(
+                              child: _points.isEmpty
+                                  ? Text('Sign here', style: TextStyle(color: FieldCorePalette.midnight.withValues(alpha: 0.36), fontWeight: FontWeight.w700))
+                                  : const SizedBox.shrink(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    FilledButton.icon(
+                      onPressed: _saving ? null : _queueSignature,
+                      icon: _saving
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.save_outlined),
+                      label: const Text('Queue Signature'),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -94,6 +171,7 @@ class _SignaturePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
+      ..color = FieldCorePalette.midnight
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
     for (var i = 0; i < points.length - 1; i += 1) {

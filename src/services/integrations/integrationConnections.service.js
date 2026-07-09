@@ -4,6 +4,7 @@ const { safeError } = require('../../utils/crypto/redact');
 const { configuredSecretKeys, providerDefinition, sanitizeConfig } = require('./integrationRegistry');
 const { loadSecrets, saveSecrets } = require('./integrationSecrets.service');
 const { createMessageLog, updateMessageLog } = require('./messageLog.service');
+const { consoleDeliveryEnabled, consoleTestResult, logConsoleDelivery } = require('../consoleCommunication.service');
 const { sendBrevoEmail, testBrevo } = require('./providers/brevoEmail.provider');
 const { sendMetaWhatsApp, testMetaWhatsApp } = require('./providers/metaWhatsApp.provider');
 const { sendClickatellSms, testClickatell } = require('./providers/clickatellSms.provider');
@@ -93,6 +94,15 @@ async function disableIntegrationConnection(companyId, id) {
 async function testIntegrationConnection(companyId, id) {
   const connection = await prisma.integrationConnection.findFirst({ where: { id, companyId }, include: { secrets: { select: { keyName: true } } } });
   if (!connection) throw notFound('Integration not found');
+  if (consoleDeliveryEnabled(connection.channel)) {
+    const result = consoleTestResult(connection.channel);
+    const data = await prisma.integrationConnection.update({
+      where: { id },
+      data: { status: result.status, lastTestedAt: new Date(), lastTestStatus: result.status, lastTestError: null },
+      include: { secrets: { select: { keyName: true } } }
+    });
+    return { ...safeConnection(data), test: result };
+  }
   const secrets = await loadSecrets(companyId, id);
   const tester = providerTests[connection.provider];
   if (!tester) throw new AppError(400, 'Provider test is not implemented');
@@ -116,7 +126,6 @@ async function resolveActiveConnection(companyId, channel, provider) {
 async function sendViaIntegration({ companyId, channel, provider, message, relatedType, relatedId, customerId, invoiceId, jobId, bookingId, notificationLogId }) {
   const connection = await resolveActiveConnection(companyId, channel, provider);
   if (!connection) return { status: 'SKIPPED', error: `${channel} integration is not configured` };
-  const secrets = await loadSecrets(companyId, connection.id);
   const log = await createMessageLog({
     companyId,
     integrationConnectionId: connection.id,
@@ -134,6 +143,13 @@ async function sendViaIntegration({ companyId, channel, provider, message, relat
     notificationLogId
   });
   let result;
+  if (consoleDeliveryEnabled(channel)) {
+    result = logConsoleDelivery(channel, message, { companyId, relatedType, relatedId, notificationLogId, provider: connection.provider, source: 'tenant-integration' });
+    await updateMessageLog(log.id, 'SENT', result);
+    await prisma.integrationConnection.update({ where: { id: connection.id }, data: { lastUsedAt: new Date() } });
+    return result;
+  }
+  const secrets = await loadSecrets(companyId, connection.id);
   try {
     if (connection.provider === 'BREVO') result = await sendBrevoEmail({ connection, secrets, message });
     else if (connection.provider === 'META_WHATSAPP_CLOUD') result = await sendMetaWhatsApp({ connection, secrets, message });

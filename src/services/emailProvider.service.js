@@ -1,3 +1,5 @@
+const { consoleDeliveryEnabled, logConsoleDelivery } = require('./consoleCommunication.service');
+
 let overrideProvider = null;
 
 function cleanError(error) {
@@ -7,12 +9,10 @@ function cleanError(error) {
 
 async function sendEmail(message) {
   if (overrideProvider) return overrideProvider(message);
+  if (consoleDeliveryEnabled('EMAIL')) return logConsoleDelivery('EMAIL', message, { source: 'email-provider', from: process.env.EMAIL_FROM });
   if (process.env.NODE_ENV === 'test') return { status: 'SKIPPED', error: 'Email sending disabled in tests' };
   if (!process.env.EMAIL_PROVIDER || !process.env.EMAIL_FROM) return { status: 'SKIPPED', error: 'Email provider is not configured' };
-  if (process.env.EMAIL_PROVIDER === 'console') {
-    console.info('[notification:email]', { to: message.to, subject: message.subject });
-    return { status: 'SENT' };
-  }
+  if (process.env.EMAIL_PROVIDER === 'console') return logConsoleDelivery('EMAIL', message, { source: 'email-provider', from: process.env.EMAIL_FROM });
   if (process.env.EMAIL_PROVIDER === 'webhook') {
     if (!process.env.EMAIL_API_URL) return { status: 'SKIPPED', error: 'Email API URL is not configured' };
     if (typeof fetch !== 'function') return { status: 'FAILED', error: 'Fetch API is unavailable for email delivery' };

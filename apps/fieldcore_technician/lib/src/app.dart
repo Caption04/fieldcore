@@ -4,6 +4,7 @@ import 'core/api/api_client.dart';
 import 'core/offline/offline_queue.dart';
 import 'features/auth/login_screen.dart';
 import 'features/jobs/jobs_screen.dart';
+import 'shared/premium_theme.dart';
 
 class FieldCoreTechnicianApp extends StatefulWidget {
   const FieldCoreTechnicianApp({super.key});
@@ -53,10 +54,7 @@ class _FieldCoreTechnicianAppState extends State<FieldCoreTechnicianApp> {
     return MaterialApp(
       title: 'FieldCore Technician',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1D65BC)),
-        useMaterial3: true,
-      ),
+      theme: FieldCorePremiumTheme.theme,
       home: !_ready
           ? const _LoadingScreen()
           : _authenticated
@@ -79,7 +77,18 @@ class _LoadingScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Center(child: CircularProgressIndicator()),
+      body: PremiumBackground(
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              FieldCoreMark(size: 64),
+              SizedBox(height: 22),
+              CircularProgressIndicator(),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

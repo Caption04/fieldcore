@@ -66,14 +66,31 @@ class FieldCoreApiClient {
       'email': email,
       'password': password,
     }, includeCookie: false);
-    final setCookie = response.headers['set-cookie'];
-    if (setCookie != null && setCookie.isNotEmpty) {
-      _cookie = setCookie.split(';').first;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_cookieKey, _cookie!);
+
+    final data = _decodeData(response);
+    if (data['twoFactorRequired'] == true) {
+      throw const FieldCoreApiException('Two-factor verification is required. Use a WORKER/technician account in this app.');
     }
+
+    final role = data['role']?.toString().toUpperCase();
+    if (role != null && role != 'WORKER') {
+      throw const FieldCoreApiException('This app only accepts WORKER/technician accounts. Use the admin web dashboard for owner/admin accounts.');
+    }
+
+    final setCookie = response.headers['set-cookie'];
+    final authCookieMatch = setCookie == null
+        ? null
+        : RegExp(r'((?:__Host-)?fieldcore_token=[^;,]+)').firstMatch(setCookie);
+
+    if (authCookieMatch == null) {
+      throw const FieldCoreApiException('Login did not return a technician session cookie. Confirm you are using the local API URL and a WORKER account.');
+    }
+
+    _cookie = authCookieMatch.group(1);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_cookieKey, _cookie!);
     await registerDevice();
-    return _decodeData(response);
+    return data;
   }
 
   Future<Map<String, dynamic>> registerDevice() async {

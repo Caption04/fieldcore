@@ -68,6 +68,7 @@ function configStatus() {
     appBaseUrl: configured('APP_BASE_URL') ? 'configured' : 'missing',
     email: configured('EMAIL_PROVIDER') && providerConfigured('EMAIL_PROVIDER', ['EMAIL_FROM']) ? 'configured' : 'not configured',
     whatsapp: configured('WHATSAPP_PROVIDER') && providerConfigured('WHATSAPP_PROVIDER', ['WHATSAPP_PHONE_NUMBER_ID']) ? 'configured' : 'not configured',
+    sms: configured('SMS_PROVIDER') ? 'configured' : 'not configured',
     saasBilling: configured('SAAS_BILLING_PROVIDER') && (process.env.SAAS_BILLING_PROVIDER !== 'stripe' || configured('STRIPE_SECRET_KEY')) ? 'configured' : 'not configured',
     integrationSecrets: configured('INTEGRATION_SECRET_MASTER_KEY_BASE64') ? 'configured' : 'not configured',
     storage: boolEnv('USE_REMOTE_STORAGE') || configured('INTEGRATION_SECRET_MASTER_KEY_BASE64') ? 'integration-ready' : 'local uploads',
