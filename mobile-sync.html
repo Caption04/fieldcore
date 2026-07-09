@@ -1,74 +1,13 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Mobile Sync · FieldCore</title>
-  <link rel="stylesheet" href="assets/app.css" />
-</head>
-<body data-page="mobile-sync">
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">F</span><span>FieldCore</span></div>
-      <nav class="nav"></nav>
-      <div class="quick-card" data-quick-card></div>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>Mobile Sync</h1>
-          <p>Review offline technician actions, conflicts, and registered worker devices.</p>
-        </div>
-      </header>
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Sync Problems</h2>
-            <p>Failed, rejected, and conflicted offline actions that need admin review.</p>
-          </div>
-          <button class="button" data-refresh>Refresh</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Status</th><th>Action</th><th>Worker</th><th>Device</th><th>Error</th><th>Received</th></tr></thead>
-            <tbody data-sync-rows><tr><td colspan="6">Loading…</td></tr></tbody>
-          </table>
-        </div>
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Mobile Sync · FieldCore</title><link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1"><script defer src="assets/layout.js"></script><script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script></head>
+  <body data-page="mobile-sync" data-title="Mobile Sync">
+    <section class="page">
+      <div class="hero-row"><div class="hero-copy"><p class="eyebrow">Technician app</p><h2>Mobile Sync</h2><p>Review offline technician actions, conflicts, and registered worker devices.</p></div><div class="toolbar-actions"><button class="secondary-button" data-refresh>Refresh</button><span class="api-status" data-status>Loading...</span></div></div>
+      <section class="grid two-column">
+        <article class="panel"><div class="panel-head"><div><h3>Sync problems</h3><p>Failed, rejected, and conflicted offline actions that need admin review.</p></div><span class="badge gray">Admin</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Status</th><th>Action</th><th>Worker</th><th>Device</th><th>Error</th><th>Received</th></tr></thead><tbody data-sync-rows><tr><td colspan="6">Loading…</td></tr></tbody></table></div></article>
+        <article class="panel"><div class="panel-head"><div><h3>Worker devices</h3><p>Active and revoked devices trusted for offline sync.</p></div><span class="badge gray">Devices</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Device</th><th>Platform</th><th>App</th><th>Active</th><th>Last sync</th></tr></thead><tbody data-device-rows><tr><td colspan="5">Loading…</td></tr></tbody></table></div></article>
       </section>
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Worker Devices</h2>
-            <p>Active and revoked devices trusted for offline sync.</p>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Device</th><th>Platform</th><th>App</th><th>Active</th><th>Last sync</th></tr></thead>
-            <tbody data-device-rows><tr><td colspan="5">Loading…</td></tr></tbody>
-          </table>
-        </div>
-      </section>
-    </main>
-  </div>
-  <script src="assets/auth.js"></script>
-  <script src="assets/layout.js"></script>
-  <script>
-    const API = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
-    function cell(value) { return value == null || value === '' ? '—' : String(value); }
-    async function load() {
-      const [actionsRes, devicesRes] = await Promise.all([
-        fetch(API + '/admin/offline-actions?limit=100', { credentials: 'include' }),
-        fetch(API + '/admin/worker-devices', { credentials: 'include' })
-      ]);
-      const actions = await actionsRes.json().catch(() => ({}));
-      const devices = await devicesRes.json().catch(() => ({}));
-      const problemRows = ((actions.data || []).filter((item) => ['FAILED','REJECTED','CONFLICT'].includes(item.status)));
-      document.querySelector('[data-sync-rows]').innerHTML = problemRows.length ? problemRows.map((item) => `<tr><td>${cell(item.status)}</td><td>${cell(item.actionType)}</td><td>${cell(item.workerId)}</td><td>${cell(item.workerDeviceId)}</td><td>${cell(item.conflictReason || item.error)}</td><td>${cell(item.receivedAt)}</td></tr>`).join('') : '<tr><td colspan="6">No sync problems.</td></tr>';
-      document.querySelector('[data-device-rows]').innerHTML = (devices.data || []).length ? devices.data.map((item) => `<tr><td>${cell(item.deviceName || item.deviceId)}</td><td>${cell(item.platform)}</td><td>${cell(item.appVersion)}</td><td>${item.active && !item.revokedAt ? 'Yes' : 'No'}</td><td>${cell(item.lastSyncedAt || item.lastSeenAt)}</td></tr>`).join('') : '<tr><td colspan="5">No registered devices.</td></tr>';
-    }
-    document.querySelector('[data-refresh]').addEventListener('click', load);
-    load().catch(() => { document.querySelector('[data-sync-rows]').innerHTML = '<tr><td colspan="6">Could not load sync data.</td></tr>'; });
-  </script>
-</body>
+    </section>
+  </body>
 </html>

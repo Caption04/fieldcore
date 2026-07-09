@@ -1,99 +1,18 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Security Center · FieldCore</title>
-  <link rel="stylesheet" href="assets/app.css">
-  <script defer src="assets/auth.js"></script>
-  <script defer src="assets/layout.js"></script>
-</head>
-<body data-page="security-center">
-  <header class="page-header">
-    <div>
-      <p class="eyebrow">Enterprise controls</p>
-      <h1>Security Center</h1>
-      <p class="muted">Manage 2FA readiness, sessions, security events, identity providers, data exports, and operational status.</p>
-    </div>
-  </header>
-
-  <section class="grid two">
-    <article class="card">
-      <h2>Security settings</h2>
-      <p class="muted">Password, lockout, 2FA and retention policy defaults.</p>
-      <form data-security-form class="stack">
-        <label>Session length hours <input name="sessionLengthHours" type="number" min="1" max="24" value="8"></label>
-        <label>Minimum password length <input name="passwordMinimum" type="number" min="8" max="128" value="8"></label>
-        <label>Lockout threshold <input name="failedLoginLockoutThreshold" type="number" min="3" max="20" value="5"></label>
-        <label>Lockout minutes <input name="lockoutDurationMinutes" type="number" min="5" max="1440" value="30"></label>
-        <label><input name="twoFactorRequired" type="checkbox"> Require 2FA for owner/admin users</label>
-        <button class="button primary" type="submit">Save settings</button>
-      </form>
-    </article>
-
-    <article class="card">
-      <h2>My sessions</h2>
-      <p class="muted">Revoke stale devices immediately after a role or password change.</p>
-      <button class="button" type="button" data-load-sessions>Refresh sessions</button>
-      <div data-sessions class="stack"></div>
-    </article>
-  </section>
-
-  <section class="grid two">
-    <article class="card">
-      <h2>2FA setup</h2>
-      <p class="muted">Foundation supports email-code/TOTP-ready setup and single-use recovery codes.</p>
-      <button class="button" type="button" data-enable-2fa>Enable 2FA</button>
-      <pre data-2fa-output class="code-block"></pre>
-    </article>
-    <article class="card">
-      <h2>Ops status</h2>
-      <button class="button" type="button" data-load-status>Refresh status</button>
-      <pre data-status-output class="code-block"></pre>
-    </article>
-  </section>
-
-  <section class="card">
-    <h2>Security events</h2>
-    <button class="button" type="button" data-load-events>Load events</button>
-    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Severity</th><th>Event</th><th>User</th></tr></thead><tbody data-events></tbody></table></div>
-  </section>
-
-  <script>
-    const api = (path, options = {}) => fetch(`/api${path}`, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options }).then(async (res) => {
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error && body.error.message || 'Request failed');
-      return body.data;
-    });
-
-    document.querySelector('[data-security-form]').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const payload = Object.fromEntries(form.entries());
-      payload.twoFactorRequired = form.has('twoFactorRequired');
-      ['sessionLengthHours','passwordMinimum','failedLoginLockoutThreshold','lockoutDurationMinutes'].forEach((key) => payload[key] = Number(payload[key]));
-      await api('/company/security-settings', { method: 'PATCH', body: JSON.stringify(payload) });
-      alert('Security settings saved');
-    });
-
-    document.querySelector('[data-enable-2fa]').addEventListener('click', async () => {
-      const data = await api('/auth/2fa/enable', { method: 'POST', body: JSON.stringify({}) });
-      document.querySelector('[data-2fa-output]').textContent = JSON.stringify(data, null, 2);
-    });
-
-    document.querySelector('[data-load-sessions]').addEventListener('click', async () => {
-      const sessions = await api('/auth/sessions');
-      document.querySelector('[data-sessions]').innerHTML = sessions.map((item) => `<div class="pill-row"><span>${item.current ? 'Current · ' : ''}${item.userAgent || 'Unknown device'}</span><small>${item.revokedAt ? 'Revoked' : 'Active'}</small></div>`).join('') || '<p class="muted">No sessions found.</p>';
-    });
-
-    document.querySelector('[data-load-status]').addEventListener('click', async () => {
-      document.querySelector('[data-status-output]').textContent = JSON.stringify(await api('/ops/status'), null, 2);
-    });
-
-    document.querySelector('[data-load-events]').addEventListener('click', async () => {
-      const rows = await api('/security/events');
-      document.querySelector('[data-events]').innerHTML = rows.map((item) => `<tr><td>${item.createdAt || ''}</td><td>${item.severity}</td><td>${item.eventType}</td><td>${item.userId || ''}</td></tr>`).join('');
-    });
-  </script>
-</body>
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Security Center · FieldCore</title><link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1"><script defer src="assets/layout.js"></script><script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script></head>
+  <body data-page="security-center" data-title="Security Center">
+    <section class="page">
+      <div class="hero-row"><div class="hero-copy"><p class="eyebrow">Enterprise controls</p><h2>Security Center</h2><p>Manage 2FA readiness, sessions, security events, identity providers, data exports, and operational status.</p></div><span class="api-status" data-status>Loading...</span></div>
+      <section class="grid two-column">
+        <article class="panel"><div class="panel-head"><h3>Security settings</h3><span class="badge gray">Policy</span></div><p class="muted">Password, lockout, 2FA and retention policy defaults.</p><form data-security-form class="form-grid compact-form"><div class="field"><label>Session length hours</label><input name="sessionLengthHours" type="number" min="1" max="24" value="8"></div><div class="field"><label>Minimum password length</label><input name="passwordMinimum" type="number" min="8" max="128" value="8"></div><div class="field"><label>Lockout threshold</label><input name="failedLoginLockoutThreshold" type="number" min="3" max="20" value="5"></div><div class="field"><label>Lockout minutes</label><input name="lockoutDurationMinutes" type="number" min="5" max="1440" value="30"></div><label class="checkbox-field span-2"><input name="twoFactorRequired" type="checkbox"> Require 2FA for owner/admin users</label><div class="form-actions span-2"><button class="primary-button" type="submit">Save settings</button></div></form></article>
+        <article class="panel"><div class="panel-head"><h3>My sessions</h3><button class="secondary-button compact" type="button" data-load-sessions>Refresh sessions</button></div><p class="muted">Revoke stale devices immediately after a role or password change.</p><div data-sessions class="settings-list"></div></article>
+      </section>
+      <section class="grid two-column">
+        <article class="panel"><div class="panel-head"><h3>2FA setup</h3><button class="secondary-button compact" type="button" data-enable-2fa>Enable 2FA</button></div><p class="muted">Foundation supports email-code/TOTP-ready setup and single-use recovery codes.</p><pre data-2fa-output class="code-block"></pre></article>
+        <article class="panel"><div class="panel-head"><h3>Ops status</h3><button class="secondary-button compact" type="button" data-load-status>Refresh status</button></div><pre data-status-output class="code-block"></pre></article>
+      </section>
+      <section class="panel"><div class="panel-head"><h3>Security events</h3><button class="secondary-button compact" type="button" data-load-events>Load events</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Severity</th><th>Event</th><th>User</th></tr></thead><tbody data-events></tbody></table></div></section>
+    </section>
+  </body>
 </html>

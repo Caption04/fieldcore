@@ -76,6 +76,19 @@ const staffHtmlPages = new Map([
   ['invoices.html', ['OWNER', 'ADMIN']],
   ['reports.html', ['OWNER', 'ADMIN']],
   ['settings.html', ['OWNER', 'ADMIN']],
+  ['branches.html', ['OWNER', 'ADMIN']],
+  ['approvals.html', ['OWNER', 'ADMIN']],
+  ['assets.html', ['OWNER', 'ADMIN']],
+  ['service-contracts.html', ['OWNER', 'ADMIN']],
+  ['contract-automation.html', ['OWNER', 'ADMIN']],
+  ['inventory.html', ['OWNER', 'ADMIN']],
+  ['purchase-requests.html', ['OWNER', 'ADMIN']],
+  ['purchase-orders.html', ['OWNER', 'ADMIN']],
+  ['procurement-costing.html', ['OWNER', 'ADMIN']],
+  ['collections.html', ['OWNER', 'ADMIN']],
+  ['mobile-sync.html', ['OWNER', 'ADMIN']],
+  ['executive-dashboard.html', ['OWNER', 'ADMIN']],
+  ['onboarding.html', ['OWNER', 'ADMIN']],
   ['security-center.html', ['OWNER', 'ADMIN']]
 ]);
 

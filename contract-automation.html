@@ -1,38 +1,15 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Contract Automation - FieldCore</title>
-  <link rel="stylesheet" href="assets/app.css">
-</head>
-<body data-page="contract-automation">
-  <main class="page">
-    <section class="hero-card">
-      <p class="eyebrow">Enterprise automation</p>
-      <h1>Contracts, assets, warranties, SLA and preventive maintenance</h1>
-      <p>Generate recurring work, evaluate contract entitlements, watch SLA risk, and review asset service history from one operational layer.</p>
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Contract Automation · FieldCore</title><link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1"><script defer src="assets/layout.js"></script></head>
+  <body data-page="contract-automation" data-title="Contract Automation">
+    <section class="page">
+      <div class="hero-row"><div class="hero-copy"><p class="eyebrow">Recurring work</p><h2>Contract Automation</h2><p>This section is for businesses that sell recurring maintenance agreements. It turns a signed service contract into planned jobs, SLA tracking, covered assets, and billing decisions.</p></div></div>
+      <section class="grid two-column">
+        <article class="panel"><div class="panel-head"><h3>1. Preventive maintenance</h3><span class="badge gray">Planned visits</span></div><p class="muted">Generate upcoming service visits from contract lines, such as monthly HVAC inspections, quarterly solar maintenance, or annual compliance visits.</p><a class="secondary-button compact" href="service-contracts.html">Open contracts</a></article>
+        <article class="panel"><div class="panel-head"><h3>2. Contract entitlement</h3><span class="badge gray">Included vs billable</span></div><p class="muted">When a job is linked to a contract, FieldCore can decide whether it is included, an overage, billable work, or warranty work.</p><a class="secondary-button compact" href="jobs.html">Open jobs</a></article>
+        <article class="panel"><div class="panel-head"><h3>3. SLA controls</h3><span class="badge gray">Risk</span></div><p class="muted">Track whether contract jobs are at risk, breached, met, or waived. Waivers can be routed through approvals.</p><a class="secondary-button compact" href="approvals.html">Open approvals</a></article>
+        <article class="panel"><div class="panel-head"><h3>4. Asset history</h3><span class="badge gray">Service record</span></div><p class="muted">See a customer asset's job history, invoices, proof photos, parts used, incidents, and warranty status in one place.</p><a class="secondary-button compact" href="assets.html">Open assets</a></article>
+      </section>
     </section>
-
-    <section class="grid two">
-      <article class="card">
-        <h2>Preventive maintenance</h2>
-        <p>Use <code>POST /api/service-contracts/:id/generate-planned-jobs</code> to create planned jobs from active contract service lines.</p>
-      </article>
-      <article class="card">
-        <h2>Contract entitlement</h2>
-        <p>Use <code>POST /api/service-contracts/:id/evaluate-entitlement</code> to determine included, billable, overage, or warranty work.</p>
-      </article>
-      <article class="card">
-        <h2>SLA controls</h2>
-        <p>Use <code>POST /api/jobs/:id/sla/evaluate</code> to mark at-risk, breached, met, or waived jobs. Waivers can require approvals.</p>
-      </article>
-      <article class="card">
-        <h2>Asset history</h2>
-        <p>Use <code>GET /api/assets/:id/history</code> to see jobs, proof, invoices, parts, incidents, and compliance documents.</p>
-      </article>
-    </section>
-  </main>
-  <script src="assets/layout.js"></script>
-</body>
+  </body>
 </html>

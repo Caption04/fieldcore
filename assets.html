@@ -23,9 +23,16 @@
         <article class="card stat-card"><div class="stat-label">Retired</div><div class="stat-value">0</div><div class="trend">Out of service</div></article>
         <article class="card stat-card"><div class="stat-label">Warranty</div><div class="stat-value">0</div><div class="trend">Tracked warranties</div></article>
       </section>
-      <div class="toolbar">
-        <span class="api-status" data-api-status>Connecting...</span>
-      </div>
+      <section class="panel asset-client-panel">
+        <div class="panel-head">
+          <div><h3>Find a customer asset page</h3><p>Search/select a customer first, then view that customer’s equipment, warranties, and service records.</p></div>
+          <span class="api-status" data-api-status>Connecting...</span>
+        </div>
+        <div class="form-grid compact-form">
+          <div class="field span-2"><label>Customer</label><select data-asset-customer-filter><option value="">All customers</option></select></div>
+        </div>
+        <div class="settings-list" data-selected-customer-assets></div>
+      </section>
       <section class="table-card">
         <div class="empty-state"><div><strong>No assets yet</strong><span>Create serviceable asset records for customer sites.</span></div></div>
         <footer class="table-footer"><span>Showing 0 assets</span><div class="pager"><span class="page-dot active">1</span></div></footer>

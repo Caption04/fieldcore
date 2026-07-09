@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FieldCore Executive Dashboard</title>
-    <link rel="stylesheet" href="assets/app.css?v=executive-analytics-1">
+    <link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1">
     <script defer src="assets/layout.js"></script>
   </head>
   <body data-page="executive-dashboard" data-title="Executive Dashboard">
@@ -25,7 +25,7 @@
           <label>Start date<input name="startDate" type="date"></label>
           <label>End date<input name="endDate" type="date"></label>
           <label>Branch ID<input name="branchId" placeholder="Optional branch ID"></label>
-          <button class="primary" type="submit">Refresh</button>
+          <button class="primary-button" type="submit">Refresh</button>
         </form>
       </section>
       <section class="grid cards" data-overview></section>
@@ -42,55 +42,6 @@
         <div data-definitions class="settings-list"></div>
       </section>
     </section>
-    <script>
-      (function(){
-        const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
-        const status = document.querySelector('[data-api-status]');
-        const overview = document.querySelector('[data-overview]');
-        const branches = document.querySelector('[data-branches]');
-        const funnel = document.querySelector('[data-funnel]');
-        const definitions = document.querySelector('[data-definitions]');
-        const form = document.querySelector('[data-filters]');
-        const money = (value) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(value || 0));
-        const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-        function card(label, value, hint) { return `<article class="card"><small>${esc(label)}</small><strong>${esc(value)}</strong><span>${esc(hint || '')}</span></article>`; }
-        function listItem(title, body, badge) { return `<div class="list-item"><span class="initials">${esc(String(title).slice(0,3).toUpperCase())}</span><div><strong>${esc(title)}</strong><small>${body}</small></div>${badge ? `<span class="badge gray">${esc(badge)}</span>` : ''}</div>`; }
-        function query() {
-          const params = new URLSearchParams(new FormData(form));
-          for (const [key, value] of [...params.entries()]) if (!value) params.delete(key);
-          return params.toString();
-        }
-        async function load() {
-          status.textContent = 'Loading...';
-          const qs = query();
-          const [execRes, branchRes, qtcRes] = await Promise.all([
-            fetch(`${API_BASE}/analytics/executive${qs ? '?' + qs : ''}`, { credentials: 'include' }),
-            fetch(`${API_BASE}/analytics/branches${qs ? '?' + qs : ''}`, { credentials: 'include' }),
-            fetch(`${API_BASE}/analytics/quote-to-cash${qs ? '?' + qs : ''}`, { credentials: 'include' })
-          ]);
-          if (!execRes.ok) throw new Error('Executive dashboard unavailable');
-          const exec = (await execRes.json()).data;
-          const branchData = branchRes.ok ? (await branchRes.json()).data.branchPerformance : [];
-          const qtc = qtcRes.ok ? (await qtcRes.json()).data.quoteToCash : { stages: [] };
-          const o = exec.overview || {};
-          overview.innerHTML = [
-            card('Period revenue', money(o.periodRevenue), 'Confirmed payments in selected range'),
-            card('Outstanding invoices', o.outstandingInvoices || 0, money(o.outstandingInvoiceTotal)),
-            card('Overdue invoices', o.overdueInvoices || 0, money(o.overdueInvoiceTotal)),
-            card('Completed jobs', o.completedJobs || 0, 'Selected range'),
-            card('SLA breaches', o.slaBreaches || 0, 'Service risk'),
-            card('Quote acceptance', (o.quoteAcceptanceRate || 0) + '%', 'Sent vs accepted'),
-            card('Proof missing', o.proofMissingCount || 0, 'Completed jobs missing required evidence'),
-            card('Low stock critical', o.lowStockCriticalItems || 0, 'At or below reorder threshold')
-          ].join('');
-          branches.innerHTML = branchData.length ? branchData.map((row) => listItem(row.branchName, `${money(row.revenue)} revenue · ${row.completedJobs} completed · ${row.slaBreaches} SLA breaches · ${money(row.stockValue)} stock`, `${row.pendingApprovals} approvals`)).join('') : '<div class="empty-state"><strong>No branch data</strong><span>Create branches and branch-scoped records to populate this view.</span></div>';
-          funnel.innerHTML = qtc.stages.length ? qtc.stages.map((row) => listItem(row.stage, `${row.count} records · ${row.conversionRate}% conversion`, row.averageDaysFromPreviousStage == null ? 'n/a' : `${row.averageDaysFromPreviousStage} days`)).join('') : '<div class="empty-state"><strong>No funnel data</strong><span>Quotes, jobs, invoices, and payments will populate the funnel.</span></div>';
-          definitions.innerHTML = Object.entries(exec.definitions || {}).map(([key, value]) => listItem(key, esc(value), 'definition')).join('');
-          status.textContent = 'Connected';
-        }
-        form.addEventListener('submit', (event) => { event.preventDefault(); load().catch((error) => { status.textContent = error.message; status.classList.add('red'); }); });
-        load().catch((error) => { status.textContent = error.message; status.classList.add('red'); });
-      })();
-    </script>
+        <script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script>
   </body>
 </html>

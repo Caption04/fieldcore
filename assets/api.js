@@ -591,6 +591,39 @@
     });
   }
 
+
+  function assetsForSelectedCustomer(data) {
+    const select = document.querySelector('[data-asset-customer-filter]');
+    const customerId = select && select.value;
+    if (!customerId) return data || [];
+    return (data || []).filter((item) => item.customerId === customerId || item.customer && item.customer.id === customerId);
+  }
+
+  function setupAssetCustomerFilter(data) {
+    if (page !== 'assets') return;
+    const select = document.querySelector('[data-asset-customer-filter]');
+    const details = document.querySelector('[data-selected-customer-assets]');
+    if (!select) return;
+    if (!select.dataset.ready) {
+      select.innerHTML = '<option value="">All customers</option>' + (state.customers || []).map((customer) => '<option value="' + escapeHtml(customer.id) + '">' + escapeHtml(customer.name || customer.email || customer.id) + '</option>').join('');
+      select.dataset.ready = 'true';
+      select.addEventListener('change', () => {
+        const filtered = assetsForSelectedCustomer(state.assets || []);
+        renderTable('assets', filtered);
+        setupAssetCustomerFilter(state.assets || []);
+      });
+    }
+    const customer = (state.customers || []).find((item) => item.id === select.value);
+    const filtered = assetsForSelectedCustomer(data);
+    if (details) {
+      if (!customer) {
+        details.innerHTML = '<div class="list-item"><span class="initials">ALL</span><div><strong>All customer assets</strong><small>Select a customer to open a focused asset view.</small></div><span class="badge gray">' + filtered.length + ' assets</span></div>';
+      } else {
+        details.innerHTML = '<div class="list-item"><span class="initials">' + escapeHtml((customer.name || 'CU').slice(0,2).toUpperCase()) + '</span><div><strong>' + escapeHtml(customer.name || 'Customer') + '</strong><small>' + escapeHtml([customer.email, customer.phone, customer.address].filter(Boolean).join(' · ') || 'Customer asset page') + '</small></div><span class="badge gray">' + filtered.length + ' assets</span></div>';
+      }
+    }
+  }
+
   function renderTable(resource, data) {
     const config = tableConfigs[resource];
     const card = document.querySelector('.table-card');
@@ -2600,10 +2633,10 @@
   }
 
   const paymentProviderDefinitions = [
-    { provider: 'PAYNOW', title: 'Paynow Zimbabwe', initials: 'PN', note: 'Zimbabwe customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['resultUrl', 'Result/webhook URL'], ['returnUrl', 'Return URL'], ['authemail', 'Auth email']], secrets: [['integrationId', 'Integration ID'], ['integrationKey', 'Integration Key']] },
-    { provider: 'OZOW', title: 'Ozow South Africa', initials: 'OZ', note: 'South African customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['countryCode', 'Country code'], ['currencyCode', 'Currency code'], ['notifyUrl', 'Notify/webhook URL'], ['successUrl', 'Success URL'], ['errorUrl', 'Error URL'], ['cancelUrl', 'Cancel URL']], secrets: [['siteCode', 'Site Code'], ['apiKey', 'API Key'], ['privateKey', 'Private Key']] },
-    { provider: 'MOCK', title: 'Mock Provider', initials: 'MK', note: 'Controlled QA payment success/failure', config: [['mockMode', 'Mock mode: true/false'], ['webhookSecret', 'Webhook secret']], secrets: [['apiKey', 'Mock API key']] },
-    { provider: 'MANUAL_BANK', title: 'Manual Bank Transfer', initials: 'BT', note: 'Offline/manual bank transfer records', config: [['instructions', 'Instructions'], ['accountName', 'Account name'], ['bankName', 'Bank name'], ['accountNumber', 'Account number'], ['branchCode', 'Branch code']], secrets: [] }
+    { provider: 'PAYNOW', title: 'Paynow Zimbabwe', initials: 'PN', market: 'ZW', note: 'Zimbabwe customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['resultUrl', 'Result/webhook URL'], ['returnUrl', 'Return URL'], ['authemail', 'Auth email']], secrets: [['integrationId', 'Integration ID'], ['integrationKey', 'Integration Key']] },
+    { provider: 'OZOW', title: 'Ozow South Africa', initials: 'OZ', market: 'SA', note: 'South African customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['countryCode', 'Country code'], ['currencyCode', 'Currency code'], ['notifyUrl', 'Notify/webhook URL'], ['successUrl', 'Success URL'], ['errorUrl', 'Error URL'], ['cancelUrl', 'Cancel URL']], secrets: [['siteCode', 'Site Code'], ['apiKey', 'API Key'], ['privateKey', 'Private Key']] },
+    { provider: 'MOCK', title: 'Mock Provider', initials: 'MK', market: 'QA', note: 'Controlled QA payment success/failure', config: [['mockMode', 'Mock mode: true/false'], ['webhookSecret', 'Webhook secret']], secrets: [['apiKey', 'Mock API key']] },
+    { provider: 'MANUAL_BANK', title: 'Manual Bank Transfer', initials: 'BT', market: 'QA', note: 'Offline/manual bank transfer records', config: [['instructions', 'Instructions'], ['accountName', 'Account name'], ['bankName', 'Bank name'], ['accountNumber', 'Account number'], ['branchCode', 'Branch code']], secrets: [] }
   ];
 
   function paymentProviderByProvider(provider) {
@@ -2637,7 +2670,7 @@
         return '<div class="field"><label>' + escapeHtml(label) + '</label>' + input + '</div>';
       }).join('');
       const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" placeholder="' + (item.id ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved if previously entered' : 'Not saved') + '"></div>').join('');
-      return '<form class="integration-card" data-payment-provider-form="' + escapeHtml(definition.provider) + '" data-payment-provider-id="' + escapeHtml(item.id || '') + '"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.note + (item.lastTestedAt ? ' / tested ' + formatDateTime(item.lastTestedAt) : ' / not tested')) + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span></div><div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save Provider</button><button class="secondary-button compact" type="button" data-payment-provider-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Test</button></div><p class="fc-form-error span-2" data-payment-provider-message hidden></p></div></form>';
+      return '<form class="integration-card" ' + (definition.market === 'ZW' ? 'data-zimbabwe-only="true" ' : definition.market === 'SA' ? 'data-south-africa-only="true" ' : '') + 'data-payment-provider-form="' + escapeHtml(definition.provider) + '" data-payment-provider-id="' + escapeHtml(item.id || '') + '"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.note + (item.lastTestedAt ? ' / tested ' + formatDateTime(item.lastTestedAt) : ' / not tested')) + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span></div><div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save Provider</button><button class="secondary-button compact" type="button" data-payment-provider-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Test</button></div><p class="fc-form-error span-2" data-payment-provider-message hidden></p></div></form>';
     }).join('');
     bindPaymentProviderActions();
   }
@@ -3141,7 +3174,8 @@
         const data = await api(`/${page}`);
         state[page] = data;
         if (!state.listFilters[page]) state.listFilters[page] = 'all';
-        renderTable(page, filteredListData(page, data));
+        if (page === 'assets') setupAssetCustomerFilter(data);
+        renderTable(page, page === 'assets' ? assetsForSelectedCustomer(filteredListData(page, data)) : filteredListData(page, data));
         setupStatusTabs(page, data);
         updateListStats(page, data);
       }

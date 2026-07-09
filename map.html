@@ -20,12 +20,14 @@
         </div>
         <div class="map-actions">
           <button class="secondary-button" type="button" data-map-refresh>Refresh Map</button>
+          <button class="secondary-button" type="button" data-map-expand>Expand Map</button>
           <span class="api-status" data-api-status>Connecting...</span>
         </div>
       </div>
       <section class="map-layout real-map-layout">
         <div class="map-canvas real-map-canvas">
           <div id="worker-map" class="leaflet-worker-map" aria-label="Live worker map"></div>
+          <div class="map-scroll-hint" aria-hidden="true">Scrolls page · use + / − to zoom map</div>
           <div class="zero-map" data-map-empty>
             <div>
               <strong>No live locations</strong>

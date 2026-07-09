@@ -4,55 +4,49 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FieldCore Approvals</title>
-    <link rel="stylesheet" href="assets/app.css?v=task7-enterprise-approvals">
+    <link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1">
     <script defer src="assets/layout.js"></script>
+    <script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script>
   </head>
   <body data-page="approvals" data-title="Approvals">
     <section class="page">
       <div class="hero-row">
-        <div class="hero-copy"><h2>Enterprise approvals</h2><p>Configure risk gates, review approval queues, and execute approved actions once.</p></div>
+        <div class="hero-copy"><p class="eyebrow">Risk gates</p><h2>Enterprise approvals</h2><p>Use approvals for sensitive actions: voiding invoices, refunds, purchase orders, stock adjustments, high discounts, SLA waivers, or reassignment after dispatch.</p></div>
         <span class="api-status" data-status>Loading...</span>
       </div>
+      <section class="grid three compact-guide-grid">
+        <article class="card"><h3>Policy</h3><p class="muted">Define which event needs approval and which role must approve it.</p></article>
+        <article class="card"><h3>Queue</h3><p class="muted">Review pending requests and approve/reject them with an audit trail.</p></article>
+        <article class="card"><h3>Execution</h3><p class="muted">Approved actions can be executed once so risky work is not duplicated.</p></article>
+      </section>
       <section class="panel">
         <div class="panel-head"><h3>Create manual approval request</h3><span class="badge gray">Admin</span></div>
-        <form class="grid-form" data-approval-form>
-          <label>Entity type<input name="entityType" required placeholder="PurchaseOrder"></label>
-          <label>Entity ID<input name="entityId" required placeholder="po_123"></label>
-          <label>Event type<select name="eventType"><option>QUOTE_DISCOUNT</option><option>QUOTE_SEND</option><option>INVOICE_DISCOUNT</option><option>INVOICE_VOID</option><option>PAYMENT_REFUND</option><option>PURCHASE_ORDER_SEND</option><option>PURCHASE_ORDER_APPROVE</option><option>STOCK_ADJUSTMENT</option><option>JOB_RESCHEDULE</option><option>JOB_REASSIGN_AFTER_DISPATCH</option><option>SLA_WAIVE</option><option>CONTRACT_CANCEL</option></select></label>
-          <label>Action key<input name="actionKey" placeholder="invoice.void"></label>
-          <label>Amount<input name="amount" type="number" step="0.01" min="0"></label>
-          <label>Reason<input name="reason" placeholder="Why approval is needed"></label>
-          <button type="submit" class="button primary">Request approval</button>
+        <form class="form-grid" data-approval-form>
+          <div class="field"><label>Entity type</label><input name="entityType" required placeholder="PurchaseOrder"></div>
+          <div class="field"><label>Entity ID</label><input name="entityId" required placeholder="po_123"></div>
+          <div class="field"><label>Event type</label><select name="eventType"><option>QUOTE_DISCOUNT</option><option>QUOTE_SEND</option><option>INVOICE_DISCOUNT</option><option>INVOICE_VOID</option><option>PAYMENT_REFUND</option><option>PURCHASE_ORDER_SEND</option><option>PURCHASE_ORDER_APPROVE</option><option>STOCK_ADJUSTMENT</option><option>JOB_RESCHEDULE</option><option>JOB_REASSIGN_AFTER_DISPATCH</option><option>SLA_WAIVE</option><option>CONTRACT_CANCEL</option></select></div>
+          <div class="field"><label>Action key</label><input name="actionKey" placeholder="invoice.void"></div>
+          <div class="field"><label>Amount</label><input name="amount" type="number" step="0.01" min="0"></div>
+          <div class="field"><label>Reason</label><input name="reason" placeholder="Why approval is needed"></div>
+          <div class="form-actions span-2"><button type="submit" class="primary-button">Request approval</button></div>
         </form>
       </section>
       <section class="panel">
-        <div class="panel-head"><h3>Approval policy</h3><span class="badge gray">Risk gates</span></div>
-        <form class="grid-form" data-policy-form>
-          <label>Name<input name="name" required placeholder="Invoice void approval"></label>
-          <label>Event type<select name="eventType"><option>INVOICE_VOID</option><option>PAYMENT_REFUND</option><option>PURCHASE_ORDER_SEND</option><option>STOCK_ADJUSTMENT</option><option>JOB_REASSIGN_AFTER_DISPATCH</option><option>CONTRACT_CANCEL</option></select></label>
-          <label>Threshold amount<input name="thresholdAmount" type="number" step="0.01" min="0" value="0"></label>
-          <label>Required role<select name="requiredApproverRole"><option>OWNER</option><option>ADMIN</option></select></label>
-          <label>Reason required<select name="reasonRequired"><option value="true">Yes</option><option value="false">No</option></select></label>
-          <label>Allow self approval<select name="allowSelfApproval"><option value="false">No</option><option value="true">Yes</option></select></label>
-          <button type="submit" class="button primary">Save policy</button>
+        <div class="panel-head"><h3>Approval policy</h3><span class="badge gray">Rules</span></div>
+        <form class="form-grid" data-policy-form>
+          <div class="field"><label>Name</label><input name="name" required placeholder="Invoice void approval"></div>
+          <div class="field"><label>Event type</label><select name="eventType"><option>INVOICE_VOID</option><option>PAYMENT_REFUND</option><option>PURCHASE_ORDER_SEND</option><option>STOCK_ADJUSTMENT</option><option>JOB_REASSIGN_AFTER_DISPATCH</option><option>CONTRACT_CANCEL</option></select></div>
+          <div class="field"><label>Threshold amount</label><input name="thresholdAmount" type="number" step="0.01" min="0" value="0"></div>
+          <div class="field"><label>Required role</label><select name="requiredApproverRole"><option>OWNER</option><option>ADMIN</option></select></div>
+          <div class="field"><label>Reason required</label><select name="reasonRequired"><option value="true">Yes</option><option value="false">No</option></select></div>
+          <div class="field"><label>Allow self approval</label><select name="allowSelfApproval"><option value="false">No</option><option value="true">Yes</option></select></div>
+          <div class="form-actions span-2"><button type="submit" class="primary-button">Save policy</button></div>
         </form>
       </section>
       <section class="panel">
-        <div class="panel-head"><h3>Pending approvals</h3><button class="button" type="button" data-refresh>Refresh</button></div>
+        <div class="panel-head"><h3>Pending approvals</h3><button class="secondary-button compact" type="button" data-refresh>Refresh</button></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th>Event</th><th>Entity</th><th>Reason</th><th>Requested</th><th>Action</th></tr></thead><tbody data-approvals></tbody></table></div>
       </section>
     </section>
-    <script>
-      const API = location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
-      const $ = (s) => document.querySelector(s);
-      async function api(path, options = {}) { const res = await fetch(API + path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...options }); const body = await res.json().catch(() => ({})); if (!res.ok) throw new Error(body.message || 'Request failed'); return body.data || body; }
-      function row(item) { return `<tr><td>${item.eventType}<br><small>${item.actionKey || ''}</small></td><td>${item.entityType} / ${item.entityId}</td><td>${item.reason || ''}</td><td>${item.createdAt ? new Date(item.createdAt).toLocaleString() : ''}</td><td><button class="button" data-approve="${item.id}">Approve</button> <button class="button" data-execute="${item.id}">Execute</button> <button class="button danger" data-reject="${item.id}">Reject</button></td></tr>`; }
-      async function load() { try { $('[data-status]').textContent = 'Connected'; const data = await api('/approvals/pending'); $('[data-approvals]').innerHTML = (data || []).map(row).join('') || '<tr><td colspan="5">No pending approvals.</td></tr>'; } catch (e) { $('[data-status]').textContent = e.message; } }
-      $('[data-approval-form]').addEventListener('submit', async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); Object.keys(data).forEach((k) => { if (!data[k]) delete data[k]; }); if (data.amount) data.amount = Number(data.amount); await api('/approvals', { method: 'POST', body: JSON.stringify(data) }); event.currentTarget.reset(); load(); });
-      $('[data-policy-form]').addEventListener('submit', async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); Object.keys(data).forEach((k) => { if (data[k] === '') delete data[k]; }); if (data.thresholdAmount) data.thresholdAmount = Number(data.thresholdAmount); data.reasonRequired = data.reasonRequired === 'true'; data.allowSelfApproval = data.allowSelfApproval === 'true'; await api('/approval-policies', { method: 'POST', body: JSON.stringify(data) }); event.currentTarget.reset(); load(); });
-      document.addEventListener('click', async (event) => { const approve = event.target.dataset.approve; const reject = event.target.dataset.reject; const execute = event.target.dataset.execute; if (!approve && !reject && !execute) return; const action = approve ? 'approve' : reject ? 'reject' : 'execute'; await api(`/approvals/${approve || reject || execute}/${action}`, { method: 'POST', body: JSON.stringify({ decisionNote: action + ' from approvals page' }) }); load(); });
-      $('[data-refresh]').addEventListener('click', load);
-      load();
-    </script>
   </body>
 </html>

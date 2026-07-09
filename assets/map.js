@@ -8,6 +8,7 @@
   let map;
   let markers = new Map();
   let refreshTimer;
+  let expanded = false;
 
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>'"]/g, (char) => ({
@@ -98,8 +99,13 @@
     if (map || !window.L) return map;
     map = L.map('worker-map', {
       zoomControl: true,
-      attributionControl: true
+      attributionControl: true,
+      scrollWheelZoom: false
     }).setView(DEFAULT_CENTER, 12);
+
+    // Keep normal page scrolling usable when the cursor is over the map.
+    // Users can still zoom with the Leaflet + / - controls.
+    map.scrollWheelZoom.disable();
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
@@ -240,6 +246,23 @@
     }
   }
 
+  function setExpanded(next) {
+    expanded = Boolean(next);
+    document.body.classList.toggle('map-expanded', expanded);
+    const button = node('[data-map-expand]');
+    if (button) button.textContent = expanded ? 'Reduce Map' : 'Expand Map';
+    if (map) window.setTimeout(() => map.invalidateSize(), 80);
+  }
+
+  function setupExpandHandler() {
+    const button = node('[data-map-expand]');
+    if (!button) return;
+    button.addEventListener('click', () => setExpanded(!expanded));
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && expanded) setExpanded(false);
+    });
+  }
+
   function setupFocusHandlers() {
     document.addEventListener('click', (event) => {
       const button = event.target.closest('[data-focus-worker]');
@@ -259,6 +282,7 @@
     }
     ensureMap();
     setupFocusHandlers();
+    setupExpandHandler();
     const refreshButton = node('[data-map-refresh]');
     if (refreshButton) refreshButton.addEventListener('click', refreshLocations);
     refreshLocations();

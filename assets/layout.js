@@ -67,17 +67,34 @@
     return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.file}</svg>`;
   }
 
-  function nav(current, role) {
-    const pages = role === 'WORKER' ? workerPages : adminPages;
-    const normalized = normalizePages(pages);
+  const adminNavGroups = [
+    ['Core', ['dashboard', 'jobs', 'schedule', 'map', 'booking-requests', 'customers']],
+    ['Money', ['quotes', 'invoices', 'collections']],
+    ['Enterprise', ['branches', 'approvals', 'assets', 'service-contracts', 'contract-automation', 'inventory', 'purchase-requests', 'purchase-orders', 'procurement-costing', 'mobile-sync', 'reports', 'executive-dashboard', 'onboarding', 'security-center']],
+    ['Workspace', ['settings']]
+  ];
 
-    return normalized
-      .map(([key, label, href, iconName]) => {
-        return `<a class="nav-link${key === current ? ' active' : ''}" href="${href}">
-          <span class="nav-icon">${icon(iconName)}</span>${label}
-        </a>`;
-      })
-      .join('');
+  function navLink([key, label, href, iconName], current) {
+    return `<a class="nav-link${key === current ? ' active' : ''}" href="${href}">
+      <span class="nav-icon">${icon(iconName)}</span>${label}
+    </a>`;
+  }
+
+  function nav(current, role) {
+    if (role === 'WORKER') {
+      return normalizePages(workerPages).map((page) => navLink(page, current)).join('');
+    }
+
+    const normalized = normalizePages(adminPages);
+    const byKey = new Map(normalized.map((page) => [page[0], page]));
+    return adminNavGroups.map(([title, keys]) => {
+      const links = keys.map((key) => byKey.get(key)).filter(Boolean);
+      const isOpen = links.some((page) => page[0] === current) || title === 'Core';
+      return `<details class="nav-group"${isOpen ? ' open' : ''}>
+        <summary class="nav-group-title">${title}</summary>
+        <div class="nav-group-links">${links.map((page) => navLink(page, current)).join('')}</div>
+      </details>`;
+    }).join('');
   }
 
   function shouldShowQuickCard(current, role) {
@@ -124,6 +141,110 @@
     }
   }
 
+  function searchBox() {
+    return `<div class="global-search-shell">
+      <label for="globalSearch">System search</label>
+      <input id="globalSearch" type="search" placeholder="Search jobs, clients, invoices..." autocomplete="off" data-global-search>
+      <div class="global-search-results" data-global-search-results hidden></div>
+    </div>`;
+  }
+
+  function marketSwitcher() {
+    const value = localStorage.getItem('fieldcore.market') || 'ZW';
+    return `<div class="market-switcher" aria-label="Dashboard region">
+      <span>Region</span>
+      <button type="button" data-market-value="ZW"${value === 'ZW' ? ' class="active"' : ''}>Zimbabwe</button>
+      <button type="button" data-market-value="SA"${value === 'SA' ? ' class="active"' : ''}>South Africa</button>
+    </div>`;
+  }
+
+  function applyMarketMode(value) {
+    const next = value === 'SA' ? 'SA' : 'ZW';
+    localStorage.setItem('fieldcore.market', next);
+    document.body.dataset.market = next;
+    document.querySelectorAll('[data-market-value]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.marketValue === next);
+    });
+  }
+
+  function setupMarketSwitcher() {
+    applyMarketMode(localStorage.getItem('fieldcore.market') || 'ZW');
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-market-value]');
+      if (!button) return;
+      applyMarketMode(button.dataset.marketValue);
+    });
+  }
+
+  function pageSearchBox() {
+    return `<div class="page-search-shell"><input type="search" placeholder="Search this section..." aria-label="Search this section" data-page-search></div>`;
+  }
+
+  function setupPageSearch() {
+    document.addEventListener('input', (event) => {
+      if (!event.target.matches('[data-page-search]')) return;
+      const query = event.target.value.trim().toLowerCase();
+      const targets = document.querySelectorAll('.table-wrap tbody tr, .table-scroll tbody tr, .settings-list > *, .worker-location-card');
+      targets.forEach((node) => {
+        if (!query) node.style.display = '';
+        else node.style.display = node.textContent.toLowerCase().includes(query) ? '' : 'none';
+      });
+    });
+  }
+
+  const searchResources = [
+    ['jobs', '/jobs', 'Jobs', (item) => item.title || item.number || item.id],
+    ['customers', '/customers', 'Customers', (item) => item.name || item.email || item.phone],
+    ['quotes', '/quotes', 'Quotes', (item) => item.title || item.number || item.id],
+    ['invoices', '/invoices', 'Invoices', (item) => item.number || item.customer && item.customer.name],
+    ['booking-requests', '/booking-requests', 'Booking requests', (item) => item.customerName || item.serviceName],
+    ['assets', '/assets', 'Assets', (item) => item.name || item.assetTag || item.serialNumber],
+    ['service-contracts', '/service-contracts', 'Contracts', (item) => item.name || item.contractNumber],
+    ['branches', '/branches', 'Branches', (item) => item.name || item.code || item.city]
+  ];
+
+  function escape(value) {
+    return String(value == null ? '' : value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+  }
+
+  function resourceHref(key) {
+    const page = adminPages.find((item) => item[0] === key);
+    return page ? page[2] : 'index.html';
+  }
+
+  function setupGlobalSearch() {
+    const input = document.querySelector('[data-global-search]');
+    const results = document.querySelector('[data-global-search-results]');
+    if (!input || !results) return;
+    let timer;
+    input.addEventListener('input', () => {
+      window.clearTimeout(timer);
+      const query = input.value.trim().toLowerCase();
+      if (query.length < 2) {
+        results.hidden = true;
+        results.innerHTML = '';
+        return;
+      }
+      timer = window.setTimeout(async () => {
+        results.hidden = false;
+        results.innerHTML = '<div class="search-result muted">Searching...</div>';
+        const found = [];
+        await Promise.all(searchResources.map(async ([key, endpoint, label, title]) => {
+          try {
+            const response = await fetch(`${API_BASE}${endpoint}`, { credentials: 'include' });
+            const payload = await response.json().catch(() => ({}));
+            const items = Array.isArray(payload.data) ? payload.data : [];
+            items.forEach((item) => {
+              const text = JSON.stringify(item).toLowerCase();
+              if (text.includes(query)) found.push({ key, label, title: title(item) || item.id || label });
+            });
+          } catch (error) {}
+        }));
+        results.innerHTML = found.slice(0, 8).map((item) => `<a class="search-result" href="${resourceHref(item.key)}"><strong>${escape(item.title)}</strong><span>${escape(item.label)}</span></a>`).join('') || '<div class="search-result muted">No results found.</div>';
+      }, 220);
+    });
+  }
+
   function init() {
     const current = activePage();
     const content = Array.from(document.body.children);
@@ -135,7 +256,9 @@
         <span class="brand-mark">FC</span>
         <span class="brand-name">FieldCore</span>
       </a>
+      ${searchBox()}
       <nav class="nav">${nav(current, null)}</nav>
+      ${marketSwitcher()}
       ${quickCard()}
       <div class="user">
         <span class="user-photo"></span>
@@ -148,6 +271,7 @@
     </aside>
     <main class="content">
       <button class="menu-toggle" type="button">Menu</button>
+      ${pageSearchBox()}
       <div class="page-mount"></div>
     </main>`;
 
@@ -160,6 +284,9 @@
       document.body.classList.toggle('nav-open');
     });
 
+    setupGlobalSearch();
+    setupPageSearch();
+    setupMarketSwitcher();
     loadRoleNavigation();
   }
 
