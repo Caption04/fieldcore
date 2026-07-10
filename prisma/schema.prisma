@@ -2503,6 +2503,7 @@ model CompanyFinanceSettings {
   invoiceFooter         String?
   allowedPaymentMethods Json?
   paymentInstructions   String?
+  bankTransferProofRequired Boolean @default(true)
   enforceQuoteDepositBeforeScheduling Boolean @default(false)
   defaultQuoteDepositPercent Decimal @default(0) @db.Decimal(7, 4)
   reminderThrottleHours Int @default(24)

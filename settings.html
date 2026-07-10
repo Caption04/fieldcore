@@ -338,41 +338,50 @@
 
           <div class="panel settings-panel" data-settings-panel="finance" hidden>
             <div class="panel-head">
-              <h2>Finance &amp; Exports</h2>
-              <span class="badge gray">Accounting foundation</span>
+              <div>
+                <h2>Finance &amp; Exports</h2>
+                <p class="muted">Set how this business invoices customers, accepts customer payments, and exports finance data.</p>
+              </div>
+              <span class="badge gray">Customer finance</span>
             </div>
-            <form class="form-grid" data-finance-settings-form>
+            <form class="form-grid finance-user-form" data-finance-settings-form>
+              <div class="form-section-title span-2">
+                <strong>Tax &amp; Invoice Defaults</strong>
+                <span>Used on quotes, customer invoices, receipts, payment pages, and exports.</span>
+              </div>
               <div class="field">
-                <label for="financeCountry">Country</label>
-                <input id="financeCountry" name="country" maxlength="2" placeholder="ZW" data-finance-field="country">
+                <label for="financeCountry">Country / Market</label>
+                <select id="financeCountry" name="country" data-finance-field="country">
+                  <option value="ZW">Zimbabwe</option>
+                  <option value="ZA">South Africa</option>
+                </select>
               </div>
               <div class="field">
                 <label for="financeTimezone">Timezone</label>
                 <input id="financeTimezone" name="timezone" maxlength="80" placeholder="Africa/Harare" data-finance-field="timezone">
               </div>
               <div class="field">
-                <label for="financeDefaultCurrency">Default Currency</label>
-                <input id="financeDefaultCurrency" name="defaultCurrency" maxlength="3" placeholder="USD" data-finance-field="defaultCurrency">
+                <label for="financeDefaultCurrency">Default Invoice Currency</label>
+                <select id="financeDefaultCurrency" name="defaultCurrency" data-finance-field="defaultCurrency">
+                  <option value="USD">USD — US dollar</option>
+                  <option value="ZAR">ZAR — South African rand</option>
+                </select>
               </div>
               <div class="field">
-                <label for="financeAllowedCurrencies">Allowed Currencies</label>
-                <input id="financeAllowedCurrencies" name="allowedCurrencies" placeholder="USD,ZAR,ZiG" data-finance-field="allowedCurrencies">
-              </div>
-              <div class="field">
-                <label for="financeDateFormat">Date Format</label>
-                <input id="financeDateFormat" name="dateFormat" maxlength="40" placeholder="yyyy-MM-dd" data-finance-field="dateFormat">
-              </div>
-              <div class="field">
-                <label for="financeNumberFormat">Number Format Locale</label>
-                <input id="financeNumberFormat" name="numberFormat" maxlength="40" placeholder="en-ZW" data-finance-field="numberFormat">
+                <label for="financeTaxRate">Tax/VAT Rate %</label>
+                <input id="financeTaxRate" name="taxRate" type="number" min="0" max="100" step="0.01" data-finance-field="taxRate" placeholder="0.00">
               </div>
               <div class="field">
                 <label for="financeTaxName">Tax/VAT Label</label>
                 <input id="financeTaxName" name="taxName" placeholder="VAT" data-finance-field="taxName">
               </div>
-              <div class="field">
-                <label for="financeTaxRate">Tax Rate %</label>
-                <input id="financeTaxRate" name="taxRate" type="number" min="0" max="100" step="0.01" data-finance-field="taxRate">
+              <div class="field toggle-field">
+                <label for="financePricesIncludeTaxToggle">Prices include tax</label>
+                <label class="switch-row" for="financePricesIncludeTaxToggle">
+                  <input id="financePricesIncludeTaxToggle" type="checkbox" name="pricesIncludeTax" data-finance-field="pricesIncludeTax">
+                  <span class="switch-control" aria-hidden="true"></span>
+                  <span class="switch-copy">Line item prices already include VAT/tax.</span>
+                </label>
               </div>
               <div class="field">
                 <label for="financeInvoicePrefix">Invoice Prefix</label>
@@ -387,40 +396,87 @@
                 <input id="financeQuoteExpiryDays" name="quoteExpiryDays" type="number" min="1" max="365" data-finance-field="quoteExpiryDays">
               </div>
               <div class="field">
-                <label for="financePaymentTermsDays">Payment Terms Days</label>
+                <label for="financePaymentTermsDays">Customer Payment Terms Days</label>
                 <input id="financePaymentTermsDays" name="paymentTermsDays" type="number" min="0" max="365" data-finance-field="paymentTermsDays">
               </div>
-              <div class="field">
-                <label for="financeFiscalYearStartMonth">Fiscal Year Start Month</label>
-                <input id="financeFiscalYearStartMonth" name="fiscalYearStartMonth" type="number" min="1" max="12" data-finance-field="fiscalYearStartMonth">
+
+              <div class="form-section-title span-2">
+                <strong>Customer Payment Options</strong>
+                <span>Only local digital payment providers are shown for the selected market.</span>
               </div>
-              <div class="field checkbox-field">
-                <label><input type="checkbox" name="pricesIncludeTax" data-finance-field="pricesIncludeTax"> Prices include tax</label>
+              <input type="hidden" name="allowedPaymentMethods" data-finance-field="allowedPaymentMethods">
+              <div class="payment-method-picker span-2 compact-payment-picker" data-payment-method-picker>
+                <div class="payment-method-heading span-2" data-market-method="ALL">Offline and manual methods</div>
+                <label class="payment-method-option" data-market-method="ALL">
+                  <input type="checkbox" value="CASH" data-payment-method-option>
+                  <span><strong>Cash</strong><small>Record customer cash payments manually.</small></span>
+                </label>
+                <label class="payment-method-option" data-market-method="ALL">
+                  <input type="checkbox" value="BANK_TRANSFER" data-payment-method-option>
+                  <span><strong>Bank transfer</strong><small>Show bank transfer instructions and verify manually.</small></span>
+                </label>
+                <label class="payment-method-option" data-market-method="ALL">
+                  <input type="checkbox" value="EXTERNAL_PAYMENT_LINK" data-payment-method-option>
+                  <span><strong>External payment link</strong><small>Use a payment link created outside FieldCore.</small></span>
+                </label>
+                <label class="payment-method-option" data-market-method="ALL">
+                  <input type="checkbox" value="CUSTOM_MANUAL" data-payment-method-option>
+                  <span><strong>Other manual method</strong><small>Fallback for local or custom manual payments.</small></span>
+                </label>
+
+                <div class="payment-method-heading span-2" data-market-method="ZW">Zimbabwe digital payment provider</div>
+                <label class="payment-method-option" data-market-method="ZW">
+                  <input type="checkbox" value="PAYNOW" data-payment-method-option>
+                  <span><strong>Paynow</strong><small>Zimbabwe customer online payments.</small></span>
+                </label>
+
+                <div class="payment-method-heading span-2" data-market-method="SA">South African digital payment providers</div>
+                <label class="payment-method-option" data-market-method="SA">
+                  <input type="checkbox" value="OZOW" data-payment-method-option>
+                  <span><strong>Ozow</strong><small>South African instant EFT payments.</small></span>
+                </label>
+                <label class="payment-method-option" data-market-method="SA">
+                  <input type="checkbox" value="YOCO" data-payment-method-option>
+                  <span><strong>Yoco</strong><small>South African card and payment-link option.</small></span>
+                </label>
+                <label class="payment-method-option" data-market-method="SA">
+                  <input type="checkbox" value="PAYFAST" data-payment-method-option>
+                  <span><strong>PayFast</strong><small>South African online payments.</small></span>
+                </label>
+                <label class="payment-method-option" data-market-method="SA">
+                  <input type="checkbox" value="SNAPSCAN" data-payment-method-option>
+                  <span><strong>SnapScan</strong><small>South African QR/manual payment option.</small></span>
+                </label>
+              </div>
+              <div class="field span-2 toggle-field">
+                <label for="financeBankProofToggle">Bank transfer proof of payment</label>
+                <label class="switch-row" for="financeBankProofToggle">
+                  <input id="financeBankProofToggle" type="checkbox" name="bankTransferProofRequired" data-finance-field="bankTransferProofRequired">
+                  <span class="switch-control" aria-hidden="true"></span>
+                  <span class="switch-copy">Ask customers to upload/send proof of payment for bank transfers.</span>
+                </label>
               </div>
               <div class="field span-2">
-                <label for="financeAllowedPaymentMethods">Payment Methods</label>
-                <input id="financeAllowedPaymentMethods" name="allowedPaymentMethods" placeholder="CASH,BANK_TRANSFER,PAYNOW,PAYFAST,YOCO,OZOW,SNAPSCAN" data-finance-field="allowedPaymentMethods">
-                <small>Comma-separated. Use CUSTOM_MANUAL or EXTERNAL_PAYMENT_LINK for manual local methods.</small>
-              </div>
-              <div class="field span-2">
-                <label for="financePaymentInstructions">Payment Instructions</label>
-                <textarea id="financePaymentInstructions" name="paymentInstructions" data-finance-field="paymentInstructions" placeholder="Bank details, Paynow instructions, or external payment link notes."></textarea>
+                <label for="financePaymentInstructions">Customer Payment Instructions</label>
+                <textarea id="financePaymentInstructions" name="paymentInstructions" data-finance-field="paymentInstructions" placeholder="Shown on customer invoices and payment pages. Example: Please use your invoice number as the bank transfer reference."></textarea>
               </div>
               <div class="field span-2">
                 <label for="financeInvoiceFooter">Invoice Footer</label>
-                <textarea id="financeInvoiceFooter" name="invoiceFooter" data-finance-field="invoiceFooter" placeholder="Payment instructions or legal footer."></textarea>
+                <textarea id="financeInvoiceFooter" name="invoiceFooter" data-finance-field="invoiceFooter" placeholder="Optional legal note shown at the bottom of customer invoices."></textarea>
               </div>
               <div class="form-actions span-2">
                 <button class="primary-button" type="submit">Save Finance Settings</button>
               </div>
               <p class="fc-form-error span-2" data-finance-message hidden></p>
             </form>
-            <div class="settings-subform span-2" data-finance-integrations-card>
-              <div class="panel-head"><h3>Accounting Integrations</h3><span class="badge gray">Placeholders only</span></div>
-              <div class="empty-state"><div><strong>No finance integrations loaded.</strong><span>Open this panel to load accounting placeholders.</span></div></div>
-            </div>
             <div class="table-card span-2" data-finance-export-card>
-              <div class="panel-head card"><h3>CSV Exports</h3><span class="badge gray">Manual accounting</span></div>
+              <div class="panel-head card">
+                <div>
+                  <h3>Accounting Exports</h3>
+                  <p class="muted">Download CSV files for your accountant or import them into accounting software manually.</p>
+                </div>
+                <span class="badge gray">Manual CSV</span>
+              </div>
               <div class="settings-list">
                 <a class="list-item" href="/api/finance/export/invoices.csv"><span class="initials">INV</span><div><strong>Export invoices</strong><small>Invoice numbers, customers, tax, totals, balances.</small></div><span class="badge gray">CSV</span></a>
                 <a class="list-item" href="/api/finance/export/payments.csv"><span class="initials">PAY</span><div><strong>Export payments</strong><small>Confirmed and pending payment records.</small></div><span class="badge gray">CSV</span></a>

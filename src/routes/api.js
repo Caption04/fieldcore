@@ -606,18 +606,20 @@ function regionFinanceDefaults(country = 'ZW') {
       country: 'ZA',
       timezone: 'Africa/Johannesburg',
       defaultCurrency: 'ZAR',
-      allowedCurrencies: ['ZAR', 'USD'],
+      allowedCurrencies: ['ZAR'],
       numberFormat: 'en-ZA',
-      taxName: 'VAT'
+      taxName: 'VAT',
+      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'OZOW', 'YOCO', 'PAYFAST', 'SNAPSCAN']
     };
   }
   return {
     country: 'ZW',
     timezone: 'Africa/Harare',
     defaultCurrency: 'USD',
-    allowedCurrencies: ['USD', 'ZAR'],
+    allowedCurrencies: ['USD'],
     numberFormat: 'en-ZW',
-    taxName: 'Tax'
+    taxName: 'VAT',
+    allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW']
   };
 }
 
@@ -641,8 +643,9 @@ function financeSettingsDefaults(companyId, country = 'ZW') {
     paymentTermsDays: 14,
     fiscalYearStartMonth: 1,
     invoiceFooter: null,
-    allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'CARD', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'MANUAL_ADJUSTMENT', 'CUSTOM_MANUAL', 'OTHER'],
+    allowedPaymentMethods: region.allowedPaymentMethods,
     paymentInstructions: null,
+    bankTransferProofRequired: true,
     enforceQuoteDepositBeforeScheduling: false,
     defaultQuoteDepositPercent: 0,
     reminderThrottleHours: 24,
@@ -668,8 +671,11 @@ function financeLocalization(settings) {
     receiptPrefix: merged.receiptPrefix || 'RCT',
     quoteExpiryDays: Number(merged.quoteExpiryDays || 14),
     paymentTermsDays: Number(merged.paymentTermsDays || 14),
-    allowedPaymentMethods: Array.isArray(merged.allowedPaymentMethods) ? merged.allowedPaymentMethods : financeSettingsDefaults().allowedPaymentMethods,
+    fiscalYearStartMonth: merged.fiscalYearStartMonth == null ? null : Number(merged.fiscalYearStartMonth),
+    invoiceFooter: merged.invoiceFooter || null,
+    allowedPaymentMethods: Array.isArray(merged.allowedPaymentMethods) ? merged.allowedPaymentMethods : financeSettingsDefaults(null, merged.country).allowedPaymentMethods,
     paymentInstructions: merged.paymentInstructions || null,
+    bankTransferProofRequired: merged.bankTransferProofRequired !== false,
     enforceQuoteDepositBeforeScheduling: Boolean(merged.enforceQuoteDepositBeforeScheduling),
     defaultQuoteDepositPercent: Number(merged.defaultQuoteDepositPercent || 0),
     reminderThrottleHours: Number(merged.reminderThrottleHours || 24)
@@ -687,9 +693,76 @@ async function paymentMethodsForCompany(companyId, tx = prisma) {
   return settings.allowedPaymentMethods.filter((method) => paymentMethodValues.includes(method));
 }
 
+function paymentMethodIsAllowed(method, allowedMethods) {
+  const normalized = String(method || '').toUpperCase();
+  const allowed = new Set((allowedMethods || []).map((item) => String(item || '').toUpperCase()));
+  if (allowed.has(normalized)) return true;
+
+  // Backwards compatibility: older records/tests use CARD or MANUAL_CARD for
+  // an admin-entered manual payment. The simplified country-specific finance UI
+  // no longer exposes those legacy/internal codes to users.
+  if (normalized === 'CARD' && (allowed.has('CUSTOM_MANUAL') || allowed.has('MANUAL_CARD') || allowed.has('BANK_TRANSFER') || allowed.has('CASH'))) return true;
+  if (normalized === 'MANUAL_CARD' && (allowed.has('CUSTOM_MANUAL') || allowed.has('CARD') || allowed.has('BANK_TRANSFER') || allowed.has('CASH'))) return true;
+  if (normalized === 'OTHER' && allowed.has('CUSTOM_MANUAL')) return true;
+
+  return false;
+}
+
 async function assertPaymentMethodAllowed(companyId, method, tx = prisma) {
   const allowed = await paymentMethodsForCompany(companyId, tx);
-  if (!allowed.includes(method)) throw new AppError(400, 'Payment method is not enabled for this company');
+  if (!paymentMethodIsAllowed(method, allowed)) throw new AppError(400, 'Payment method is not enabled for this company');
+}
+
+
+const ONLINE_PROVIDER_PRIORITY_BY_COUNTRY = {
+  ZW: ['PAYNOW'],
+  ZA: ['OZOW', 'PAYFAST', 'YOCO', 'SNAPSCAN'],
+  SA: ['OZOW', 'PAYFAST', 'YOCO', 'SNAPSCAN']
+};
+
+function onlineProviderPriority(settings) {
+  const country = String(settings && settings.country || 'ZW').toUpperCase();
+  return ONLINE_PROVIDER_PRIORITY_BY_COUNTRY[country] || ONLINE_PROVIDER_PRIORITY_BY_COUNTRY.ZW;
+}
+
+function clientPaymentOptionsFromSettings(settings, activeProviders = []) {
+  const finance = financeLocalization(settings);
+  const allowed = new Set((finance.allowedPaymentMethods || []).map((method) => String(method || '').toUpperCase()));
+  const active = new Set((activeProviders || []).map((provider) => String(provider || '').toUpperCase()));
+  const preferredOnlineProvider = onlineProviderPriority(finance).find((provider) => allowed.has(provider) && active.has(provider)) || null;
+  return {
+    onlinePayment: {
+      available: Boolean(preferredOnlineProvider),
+      label: 'Make payment online',
+      provider: preferredOnlineProvider,
+      unavailableReason: preferredOnlineProvider ? null : 'Online payment is not configured for this business.'
+    },
+    bankTransfer: {
+      available: allowed.has('BANK_TRANSFER'),
+      proofRequired: finance.bankTransferProofRequired !== false,
+      instructions: finance.paymentInstructions || null
+    },
+    cash: {
+      available: allowed.has('CASH')
+    },
+    instructions: finance.paymentInstructions || null
+  };
+}
+
+async function activePaymentProvidersForCompany(companyId, tx = prisma) {
+  const providers = await tx.paymentProviderConnection.findMany({ where: { companyId, status: 'ACTIVE' }, select: { provider: true, status: true } });
+  return providers.map((item) => item.provider);
+}
+
+async function preferredOnlinePaymentConnection(companyId, tx = prisma) {
+  const finance = financeLocalization(await getCompanyFinanceSettings(companyId, tx));
+  const allowed = new Set((finance.allowedPaymentMethods || []).map((method) => String(method || '').toUpperCase()));
+  const priority = onlineProviderPriority(finance).filter((provider) => allowed.has(provider));
+  if (!priority.length) throw new AppError(409, 'Online payment is not enabled for this business');
+  const connections = await tx.paymentProviderConnection.findMany({ where: { companyId, provider: { in: priority }, status: 'ACTIVE' } });
+  const connection = priority.map((provider) => connections.find((item) => item.provider === provider)).find(Boolean);
+  if (!connection) throw new AppError(409, 'Online payment is not configured yet. Please contact the business or use another available payment option.');
+  return { connection, finance };
 }
 
 function attachLocalization(record, settings) {
@@ -942,6 +1015,7 @@ const financeSettingsSchema = z.object({
   invoiceFooter: optionalText(1000),
   allowedPaymentMethods: z.array(z.enum(paymentMethodValues)).max(20).optional(),
   paymentInstructions: optionalText(1000),
+  bankTransferProofRequired: z.boolean().optional(),
   enforceQuoteDepositBeforeScheduling: z.boolean().optional(),
   defaultQuoteDepositPercent: z.coerce.number().min(0).max(100).optional(),
   reminderThrottleHours: z.coerce.number().int().min(1).max(720).optional()
@@ -2800,7 +2874,7 @@ function clientJobSummary(job) { return job && { id: job.id, title: job.title, s
 function clientQuote(quote) { return quote && { id: quote.id, quoteNumber: quote.id, customerId: quote.customerId, title: quote.title, description: quote.description, status: quote.status, service: quote.service && { id: quote.service.id, name: quote.service.name }, customer: clientCustomer(quote.customer), job: clientJobSummary(quote.job), createdAt: quote.createdAt, updatedAt: quote.updatedAt, validUntil: quote.validUntil, sentAt: quote.sentAt, acceptedAt: quote.acceptedAt, rejectedAt: quote.rejectedAt, subtotal: quote.subtotal, tax: quote.taxTotal, discount: quote.discountTotal, total: quote.total, amount: quote.amount, lineItems: (quote.lineItems || []).map(clientLine) }; }
 function clientPayment(payment) { return payment && { id: payment.id, invoiceId: payment.invoiceId, amount: payment.amount, method: payment.method, status: payment.status, reference: payment.reference, receivedAt: payment.receivedAt, confirmedAt: payment.confirmedAt, createdAt: payment.createdAt }; }
 function clientReceipt(receipt) { return receipt && { id: receipt.id, receiptNumber: receipt.receiptNumber, invoiceId: receipt.invoiceId, paymentId: receipt.paymentId, amount: receipt.amount, issuedAt: receipt.issuedAt, createdAt: receipt.createdAt, invoice: receipt.invoice && { id: receipt.invoice.id, number: receipt.invoice.number, status: receipt.invoice.status }, payment: clientPayment(receipt.payment) }; }
-function clientInvoice(invoice) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), paymentLinks: (invoice.paymentLinks || []).map((link) => ({ id: link.id, status: link.status, provider: link.provider, amount: link.amount, currency: link.currency, checkoutUrl: link.checkoutUrl, expiresAt: link.expiresAt })), payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
+function clientInvoice(invoice, paymentOptions) { const paid = (invoice.payments || []).filter(function(p) { return p.status === "CONFIRMED"; }).reduce(function(sum, p) { return sum + Number(p.amount || 0); }, 0); return invoice && { id: invoice.id, invoiceNumber: invoice.number, number: invoice.number, status: invoice.status, customerId: invoice.customerId, quoteId: invoice.quoteId, jobId: invoice.jobId, service: invoice.service && { id: invoice.service.id, name: invoice.service.name }, customer: clientCustomer(invoice.customer), quote: invoice.quote && { id: invoice.quote.id, title: invoice.quote.title, status: invoice.quote.status }, job: clientJobSummary(invoice.job), createdAt: invoice.createdAt, updatedAt: invoice.updatedAt, dueDate: invoice.dueDate, subtotal: invoice.subtotal, tax: invoice.taxTotal, discount: invoice.discountTotal, total: invoice.total, amountPaid: paid, amountDue: invoice.balanceDue, balanceDue: invoice.balanceDue, lineItems: (invoice.lineItems || []).map(clientLine), paymentLinks: (invoice.paymentLinks || []).map((link) => ({ id: link.id, status: link.status, provider: link.provider, amount: link.amount, currency: link.currency, checkoutUrl: link.checkoutUrl, expiresAt: link.expiresAt })), paymentOptions: paymentOptions || null, payments: (invoice.payments || []).map(clientPayment), receipts: (invoice.receipts || []).map(clientReceipt) }; }
 function clientAsset(asset) { return asset && { id: asset.id, customerId: asset.customerId, propertyId: asset.propertyId, serviceId: asset.serviceId, name: asset.name, assetType: asset.assetType, assetTag: asset.assetTag, serialNumber: asset.serialNumber, manufacturer: asset.manufacturer, modelNumber: asset.modelNumber, locationLabel: asset.locationLabel, installedAt: asset.installedAt, warrantyStartAt: asset.warrantyStartAt, warrantyEndAt: asset.warrantyEndAt, warrantyStatus: warrantyStatus(asset), status: asset.status, notes: asset.notes, service: asset.service && { id: asset.service.id, name: asset.service.name }, property: asset.property && { id: asset.property.id, label: asset.property.label, address: asset.property.address }, jobHistory: (asset.jobAssets || []).map((item) => clientJobSummary(item.job)).filter(Boolean) }; }
 function clientContract(contract) { return contract && { id: contract.id, customerId: contract.customerId, propertyId: contract.propertyId, contractNumber: contract.contractNumber, name: contract.name, status: contract.status, startDate: contract.startDate, endDate: contract.endDate, currency: contract.currency, responseSlaHours: contract.responseSlaHours, completionSlaHours: contract.completionSlaHours, includedVisits: contract.includedVisits, notes: contract.notes, assets: (contract.assets || []).map((item) => clientAsset(item.asset)).filter(Boolean), serviceLines: (contract.serviceLines || []).map((line) => ({ id: line.id, title: line.title, service: line.service && { id: line.service.id, name: line.service.name }, frequency: line.frequency, interval: line.interval, visitsPerPeriod: line.visitsPerPeriod, nextDueAt: line.nextDueAt, defaultDurationMinutes: line.defaultDurationMinutes, requiresProofPhotos: line.requiresProofPhotos, requiresSignature: line.requiresSignature, requiresLocation: line.requiresLocation })), upcomingDueWork: contractDueItems(contract, new Date()) }; }
 function clientJob(job) { return job && { id: job.id, title: job.title, description: job.description, status: job.status, customerId: job.customerId, quoteId: job.quotes && job.quotes[0] && job.quotes[0].id, invoiceId: job.invoices && job.invoices[0] && job.invoices[0].id, service: job.service && { id: job.service.id, name: job.service.name, description: job.service.description }, customer: clientCustomer(job.customer), scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, address: job.customer && job.customer.address, arrivedAt: job.arrivedAt, startedAt: job.startedAt, pausedAt: job.pausedAt, resumedAt: job.resumedAt, completedAt: job.completedAt, completionNotes: job.completionNotes, requiresProofPhotos: job.requiresProofPhotos, minimumProofPhotos: job.minimumProofPhotos, requiresBeforePhotos: job.requiresBeforePhotos, requiresAfterPhotos: job.requiresAfterPhotos, requiresSignature: job.requiresSignature, requiresLocation: job.requiresLocation, proofCompletedAt: job.proofCompletedAt, signatureCompletedAt: job.signatureCompletedAt, contract: job.contract && { id: job.contract.id, contractNumber: job.contract.contractNumber, name: job.contract.name, status: job.contract.status }, responseDueAt: job.responseDueAt, completionDueAt: job.completionDueAt, slaStatus: job.slaStatus, slaBreachedAt: job.slaBreachedAt, assets: (job.jobAssets || []).map((item) => clientAsset(item.asset)).filter(Boolean), total: job.total, createdAt: job.createdAt, updatedAt: job.updatedAt, proofPhotos: (job.proofPhotos || []).map(clientProofPhoto), signature: clientSignature(job.signature), proofSummary: proofSummary(jobWithEvidenceStatus(job), true) }; }
@@ -2905,14 +2979,38 @@ router.post("/client/quotes/:id/reject", requireClientAuth, validate(idParam, "p
 router.get("/client/invoices", requireClientAuth, asyncHandler(async (req, res) => {
   const where = clientInvoiceWhere(req.clientAccount);
   if (!where) return sendData(res, []);
-  const data = await prisma.invoice.findMany({ where, include: invoiceInclude, orderBy: { createdAt: "desc" } });
-  sendData(res, normalize(data.map(clientInvoice)));
+  const [finance, activeProviders, data] = await Promise.all([
+    getCompanyFinanceSettings(req.clientAccount.companyId),
+    activePaymentProvidersForCompany(req.clientAccount.companyId),
+    prisma.invoice.findMany({ where, include: invoiceInclude, orderBy: { createdAt: "desc" } })
+  ]);
+  const paymentOptions = clientPaymentOptionsFromSettings(finance, activeProviders);
+  sendData(res, normalize(data.map((invoice) => clientInvoice(invoice, paymentOptions))));
 }));
 
 router.get("/client/invoices/:id", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
   const invoice = await clientOwnedInvoice(req.clientAccount, req.params.id);
   if (!invoice) throw notFound("Invoice not found");
-  sendData(res, normalize(clientInvoice(invoice)));
+  const [finance, activeProviders] = await Promise.all([
+    getCompanyFinanceSettings(req.clientAccount.companyId),
+    activePaymentProvidersForCompany(req.clientAccount.companyId)
+  ]);
+  sendData(res, normalize(clientInvoice(invoice, clientPaymentOptionsFromSettings(finance, activeProviders))));
+}));
+
+router.post("/client/invoices/:id/pay-online", requireClientAuth, validate(idParam, "params"), asyncHandler(async (req, res) => {
+  const invoice = await clientOwnedInvoice(req.clientAccount, req.params.id);
+  if (!invoice) throw notFound("Invoice not found");
+  if (invoice.status === 'PAID') throw new AppError(409, 'Invoice is already paid');
+  const amountDue = invoice.balanceDue || invoice.total || invoice.amount;
+  if (!toDecimal(amountDue).greaterThan(0)) throw new AppError(409, 'Invoice has no amount due');
+  const { connection, finance } = await preferredOnlinePaymentConnection(req.clientAccount.companyId);
+  const reference = paymentReference(invoice.id);
+  const provider = createPaymentProvider(connection.provider, { connection });
+  const providerLink = await provider.createPaymentLink({ invoice, amount: amountDue, currency: finance.defaultCurrency, reference });
+  const link = await prisma.paymentLink.create({ data: { companyId: req.clientAccount.companyId, branchId: invoice.branchId || null, invoiceId: invoice.id, quoteId: invoice.quoteId || null, providerConnectionId: connection.id, provider: connection.provider, status: 'SENT', amount: amountDue, currency: finance.defaultCurrency, reference, checkoutUrl: providerLink.checkoutUrl, externalId: providerLink.externalId, expiresAt: null, sentAt: new Date(), createdById: null } });
+  await prisma.auditLog.create({ data: { companyId: req.clientAccount.companyId, action: 'CLIENT_CREATE_PAYMENT_LINK', entity: 'PaymentLink', entityId: link.id, metadata: { clientAccountId: req.clientAccount.id, invoiceId: invoice.id, provider: connection.provider } } });
+  sendData(res, normalize({ checkoutUrl: link.checkoutUrl, paymentLink: safePaymentLink(link) }), 201);
 }));
 
 router.get("/client/payments", requireClientAuth, asyncHandler(async (req, res) => {
@@ -3295,7 +3393,7 @@ router.get('/company/localization', requireRole(...adminRoles), asyncHandler(asy
 
 router.get('/company/payment-methods', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const settings = financeLocalization(await getCompanyFinanceSettings(req.companyId));
-  sendData(res, normalize({ methods: settings.allowedPaymentMethods, instructions: settings.paymentInstructions || null }));
+  sendData(res, normalize({ methods: settings.allowedPaymentMethods, instructions: settings.paymentInstructions || null, bankTransferProofRequired: settings.bankTransferProofRequired !== false }));
 }));
 
 router.patch('/company/finance-settings', requireRole(...adminRoles), validate(financeSettingsSchema), asyncHandler(async (req, res) => {
@@ -3305,8 +3403,12 @@ router.patch('/company/finance-settings', requireRole(...adminRoles), validate(f
     if (!update.timezone) update.timezone = region.timezone;
     if (!update.defaultCurrency) update.defaultCurrency = region.defaultCurrency;
     if (!update.allowedCurrencies) update.allowedCurrencies = region.allowedCurrencies;
+    if (!update.allowedPaymentMethods) update.allowedPaymentMethods = region.allowedPaymentMethods;
     if (!update.numberFormat) update.numberFormat = region.numberFormat;
     if (!update.taxName) update.taxName = region.taxName;
+  }
+  if (update.country && !update.allowedPaymentMethods) {
+    update.allowedPaymentMethods = regionFinanceDefaults(update.country).allowedPaymentMethods;
   }
   if (update.defaultCurrency && Array.isArray(update.allowedCurrencies) && !update.allowedCurrencies.includes(update.defaultCurrency)) {
     update.allowedCurrencies = [update.defaultCurrency, ...update.allowedCurrencies];

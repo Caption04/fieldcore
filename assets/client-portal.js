@@ -294,8 +294,32 @@ function quoteDetail(item) {
   return '<div class="client-detail-stack">' + badge(item.status) + '<p>' + escapeHtml(item.description || item.title || "") + '</p>' + lineItemsHtml(item.lineItems) + '<div class="client-total-row"><span>Total</span><strong>' + money(item.total) + '</strong></div>' + (canAct ? '<div class="client-action-row"><button class="primary-button" data-action="quote-accept" data-id="' + item.id + '" type="button">Accept</button><button class="secondary-button" data-action="quote-reject" data-id="' + item.id + '" type="button">Reject</button></div>' : "") + "</div>";
 }
 
+function invoicePaymentOptionsHtml(item) {
+  const due = Number(item.amountDue || item.balanceDue || 0);
+  const options = item.paymentOptions || {};
+  if (due <= 0 || item.status === "PAID") return '<section class="client-payment-panel"><h3>Payment</h3><p>This invoice is paid.</p></section>';
+
+  const parts = ['<section class="client-payment-panel"><h3>Pay this invoice</h3><p>Choose from the payment methods this business accepts for this invoice.</p>'];
+  if (options.onlinePayment && options.onlinePayment.available) {
+    parts.push('<div class="client-payment-option primary"><div><strong>Make payment online</strong><small>You will be redirected to the secure payment page configured by the business.</small></div><button class="primary-button" data-action="invoice-pay-online" data-id="' + escapeHtml(item.id) + '" type="button">Make payment online</button></div>');
+  }
+  if (options.bankTransfer && options.bankTransfer.available) {
+    const instructions = options.bankTransfer.instructions || options.instructions || 'Use your invoice number as the bank transfer reference.';
+    const proof = options.bankTransfer.proofRequired ? '<small>Proof of payment is required after bank transfer.</small>' : '<small>Proof of payment is not required unless the business asks for it.</small>';
+    parts.push('<div class="client-payment-option"><div><strong>Bank transfer</strong><small>' + escapeHtml(instructions) + '</small>' + proof + '<small>Reference: ' + escapeHtml(item.invoiceNumber || item.number || item.id) + '</small></div></div>');
+  }
+  if (options.cash && options.cash.available) {
+    parts.push('<div class="client-payment-option"><div><strong>Cash</strong><small>Cash payments are accepted by this business. A receipt is issued after the business records the payment.</small></div></div>');
+  }
+  if (!((options.onlinePayment && options.onlinePayment.available) || (options.bankTransfer && options.bankTransfer.available) || (options.cash && options.cash.available))) {
+    parts.push('<div class="client-empty">No payment method is currently available for this invoice. Please contact the business.</div>');
+  }
+  parts.push('<p class="fc-form-error" data-client-payment-message hidden></p></section>');
+  return parts.join('');
+}
+
 function invoiceDetail(item) {
-  return '<div class="client-detail-stack">' + badge(item.status) + lineItemsHtml(item.lineItems) + '<div class="client-total-row"><span>Total</span><strong>' + money(item.total) + '</strong></div><div class="client-total-row"><span>Paid</span><strong>' + money(item.amountPaid) + '</strong></div><div class="client-total-row"><span>Due</span><strong>' + money(item.amountDue) + '</strong></div><h3>Payments</h3>' + (item.payments && item.payments.length ? item.payments.map(function(payment) { return listCard({ title: money(payment.amount), meta: [payment.method, date(payment.receivedAt || payment.createdAt)].filter(Boolean).join(" - "), badge: badge(payment.status) }); }).join("") : empty("No payments recorded yet.")) + '<h3>Receipts</h3>' + (item.receipts && item.receipts.length ? item.receipts.map(function(receipt) { return listCard({ id: receipt.id, title: receipt.receiptNumber || "Receipt", meta: money(receipt.amount), badge: badge("PAID"), action: "receipt-detail" }); }).join("") : empty("No receipts yet.")) + "</div>";
+  return '<div class="client-detail-stack">' + badge(item.status) + lineItemsHtml(item.lineItems) + '<div class="client-total-row"><span>Total</span><strong>' + money(item.total) + '</strong></div><div class="client-total-row"><span>Paid</span><strong>' + money(item.amountPaid) + '</strong></div><div class="client-total-row"><span>Due</span><strong>' + money(item.amountDue) + '</strong></div>' + invoicePaymentOptionsHtml(item) + '<h3>Payments</h3>' + (item.payments && item.payments.length ? item.payments.map(function(payment) { return listCard({ title: money(payment.amount), meta: [payment.method, date(payment.receivedAt || payment.createdAt)].filter(Boolean).join(" - "), badge: badge(payment.status) }); }).join("") : empty("No payments recorded yet.")) + '<h3>Receipts</h3>' + (item.receipts && item.receipts.length ? item.receipts.map(function(receipt) { return listCard({ id: receipt.id, title: receipt.receiptNumber || "Receipt", meta: money(receipt.amount), badge: badge("PAID"), action: "receipt-detail" }); }).join("") : empty("No receipts yet.")) + "</div>";
 }
 
 function jobDetail(item) {
@@ -483,6 +507,19 @@ document.addEventListener("click", async function(event) {
   if (button.dataset.action === "receipt-detail") {
     const item = await api("/client/receipts/" + id);
     openDetail(item.receiptNumber || "Receipt", receiptDetail(item));
+  }
+  if (button.dataset.action === "invoice-pay-online") {
+    const msg = document.querySelector("[data-client-payment-message]");
+    message(msg, "Preparing secure payment...");
+    button.disabled = true;
+    try {
+      const result = await api("/client/invoices/" + id + "/pay-online", { method: "POST", body: JSON.stringify({}) });
+      if (!result.checkoutUrl) throw new Error("Payment link was not returned.");
+      window.location.href = result.checkoutUrl;
+    } catch (error) {
+      button.disabled = false;
+      message(msg, error.message);
+    }
   }
   if (button.dataset.action === "quote-accept") {
     if (!window.confirm("Accept this quote?")) return;

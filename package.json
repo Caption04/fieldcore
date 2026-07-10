@@ -11,7 +11,13 @@
         "migrate": "prisma migrate dev",
         "seed": "prisma db seed",
         "demo:reset": "node scripts/demo-reset.js",
-        "test": "node --test"
+        "env:regions": "node scripts/generate-region-env.js",
+        "test": "node --test",
+        "db:reset": "node scripts/full-system-reset.js ALL --yes",
+        "db:reset:zw": "node scripts/full-system-reset.js ZW --yes",
+        "db:reset:sa": "node scripts/full-system-reset.js SA --yes",
+        "dev:zw": "node scripts/run-region-server.js ZW",
+        "dev:sa": "node scripts/run-region-server.js SA"
     },
     "dependencies": {
         "@prisma/client": "^5.22.0",

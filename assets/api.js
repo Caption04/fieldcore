@@ -4,8 +4,20 @@
   const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], assets: [], serviceContracts: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, financeSettings: null, financeIntegrations: [], financeExportLogs: [], reports: null, activeReportTab: 'overview' };
 
   const MARKET_DEFAULTS = {
-    ZW: { country: 'ZW', defaultCurrency: 'USD', numberFormat: 'en-ZW', taxName: 'VAT', allowedCurrencies: ['USD', 'ZAR'] },
-    SA: { country: 'ZA', defaultCurrency: 'ZAR', numberFormat: 'en-ZA', taxName: 'VAT', allowedCurrencies: ['ZAR', 'USD'] }
+    ZW: { country: 'ZW', timezone: 'Africa/Harare', defaultCurrency: 'USD', numberFormat: 'en-ZW', taxName: 'VAT', allowedCurrencies: ['USD'], paymentMethods: ['CASH', 'BANK_TRANSFER', 'EXTERNAL_PAYMENT_LINK', 'CUSTOM_MANUAL', 'PAYNOW'] },
+    SA: { country: 'ZA', timezone: 'Africa/Johannesburg', defaultCurrency: 'ZAR', numberFormat: 'en-ZA', taxName: 'VAT', allowedCurrencies: ['ZAR'], paymentMethods: ['CASH', 'BANK_TRANSFER', 'EXTERNAL_PAYMENT_LINK', 'CUSTOM_MANUAL', 'OZOW', 'YOCO', 'PAYFAST', 'SNAPSCAN'] }
+  };
+
+  const PAYMENT_METHOD_LABELS = {
+    CASH: 'Cash',
+    BANK_TRANSFER: 'Bank transfer',
+    PAYNOW: 'Paynow',
+    OZOW: 'Ozow',
+    YOCO: 'Yoco',
+    PAYFAST: 'PayFast',
+    SNAPSCAN: 'SnapScan',
+    EXTERNAL_PAYMENT_LINK: 'External payment link',
+    CUSTOM_MANUAL: 'Other manual method'
   };
 
   function currentMarket() {
@@ -24,13 +36,23 @@
       return {
         ...merged,
         country: 'ZA',
+        timezone: merged.timezone || marketDefaults.timezone,
         defaultCurrency: 'ZAR',
         numberFormat: 'en-ZA',
         taxName: merged.taxName || 'VAT',
-        allowedCurrencies: Array.from(new Set(['ZAR'].concat(Array.isArray(merged.allowedCurrencies) ? merged.allowedCurrencies : marketDefaults.allowedCurrencies)))
+        allowedCurrencies: marketDefaults.allowedCurrencies,
+        allowedPaymentMethods: Array.isArray(merged.allowedPaymentMethods) && merged.allowedPaymentMethods.length ? merged.allowedPaymentMethods : marketDefaults.paymentMethods
       };
     }
-    return { ...marketDefaults, ...merged };
+    return { ...marketDefaults, ...merged, allowedPaymentMethods: Array.isArray(merged.allowedPaymentMethods) && merged.allowedPaymentMethods.length ? merged.allowedPaymentMethods : marketDefaults.paymentMethods };
+  }
+
+  function marketFromCountry(country) {
+    return String(country || '').toUpperCase() === 'ZA' ? 'SA' : 'ZW';
+  }
+
+  function financeDefaultsForCountry(country) {
+    return MARKET_DEFAULTS[marketFromCountry(country)] || MARKET_DEFAULTS.ZW;
   }
 
   const money = { format(value) { const settings = effectiveFinanceSettings(); const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(value || 0)); } };
@@ -2924,56 +2946,115 @@
     });
   }
 
+  function selectedPaymentMethods(form) {
+    const visible = Array.from(form.querySelectorAll('[data-payment-method-option]')).filter((input) => !input.closest('[hidden]'));
+    return visible.filter((input) => input.checked).map((input) => String(input.value || '').toUpperCase()).filter(Boolean);
+  }
+
+  function updatePaymentMethodVisibility(form, settings) {
+    const countryField = form.querySelector('[name="country"]');
+    const market = marketFromCountry(countryField && countryField.value || settings && settings.country || 'ZW');
+    const defaults = MARKET_DEFAULTS[market] || MARKET_DEFAULTS.ZW;
+    form.querySelectorAll('[data-market-method]').forEach((option) => {
+      const availability = option.dataset.marketMethod;
+      const normalizedAvailability = availability === 'ZA' ? 'SA' : availability;
+      const show = normalizedAvailability === 'ALL' || normalizedAvailability === market;
+      option.hidden = !show;
+      const input = option.querySelector('input');
+      if (input && !show) input.checked = false;
+    });
+    const checked = selectedPaymentMethods(form);
+    if (!checked.length) {
+      form.querySelectorAll('[data-payment-method-option]').forEach((input) => { input.checked = defaults.paymentMethods.includes(input.value); });
+    }
+  }
+
+  function syncPaymentMethodHiddenField(form) {
+    const hidden = form.querySelector('[name="allowedPaymentMethods"]');
+    if (!hidden) return;
+    hidden.value = selectedPaymentMethods(form).join(',');
+  }
+
   function financePayload(form) {
+    syncPaymentMethodHiddenField(form);
     const data = Object.fromEntries(new FormData(form).entries());
-    const allowedRaw = String(data.allowedCurrencies || '').trim();
-    const paymentRaw = String(data.allowedPaymentMethods || '').trim();
-    const payload = {
-      country: data.country ? String(data.country).toUpperCase() : undefined,
-      timezone: data.timezone || undefined,
-      defaultCurrency: data.defaultCurrency ? String(data.defaultCurrency).toUpperCase() : undefined,
-      allowedCurrencies: allowedRaw ? allowedRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
-      taxName: data.taxName || undefined,
-      taxRate: Object.prototype.hasOwnProperty.call(data, 'taxRate') && data.taxRate !== '' ? Number(data.taxRate) : undefined,
-      dateFormat: data.dateFormat || undefined,
-      numberFormat: data.numberFormat || undefined,
-      invoicePrefix: data.invoicePrefix || undefined,
-      receiptPrefix: data.receiptPrefix || undefined,
-      quoteExpiryDays: Object.prototype.hasOwnProperty.call(data, 'quoteExpiryDays') && data.quoteExpiryDays !== '' ? Number(data.quoteExpiryDays) : undefined,
-      paymentTermsDays: Object.prototype.hasOwnProperty.call(data, 'paymentTermsDays') && data.paymentTermsDays !== '' ? Number(data.paymentTermsDays) : undefined,
-      fiscalYearStartMonth: Object.prototype.hasOwnProperty.call(data, 'fiscalYearStartMonth') && data.fiscalYearStartMonth !== '' ? Number(data.fiscalYearStartMonth) : undefined,
-      invoiceFooter: data.invoiceFooter || undefined,
-      allowedPaymentMethods: paymentRaw ? paymentRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
-      paymentInstructions: data.paymentInstructions || undefined
-    };
+    const hasField = (name) => Boolean(form.querySelector('[name="' + name + '"]'));
+    const existingCountry = state.financeSettings && state.financeSettings.country || (currentMarket() === 'SA' ? 'ZA' : 'ZW');
+    const country = hasField('country') && data.country ? String(data.country).toUpperCase() : existingCountry;
+    const defaults = financeDefaultsForCountry(country);
+    const payload = {};
+
+    if (hasField('country')) payload.country = country;
+    if (hasField('timezone')) payload.timezone = data.timezone || defaults.timezone;
+    if (hasField('defaultCurrency')) {
+      payload.defaultCurrency = data.defaultCurrency ? String(data.defaultCurrency).toUpperCase() : defaults.defaultCurrency;
+      payload.allowedCurrencies = [payload.defaultCurrency];
+      payload.numberFormat = payload.defaultCurrency === 'ZAR' ? 'en-ZA' : defaults.numberFormat;
+    }
+    if (hasField('taxName')) payload.taxName = data.taxName || defaults.taxName;
+    if (hasField('taxRate')) payload.taxRate = data.taxRate !== '' ? Number(data.taxRate) : undefined;
+    if (hasField('invoicePrefix')) payload.invoicePrefix = data.invoicePrefix || undefined;
+    if (hasField('receiptPrefix')) payload.receiptPrefix = data.receiptPrefix || undefined;
+    if (hasField('quoteExpiryDays')) payload.quoteExpiryDays = data.quoteExpiryDays !== '' ? Number(data.quoteExpiryDays) : undefined;
+    if (hasField('paymentTermsDays')) payload.paymentTermsDays = data.paymentTermsDays !== '' ? Number(data.paymentTermsDays) : undefined;
+    if (hasField('invoiceFooter')) payload.invoiceFooter = data.invoiceFooter || undefined;
+    if (hasField('paymentInstructions')) payload.paymentInstructions = data.paymentInstructions || undefined;
+
+    const bankProofInput = form.querySelector('[name="bankTransferProofRequired"]');
+    if (bankProofInput) payload.bankTransferProofRequired = Boolean(bankProofInput.checked);
+
     const pricesIncludeTaxInput = form.querySelector('[name="pricesIncludeTax"]');
     if (pricesIncludeTaxInput) payload.pricesIncludeTax = Boolean(pricesIncludeTaxInput.checked);
-    if (payload.defaultCurrency && !payload.allowedCurrencies && state.financeSettings && Array.isArray(state.financeSettings.allowedCurrencies)) {
-      payload.allowedCurrencies = Array.from(new Set([payload.defaultCurrency].concat(state.financeSettings.allowedCurrencies)));
+
+    if (form.querySelector('[data-payment-method-option]')) {
+      const paymentMethods = selectedPaymentMethods(form);
+      payload.allowedPaymentMethods = paymentMethods.length ? paymentMethods : defaults.paymentMethods;
+      if (!payload.allowedCurrencies) payload.allowedCurrencies = defaults.allowedCurrencies;
+      if (!payload.numberFormat) payload.numberFormat = defaults.numberFormat;
     }
     return payload;
   }
 
   function fillFinanceForm(settings) {
+    const form = document.querySelector('[data-finance-settings-form]');
+    const effective = applyMarketCurrencyForDisplay(settings || {});
     document.querySelectorAll('[data-finance-field]').forEach((field) => {
-      const value = settings && settings[field.dataset.financeField];
-      if (field.name === 'allowedCurrencies' || field.name === 'allowedPaymentMethods') field.value = Array.isArray(value) ? value.join(',') : '';
+      const key = field.dataset.financeField;
+      const value = effective && effective[key];
+      if (field.name === 'allowedPaymentMethods') field.value = Array.isArray(value) ? value.join(',') : '';
       else if (field.type === 'checkbox') field.checked = Boolean(value);
       else field.value = value == null ? '' : value;
     });
-  }
-
-  function renderFinanceIntegrations(items) {
-    const card = document.querySelector('[data-finance-integrations-card]');
-    if (!card) return;
-    const providers = ['MANUAL_CSV', 'XERO', 'QUICKBOOKS', 'SAGE', 'ZOHO_BOOKS', 'CUSTOM'];
-    const byProvider = new Map((items || []).map((item) => [item.provider, item]));
-    const rows = providers.map((provider) => {
-      const item = byProvider.get(provider);
-      return '<div class="list-item"><span class="initials">' + escapeHtml(provider.split('_').map((part) => part[0]).join('').slice(0, 3)) + '</span><div><strong>' + escapeHtml(provider.replace(/_/g, ' ')) + '</strong><small>' + escapeHtml(item ? 'Configured - connect/test live accounting sync or use mock mode' : 'Not configured') + '</small></div><span class="badge gray">' + escapeHtml(item && item.status || 'DISCONNECTED') + '</span><button class="secondary-button small" type="button" data-finance-connect="' + escapeHtml(item && item.id || '') + '" ' + (item && ['XERO','SAGE','QUICKBOOKS'].includes(provider) ? '' : 'disabled') + '>Mock connect</button><button class="secondary-button small" type="button" data-finance-test="' + escapeHtml(item && item.id || '') + '" ' + (item ? '' : 'disabled') + '>Test</button></div>';
-    }).join('');
-    card.innerHTML = '<div class="panel-head"><h3>Accounting Integrations</h3><span class="badge blue">CSV + live sync</span></div><form class="form-grid" data-finance-integration-form><div class="field"><label for="financeProvider">Provider</label><select id="financeProvider" name="provider">' + providers.map((provider) => '<option value="' + provider + '">' + provider.replace(/_/g, ' ') + '</option>').join('') + '</select></div><div class="field"><label for="financeExternalTenantId">External Tenant ID</label><input id="financeExternalTenantId" name="externalTenantId" placeholder="Optional"></div><div class="field span-2"><label for="financeConfigNote">Config Note</label><input id="financeConfigNote" name="note" placeholder="Manual CSV export, Xero tenant note, etc."></div><div class="form-actions span-2"><button class="secondary-button" type="submit">Save Integration</button></div><p class="fc-form-error span-2" data-finance-integration-message hidden></p></form><div class="settings-list">' + rows + '</div>';
-    bindFinanceIntegrationActions();
+    if (!form) return;
+    updatePaymentMethodVisibility(form, effective);
+    const selected = new Set(Array.isArray(effective.allowedPaymentMethods) ? effective.allowedPaymentMethods : []);
+    form.querySelectorAll('[data-payment-method-option]').forEach((input) => {
+      if (!input.closest('[hidden]')) input.checked = selected.has(input.value);
+    });
+    if (!selectedPaymentMethods(form).length) {
+      const defaults = financeDefaultsForCountry(effective.country);
+      form.querySelectorAll('[data-payment-method-option]').forEach((input) => { input.checked = defaults.paymentMethods.includes(input.value); });
+    }
+    syncPaymentMethodHiddenField(form);
+    if (!form.dataset.financeUiBound) {
+      form.dataset.financeUiBound = 'true';
+      const countryField = form.querySelector('[name="country"]');
+      if (countryField) {
+        countryField.addEventListener('change', () => {
+          const defaults = financeDefaultsForCountry(countryField.value);
+          const currencyField = form.querySelector('[name="defaultCurrency"]');
+          const timezoneField = form.querySelector('[name="timezone"]');
+          const taxField = form.querySelector('[name="taxName"]');
+          if (currencyField) currencyField.value = defaults.defaultCurrency;
+          if (timezoneField) timezoneField.value = defaults.timezone;
+          if (taxField) taxField.value = defaults.taxName;
+          updatePaymentMethodVisibility(form, { country: countryField.value });
+          form.querySelectorAll('[data-payment-method-option]').forEach((input) => { input.checked = defaults.paymentMethods.includes(input.value); });
+          syncPaymentMethodHiddenField(form);
+        });
+      }
+      form.querySelectorAll('[data-payment-method-option]').forEach((input) => input.addEventListener('change', () => syncPaymentMethodHiddenField(form)));
+    }
   }
 
   function renderFinanceExportLogs(logs) {
@@ -2986,16 +3067,13 @@
   async function loadFinanceSettings() {
     if (!document.querySelector('[data-finance-settings-form]') && !document.querySelector('[data-invoice-defaults-form]')) return;
     try {
-      const [settings, integrations, logs] = await Promise.all([
+      const [settings, logs] = await Promise.all([
         api('/company/finance-settings'),
-        api('/finance/integrations').catch(() => []),
         api('/finance/export-logs').catch(() => [])
       ]);
       state.financeSettings = applyMarketCurrencyForDisplay(settings);
-      state.financeIntegrations = integrations;
       state.financeExportLogs = logs;
       fillFinanceForm(state.financeSettings);
-      renderFinanceIntegrations(integrations);
       renderFinanceExportLogs(logs);
     } catch (error) {
       setFormMessage('[data-finance-message]', error.message, false);

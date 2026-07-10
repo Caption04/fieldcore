@@ -50,39 +50,130 @@ const saasPlans = [
   }
 ];
 
-async function main() {
-  const password = process.env.DEMO_PASSWORD || 'FieldCoreDemo2026!';
-  const hash = await bcrypt.hash(password, 12);
+const REGION_CONFIGS = {
+  ZW: {
+    market: 'ZW',
+    companyId: 'fieldcore-zw-demo',
+    companyName: 'FieldCore Zimbabwe Demo',
+    legalName: 'FieldCore Zimbabwe Demo (Private) Limited',
+    registrationNumber: 'ZW-DEMO-2026',
+    taxNumber: 'ZW-VAT-DEMO',
+    address: 'Demo House, Harare, Zimbabwe',
+    phone: '+263 000 000 000',
+    supportEmail: 'support.zw@fieldcore.test',
+    websiteUrl: 'https://zw.fieldcore.test',
+    branch: { code: 'HARARE', name: 'Harare Operations', city: 'Harare', country: 'ZW', timezone: 'Africa/Harare' },
+    finance: {
+      country: 'ZW',
+      timezone: 'Africa/Harare',
+      defaultCurrency: 'USD',
+      allowedCurrencies: ['USD'],
+      taxName: 'VAT',
+      taxRate: 15,
+      numberFormat: 'en-ZW',
+      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW'],
+      paymentInstructions: 'Use the invoice number as your payment reference. Bank transfer proof of payment is required unless the business confirms otherwise.'
+    },
+    users: {
+      owner: 'owner.zw@fieldcore.test',
+      admin: 'admin.zw@fieldcore.test',
+      worker: 'worker.zw@fieldcore.test',
+      client: 'client.zw@fieldcore.test'
+    },
+    people: { owner: 'Zimbabwe Demo Owner', admin: 'Zimbabwe Demo Admin', worker: 'Tariro Technician', client: 'Harare Demo Client' },
+    sample: { customerName: 'Harare Facilities Client', customerPhone: '+263 000 000 120', customerAddress: 'Borrowdale, Harare', serviceName: 'Commercial Maintenance Visit', servicePrice: 450, invoiceNumber: 'ZW-INV-0001' }
+  },
+  SA: {
+    market: 'SA',
+    companyId: 'fieldcore-sa-demo',
+    companyName: 'FieldCore South Africa Demo',
+    legalName: 'FieldCore South Africa Demo (Pty) Ltd',
+    registrationNumber: 'SA-DEMO-2026',
+    taxNumber: 'SA-VAT-DEMO',
+    address: 'Demo Office, Johannesburg, South Africa',
+    phone: '+27 000 000 000',
+    supportEmail: 'support.sa@fieldcore.test',
+    websiteUrl: 'https://sa.fieldcore.test',
+    branch: { code: 'JHB', name: 'Johannesburg Operations', city: 'Johannesburg', country: 'ZA', timezone: 'Africa/Johannesburg' },
+    finance: {
+      country: 'ZA',
+      timezone: 'Africa/Johannesburg',
+      defaultCurrency: 'ZAR',
+      allowedCurrencies: ['ZAR'],
+      taxName: 'VAT',
+      taxRate: 15,
+      numberFormat: 'en-ZA',
+      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'OZOW', 'YOCO', 'PAYFAST', 'SNAPSCAN'],
+      paymentInstructions: 'Use the invoice number as your payment reference. Proof of payment is required for bank transfers unless the business confirms otherwise.'
+    },
+    users: {
+      owner: 'owner.sa@fieldcore.test',
+      admin: 'admin.sa@fieldcore.test',
+      worker: 'worker.sa@fieldcore.test',
+      client: 'client.sa@fieldcore.test'
+    },
+    people: { owner: 'South Africa Demo Owner', admin: 'South Africa Demo Admin', worker: 'Thabo Technician', client: 'Johannesburg Demo Client' },
+    sample: { customerName: 'Johannesburg Facilities Client', customerPhone: '+27 000 000 120', customerAddress: 'Rosebank, Johannesburg', serviceName: 'Commercial Maintenance Visit', servicePrice: 8500, invoiceNumber: 'SA-INV-0001' }
+  }
+};
+
+function parseSeedRegions() {
+  const raw = process.env.FIELDCORE_SEED_REGIONS || process.env.FIELDCORE_SEED_REGION || 'ZW,SA';
+  const normalized = String(raw || '').toUpperCase();
+  if (normalized === 'ALL') return ['ZW', 'SA'];
+  const regions = normalized.split(',').map((item) => item.trim()).filter(Boolean).map((item) => item === 'ZA' ? 'SA' : item);
+  const unique = [...new Set(regions)].filter((item) => REGION_CONFIGS[item]);
+  return unique.length ? unique : ['ZW', 'SA'];
+}
+
+function boolEnv(name, fallback = false) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+async function seedPlans() {
+  if (!prisma.saaSPlan) return;
+  for (const plan of saasPlans) {
+    await prisma.saaSPlan.upsert({ where: { id: plan.id }, update: plan, create: plan });
+  }
+}
+
+async function upsertUser({ email, name, role, companyId, passwordHash }) {
+  return prisma.user.upsert({
+    where: { email },
+    update: { name, role, companyId, passwordHash },
+    create: { companyId, email, name, role, passwordHash }
+  });
+}
+
+async function seedCompany(config, passwordHash, includeSampleData) {
   const company = await prisma.company.upsert({
-    where: { id: 'demo-company' },
+    where: { id: config.companyId },
     update: {
-      name: 'FieldCore Demo Services',
-      legalName: 'FieldCore Demo Services (Private) Limited',
-      tradingName: 'FieldCore Demo Services',
-      registrationNumber: 'DEMO-2026',
-      taxNumber: 'TAX-DEMO-001',
-      address: 'Demo House, Harare',
-      phone: '+263 000 000 000',
-      email: 'support@fieldcore.test'
+      name: config.companyName,
+      legalName: config.legalName,
+      tradingName: config.companyName,
+      registrationNumber: config.registrationNumber,
+      taxNumber: config.taxNumber,
+      address: config.address,
+      phone: config.phone,
+      email: config.supportEmail
     },
     create: {
-      id: 'demo-company',
-      name: 'FieldCore Demo Services',
-      legalName: 'FieldCore Demo Services (Private) Limited',
-      tradingName: 'FieldCore Demo Services',
-      registrationNumber: 'DEMO-2026',
-      taxNumber: 'TAX-DEMO-001',
-      address: 'Demo House, Harare',
-      phone: '+263 000 000 000',
-      email: 'support@fieldcore.test'
+      id: config.companyId,
+      name: config.companyName,
+      legalName: config.legalName,
+      tradingName: config.companyName,
+      registrationNumber: config.registrationNumber,
+      taxNumber: config.taxNumber,
+      address: config.address,
+      phone: config.phone,
+      email: config.supportEmail
     }
   });
 
-  if (prisma.saaSPlan && prisma.companySubscription) {
-    for (const plan of saasPlans) {
-      await prisma.saaSPlan.upsert({ where: { id: plan.id }, update: plan, create: plan });
-    }
-
+  if (prisma.companySubscription) {
     await prisma.companySubscription.upsert({
       where: { companyId: company.id },
       update: {
@@ -105,94 +196,85 @@ async function main() {
     });
   }
 
-
   await prisma.companyBranding.upsert({
     where: { companyId: company.id },
     update: {
-      brandName: 'FieldCore Demo Services',
+      brandName: config.companyName,
       primaryColor: '#1d65bc',
       secondaryColor: '#ffe386',
       accentColor: '#12a96d',
-      supportEmail: 'support@fieldcore.test',
-      supportPhone: '+263 000 000 000',
-      websiteUrl: 'https://fieldcore.test',
-      invoiceFooter: 'Thank you for choosing FieldCore Demo Services.',
-      invoiceTerms: 'Payment is due within 14 days unless otherwise agreed.'
+      supportEmail: config.supportEmail,
+      supportPhone: config.phone,
+      websiteUrl: config.websiteUrl,
+      invoiceFooter: `Thank you for choosing ${config.companyName}.`,
+      invoiceTerms: 'Payment is due within the configured payment terms unless otherwise agreed.'
     },
     create: {
       companyId: company.id,
-      brandName: 'FieldCore Demo Services',
+      brandName: config.companyName,
       primaryColor: '#1d65bc',
       secondaryColor: '#ffe386',
       accentColor: '#12a96d',
-      supportEmail: 'support@fieldcore.test',
-      supportPhone: '+263 000 000 000',
-      websiteUrl: 'https://fieldcore.test',
-      invoiceFooter: 'Thank you for choosing FieldCore Demo Services.',
-      invoiceTerms: 'Payment is due within 14 days unless otherwise agreed.'
+      supportEmail: config.supportEmail,
+      supportPhone: config.phone,
+      websiteUrl: config.websiteUrl,
+      invoiceFooter: `Thank you for choosing ${config.companyName}.`,
+      invoiceTerms: 'Payment is due within the configured payment terms unless otherwise agreed.'
     }
   });
-
-
 
   await prisma.companyFinanceSettings.upsert({
     where: { companyId: company.id },
     update: {
-      country: 'ZW',
-      timezone: 'Africa/Harare',
-      defaultCurrency: 'USD',
-      allowedCurrencies: ['USD', 'ZAR'],
-      taxName: 'VAT',
-      taxRate: 15,
+      ...config.finance,
       pricesIncludeTax: false,
       dateFormat: 'yyyy-MM-dd',
-      numberFormat: 'en-ZW',
-      invoicePrefix: 'INV',
-      receiptPrefix: 'RCT',
+      invoicePrefix: config.market === 'SA' ? 'SA-INV' : 'ZW-INV',
+      receiptPrefix: config.market === 'SA' ? 'SA-RCT' : 'ZW-RCT',
       quoteExpiryDays: 14,
       paymentTermsDays: 14,
-      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'CUSTOM_MANUAL'],
-      paymentInstructions: 'Demo bank transfer, Paynow, or manual external payment reference.'
+      fiscalYearStartMonth: 1,
+      invoiceFooter: `Thank you for choosing ${config.companyName}.`,
+      bankTransferProofRequired: true,
+      enforceQuoteDepositBeforeScheduling: false,
+      defaultQuoteDepositPercent: 0,
+      reminderThrottleHours: 24
     },
     create: {
       companyId: company.id,
-      country: 'ZW',
-      timezone: 'Africa/Harare',
-      defaultCurrency: 'USD',
-      allowedCurrencies: ['USD', 'ZAR'],
-      taxName: 'VAT',
-      taxRate: 15,
+      ...config.finance,
       pricesIncludeTax: false,
       dateFormat: 'yyyy-MM-dd',
-      numberFormat: 'en-ZW',
-      invoicePrefix: 'INV',
-      receiptPrefix: 'RCT',
+      invoicePrefix: config.market === 'SA' ? 'SA-INV' : 'ZW-INV',
+      receiptPrefix: config.market === 'SA' ? 'SA-RCT' : 'ZW-RCT',
       quoteExpiryDays: 14,
       paymentTermsDays: 14,
-      allowedPaymentMethods: ['CASH', 'BANK_TRANSFER', 'PAYNOW', 'PAYFAST', 'YOCO', 'OZOW', 'SNAPSCAN', 'MANUAL_CARD', 'EXTERNAL_PAYMENT_LINK', 'CUSTOM_MANUAL'],
-      paymentInstructions: 'Demo bank transfer, Paynow, or manual external payment reference.'
+      fiscalYearStartMonth: 1,
+      invoiceFooter: `Thank you for choosing ${config.companyName}.`,
+      bankTransferProofRequired: true,
+      enforceQuoteDepositBeforeScheduling: false,
+      defaultQuoteDepositPercent: 0,
+      reminderThrottleHours: 24
     }
   });
 
-  const owner = await prisma.user.upsert({
-    where: { email: process.env.DEMO_OWNER_EMAIL || 'owner@fieldcore.test' },
-    update: { passwordHash: hash, role: 'OWNER', companyId: company.id },
-    create: { companyId: company.id, email: process.env.DEMO_OWNER_EMAIL || 'owner@fieldcore.test', name: 'Demo Owner', role: 'OWNER', passwordHash: hash }
+  await prisma.companySchedulingSettings.upsert({
+    where: { companyId: company.id },
+    update: { timezone: config.branch.timezone, defaultJobDurationMinutes: 90, defaultTravelBufferMinutes: 30, allowOverbooking: false, defaultJobStatus: 'NEW', requireCompletionNotes: true, requireProofPhotos: true, requireLocation: true, workingDayStart: '08:00', workingDayEnd: '17:00' },
+    create: { companyId: company.id, timezone: config.branch.timezone, defaultJobDurationMinutes: 90, defaultTravelBufferMinutes: 30, allowOverbooking: false, defaultJobStatus: 'NEW', requireCompletionNotes: true, requireProofPhotos: true, requireLocation: true, workingDayStart: '08:00', workingDayEnd: '17:00' }
   });
 
-  await prisma.user.upsert({
-    where: { email: 'admin@fieldcore.test' },
-    update: { passwordHash: hash, role: 'ADMIN', companyId: company.id },
-    create: { companyId: company.id, email: 'admin@fieldcore.test', name: 'Demo Admin', role: 'ADMIN', passwordHash: hash }
+  const branch = await prisma.branch.upsert({
+    where: { companyId_code: { companyId: company.id, code: config.branch.code } },
+    update: { name: config.branch.name, country: config.branch.country, city: config.branch.city, timezone: config.branch.timezone, active: true },
+    create: { companyId: company.id, name: config.branch.name, code: config.branch.code, country: config.branch.country, city: config.branch.city, timezone: config.branch.timezone, active: true }
   });
 
-  const workerUser = await prisma.user.upsert({
-    where: { email: 'worker@fieldcore.test' },
-    update: { passwordHash: hash, role: 'WORKER', companyId: company.id },
-    create: { companyId: company.id, email: 'worker@fieldcore.test', name: 'Sam Technician', role: 'WORKER', passwordHash: hash }
-  });
+  const owner = await upsertUser({ email: config.users.owner, name: config.people.owner, role: 'OWNER', companyId: company.id, passwordHash });
+  await upsertUser({ email: config.users.admin, name: config.people.admin, role: 'ADMIN', companyId: company.id, passwordHash });
+  const workerUser = await upsertUser({ email: config.users.worker, name: config.people.worker, role: 'WORKER', companyId: company.id, passwordHash });
 
-  const fieldTechnicianRole = await prisma.workerRole.upsert({
+  const role = await prisma.workerRole.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Field Technician' } },
     update: { active: true },
     create: { companyId: company.id, name: 'Field Technician', active: true }
@@ -200,203 +282,80 @@ async function main() {
 
   const worker = await prisma.workerProfile.upsert({
     where: { userId: workerUser.id },
-    update: { companyId: company.id, roleId: fieldTechnicianRole.id, title: 'Field Technician', phone: '+1 555 0104', active: true },
-    create: { companyId: company.id, userId: workerUser.id, roleId: fieldTechnicianRole.id, title: 'Field Technician', phone: '+1 555 0104', active: true }
-  });
-
-
-
-  const branch = await prisma.branch.upsert({
-    where: { companyId_code: { companyId: company.id, code: 'HARARE' } },
-    update: { name: 'Harare Operations', country: 'ZW', city: 'Harare', timezone: 'Africa/Harare', active: true },
-    create: { companyId: company.id, name: 'Harare Operations', code: 'HARARE', country: 'ZW', city: 'Harare', timezone: 'Africa/Harare', active: true }
-  });
-
-  const customer = await prisma.customer.upsert({
-    where: { id: 'demo-customer' },
-    update: {},
-    create: { id: 'demo-customer', companyId: company.id, name: 'North Ridge Apartments', email: 'ops@northridge.test', phone: '+1 555 0120', address: '1400 Ridge Avenue', notes: 'Preferred morning appointments.' }
-  });
-
-  const service = await prisma.service.upsert({
-    where: { id: 'demo-service' },
-    update: {},
-    create: { id: 'demo-service', companyId: company.id, name: 'HVAC Preventive Maintenance', description: 'Quarterly inspection and filter replacement.', price: 450 }
-  });
-
-  const scheduledStart = new Date();
-  scheduledStart.setHours(10, 0, 0, 0);
-  const scheduledEnd = new Date(scheduledStart);
-  scheduledEnd.setHours(12, 0, 0, 0);
-
-  const job = await prisma.job.upsert({
-    where: { id: 'demo-job' },
-    update: { scheduledStart, scheduledEnd, branchId: branch.id },
-    create: { id: 'demo-job', companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, workerId: worker.id, title: 'Rooftop unit inspection', description: 'Inspect rooftop HVAC units and capture service notes.', status: 'SCHEDULED', scheduledStart, scheduledEnd, total: 450 }
-  });
-
-  await prisma.scheduleItem.upsert({
-    where: { id: 'demo-schedule' },
-    update: { startsAt: scheduledStart, endsAt: scheduledEnd },
-    create: { id: 'demo-schedule', companyId: company.id, jobId: job.id, workerId: worker.id, startsAt: scheduledStart, endsAt: scheduledEnd, notes: 'Bring filter set A.' }
-  });
-
-  const quote = await prisma.quote.upsert({
-    where: { id: 'demo-quote' },
-    update: { subtotal: 450, total: 450, amount: 450 },
-    create: { id: 'demo-quote', companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, jobId: job.id, title: 'Quarterly HVAC maintenance', status: 'SENT', sentAt: new Date(), amount: 450, subtotal: 450, total: 450 }
-  });
-
-  await prisma.quoteLineItem.upsert({
-    where: { id: 'demo-quote-line' },
-    update: { unitPrice: 450, lineTotal: 450 },
-    create: { id: 'demo-quote-line', companyId: company.id, quoteId: quote.id, serviceId: service.id, description: 'Quarterly HVAC maintenance', quantity: 1, unitPrice: 450, lineTotal: 450 }
-  });
-
-  await prisma.companyInvoiceCounter.upsert({
-    where: { companyId: company.id },
-    update: { nextNumber: 2 },
-    create: { companyId: company.id, nextNumber: 2 }
-  });
-
-  const invoice = await prisma.invoice.upsert({
-    where: { companyId_number: { companyId: company.id, number: 'INV-0001' } },
-    update: { subtotal: 450, total: 450, amount: 450, balanceDue: 450 },
-    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, jobId: job.id, quoteId: quote.id, number: 'INV-0001', status: 'SENT', amount: 450, subtotal: 450, total: 450, balanceDue: 450, dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) }
-  });
-
-  await prisma.invoiceLineItem.upsert({
-    where: { id: 'demo-invoice-line' },
-    update: { unitPrice: 450, lineTotal: 450 },
-    create: { id: 'demo-invoice-line', companyId: company.id, invoiceId: invoice.id, serviceId: service.id, description: 'Quarterly HVAC maintenance', quantity: 1, unitPrice: 450, lineTotal: 450 }
-  });
-
-
-
-  const asset = await prisma.asset.upsert({
-    where: { companyId_assetTag: { companyId: company.id, assetTag: 'HVAC-RTU-001' } },
-    update: { branchId: branch.id, customerId: customer.id, serviceId: service.id, status: 'ACTIVE' },
-    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, name: 'Rooftop HVAC Unit 1', assetType: 'HVAC', assetTag: 'HVAC-RTU-001', locationLabel: 'Roof Block A', status: 'ACTIVE' }
-  });
-
-  const assetTwo = await prisma.asset.upsert({
-    where: { companyId_assetTag: { companyId: company.id, assetTag: 'HVAC-RTU-002' } },
-    update: { branchId: branch.id, customerId: customer.id, serviceId: service.id, status: 'ACTIVE' },
-    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, name: 'Rooftop HVAC Unit 2', assetType: 'HVAC', assetTag: 'HVAC-RTU-002', locationLabel: 'Roof Block B', status: 'ACTIVE' }
-  });
-
-  const contract = await prisma.serviceContract.upsert({
-    where: { companyId_contractNumber: { companyId: company.id, contractNumber: 'DEMO-SLA-001' } },
-    update: { branchId: branch.id, status: 'ACTIVE', currency: 'USD', contractValue: 5400 },
-    create: { companyId: company.id, branchId: branch.id, customerId: customer.id, contractNumber: 'DEMO-SLA-001', name: 'North Ridge HVAC SLA', status: 'ACTIVE', startDate: new Date(), currency: 'USD', contractValue: 5400, billingInterval: 'QUARTERLY', responseSlaHours: 8, completionSlaHours: 48, includedVisits: 4 }
-  });
-
-  await prisma.serviceContractAsset.upsert({
-    where: { companyId_contractId_assetId: { companyId: company.id, contractId: contract.id, assetId: asset.id } },
-    update: {},
-    create: { companyId: company.id, contractId: contract.id, assetId: asset.id }
-  });
-
-  await prisma.contractServiceLine.upsert({
-    where: { id: 'demo-contract-service-line' },
-    update: { nextDueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },
-    create: { id: 'demo-contract-service-line', companyId: company.id, contractId: contract.id, serviceId: service.id, title: 'Quarterly HVAC visit', frequency: 'QUARTERLY', nextDueAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), defaultDurationMinutes: 120, requiresProofPhotos: true, requiresSignature: true }
-  });
-
-  await prisma.job.update({ where: { id: job.id }, data: { branchId: branch.id, contractId: contract.id } });
-  await prisma.jobAsset.upsert({
-    where: { companyId_jobId_assetId: { companyId: company.id, jobId: job.id, assetId: asset.id } },
-    update: { primaryAsset: true },
-    create: { companyId: company.id, jobId: job.id, assetId: asset.id, primaryAsset: true }
-  });
-
-  const supplier = await prisma.supplier.upsert({
-    where: { companyId_name: { companyId: company.id, name: 'Demo Parts Supplier' } },
-    update: { active: true, leadTimeDays: 5 },
-    create: { companyId: company.id, name: 'Demo Parts Supplier', email: 'parts@supplier.test', phone: '+263 000 000 101', leadTimeDays: 5, active: true }
-  });
-
-  const warehouse = await prisma.stockLocation.upsert({
-    where: { companyId_name: { companyId: company.id, name: 'Harare Warehouse' } },
-    update: { branchId: branch.id, active: true },
-    create: { companyId: company.id, branchId: branch.id, name: 'Harare Warehouse', type: 'WAREHOUSE', active: true }
-  });
-
-  const technicianVan = await prisma.stockLocation.upsert({
-    where: { companyId_name: { companyId: company.id, name: 'Demo Technician Van' } },
-    update: { branchId: branch.id, workerId: worker.id, vehicleIdentifier: 'DEMO-VAN-1', active: true },
-    create: { companyId: company.id, branchId: branch.id, workerId: worker.id, name: 'Demo Technician Van', type: 'VEHICLE', vehicleIdentifier: 'DEMO-VAN-1', active: true }
-  });
-
-  const demoItems = [
-    ['FILTER-A', 'Filter Set A', 25, 5],
-    ['BELT-13', 'Drive Belt 13mm', 8, 10],
-    ['FUSE-10A', '10A Fuse', 2, 20],
-    ['CLEANER', 'Coil Cleaner', 12, 6],
-    ['LOW-STOCK', 'Low Stock Control Board', 120, 1]
-  ];
-  const itemRecords = [];
-  for (const [sku, name, unitCost, reorderPoint] of demoItems) {
-    const item = await prisma.inventoryItem.upsert({
-      where: { companyId_sku: { companyId: company.id, sku } },
-      update: { name, unitCost, reorderPoint, minStockLevel: Math.max(reorderPoint - 2, 0), preferredSupplierId: supplier.id, supplierLeadTimeDays: supplier.leadTimeDays, active: true },
-      create: { companyId: company.id, sku, name, unitCost, reorderPoint, minStockLevel: Math.max(reorderPoint - 2, 0), preferredSupplierId: supplier.id, supplierLeadTimeDays: supplier.leadTimeDays, unitOfMeasure: 'each', active: true }
-    });
-    itemRecords.push(item);
-  }
-
-  await prisma.inventoryStock.upsert({
-    where: { companyId_itemId_locationId: { companyId: company.id, itemId: itemRecords[0].id, locationId: warehouse.id } },
-    update: { quantityOnHand: 20 },
-    create: { companyId: company.id, itemId: itemRecords[0].id, locationId: warehouse.id, quantityOnHand: 20 }
-  });
-  await prisma.inventoryStock.upsert({
-    where: { companyId_itemId_locationId: { companyId: company.id, itemId: itemRecords[4].id, locationId: warehouse.id } },
-    update: { quantityOnHand: 1 },
-    create: { companyId: company.id, itemId: itemRecords[4].id, locationId: warehouse.id, quantityOnHand: 1 }
-  });
-
-  await prisma.inventoryStock.upsert({
-    where: { companyId_itemId_locationId: { companyId: company.id, itemId: itemRecords[0].id, locationId: technicianVan.id } },
-    update: { quantityOnHand: 3 },
-    create: { companyId: company.id, itemId: itemRecords[0].id, locationId: technicianVan.id, quantityOnHand: 3 }
-  });
-
-  const purchaseRequest = await prisma.purchaseRequest.upsert({
-    where: { id: 'demo-purchase-request' },
-    update: { status: 'REQUESTED', branchId: branch.id, source: 'LOW_STOCK', estimatedTotal: 240 },
-    create: { id: 'demo-purchase-request', companyId: company.id, branchId: branch.id, requestedById: owner.id, jobId: job.id, source: 'LOW_STOCK', status: 'REQUESTED', reason: 'Low stock demo item', estimatedTotal: 240 }
-  });
-
-  await prisma.purchaseRequestLine.upsert({
-    where: { id: 'demo-purchase-request-line' },
-    update: { quantity: 2, estimatedUnitCost: 120, branchId: branch.id },
-    create: { id: 'demo-purchase-request-line', companyId: company.id, purchaseRequestId: purchaseRequest.id, branchId: branch.id, itemId: itemRecords[4].id, quantity: 2, estimatedUnitCost: 120, notes: 'Seeded low-stock line' }
-  });
-
-  const purchaseOrder = await prisma.purchaseOrder.upsert({
-    where: { companyId_orderNumber: { companyId: company.id, orderNumber: 'PO-0001' } },
-    update: { branchId: branch.id, supplierId: supplier.id, purchaseRequestId: purchaseRequest.id, status: 'SENT' },
-    create: { companyId: company.id, branchId: branch.id, supplierId: supplier.id, purchaseRequestId: purchaseRequest.id, orderNumber: 'PO-0001', status: 'SENT' }
-  });
-
-  await prisma.purchaseOrderLine.upsert({
-    where: { id: 'demo-po-line' },
-    update: { quantity: 2, unitCost: 120, receivedQuantity: 1, backorderQuantity: 1 },
-    create: { id: 'demo-po-line', companyId: company.id, purchaseOrderId: purchaseOrder.id, itemId: itemRecords[4].id, quantity: 2, unitCost: 120, receivedQuantity: 1, backorderQuantity: 1 }
+    update: { companyId: company.id, branchId: branch.id, roleId: role.id, title: 'Field Technician', phone: config.phone, active: true },
+    create: { companyId: company.id, branchId: branch.id, userId: workerUser.id, roleId: role.id, title: 'Field Technician', phone: config.phone, active: true }
   });
 
   await prisma.workerDevice.upsert({
-    where: { companyId_deviceId: { companyId: company.id, deviceId: 'demo-worker-device' } },
-    update: { lastSeenAt: new Date(), active: true },
-    create: { companyId: company.id, workerId: worker.id, userId: workerUser.id, platform: 'ANDROID', deviceName: 'Demo Technician Phone', deviceId: 'demo-worker-device', lastSeenAt: new Date(), active: true }
+    where: { companyId_deviceId: { companyId: company.id, deviceId: `${config.market.toLowerCase()}-demo-worker-device` } },
+    update: { workerId: worker.id, userId: workerUser.id, lastSeenAt: new Date(), active: true },
+    create: { companyId: company.id, workerId: worker.id, userId: workerUser.id, platform: 'ANDROID', deviceName: `${config.market} Demo Technician Phone`, deviceId: `${config.market.toLowerCase()}-demo-worker-device`, lastSeenAt: new Date(), active: true }
   });
 
-  await prisma.auditLog.create({ data: { companyId: company.id, userId: owner.id, action: 'SEED', entity: 'Company', entityId: company.id, metadata: { invoiceId: invoice.id } } });
+  if (includeSampleData) {
+    const customer = await prisma.customer.upsert({
+      where: { id: `${config.companyId}-customer` },
+      update: { companyId: company.id, branchId: branch.id, name: config.sample.customerName, email: config.users.client, phone: config.sample.customerPhone, address: config.sample.customerAddress },
+      create: { id: `${config.companyId}-customer`, companyId: company.id, branchId: branch.id, name: config.sample.customerName, email: config.users.client, phone: config.sample.customerPhone, address: config.sample.customerAddress, notes: `${config.market} clean demo customer.` }
+    });
 
-  console.log('Seeded FieldCore demo data');
-  console.log(`Owner login: ${process.env.DEMO_OWNER_EMAIL || 'owner@fieldcore.test'} / ${password}`);
-  console.log(`Worker login: worker@fieldcore.test / ${password}`);
+    await prisma.clientAccount.upsert({
+      where: { companyId_email: { companyId: company.id, email: config.users.client } },
+      update: { customerId: customer.id, name: config.people.client, phone: config.sample.customerPhone, passwordHash, status: 'ACTIVE' },
+      create: { companyId: company.id, customerId: customer.id, name: config.people.client, email: config.users.client, phone: config.sample.customerPhone, passwordHash, status: 'ACTIVE' }
+    });
+
+    const service = await prisma.service.upsert({
+      where: { id: `${config.companyId}-service` },
+      update: { companyId: company.id, name: config.sample.serviceName, price: config.sample.servicePrice, active: true },
+      create: { id: `${config.companyId}-service`, companyId: company.id, name: config.sample.serviceName, description: `${config.market} sample service for QA.`, price: config.sample.servicePrice, active: true }
+    });
+
+    await prisma.companyInvoiceCounter.upsert({
+      where: { companyId: company.id },
+      update: { nextNumber: 2 },
+      create: { companyId: company.id, nextNumber: 2 }
+    });
+
+    const invoice = await prisma.invoice.upsert({
+      where: { companyId_number: { companyId: company.id, number: config.sample.invoiceNumber } },
+      update: { branchId: branch.id, customerId: customer.id, serviceId: service.id, amount: config.sample.servicePrice, subtotal: config.sample.servicePrice, total: config.sample.servicePrice, balanceDue: config.sample.servicePrice, status: 'SENT' },
+      create: { companyId: company.id, branchId: branch.id, customerId: customer.id, serviceId: service.id, number: config.sample.invoiceNumber, status: 'SENT', amount: config.sample.servicePrice, subtotal: config.sample.servicePrice, total: config.sample.servicePrice, balanceDue: config.sample.servicePrice, dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), sentAt: new Date() }
+    });
+
+    await prisma.invoiceLineItem.upsert({
+      where: { id: `${config.companyId}-invoice-line` },
+      update: { serviceId: service.id, description: config.sample.serviceName, unitPrice: config.sample.servicePrice, lineTotal: config.sample.servicePrice },
+      create: { id: `${config.companyId}-invoice-line`, companyId: company.id, invoiceId: invoice.id, serviceId: service.id, description: config.sample.serviceName, quantity: 1, unitPrice: config.sample.servicePrice, lineTotal: config.sample.servicePrice }
+    });
+  }
+
+  await prisma.auditLog.create({ data: { companyId: company.id, userId: owner.id, action: 'SEED', entity: 'Company', entityId: company.id, metadata: { market: config.market, sampleData: includeSampleData } } });
+
+  return { company, users: config.users };
+}
+
+async function main() {
+  const password = process.env.DEMO_PASSWORD || 'FieldCoreDemo2026!';
+  const hash = await bcrypt.hash(password, 12);
+  const regions = parseSeedRegions();
+  const includeSampleData = boolEnv('FIELDCORE_SEED_SAMPLE_DATA', false);
+
+  await seedPlans();
+  const seeded = [];
+  for (const region of regions) seeded.push(await seedCompany(REGION_CONFIGS[region], hash, includeSampleData));
+
+  console.log('Seeded FieldCore clean regional data.');
+  console.log(`Password for all seeded logins: ${password}`);
+  for (const item of seeded) {
+    const market = item.company.id === REGION_CONFIGS.SA.companyId ? 'South Africa' : 'Zimbabwe';
+    console.log(`\n${market} tenant: ${item.company.name}`);
+    console.log(`Owner:  ${item.users.owner}`);
+    console.log(`Admin:  ${item.users.admin}`);
+    console.log(`Worker: ${item.users.worker}`);
+    if (includeSampleData) console.log(`Client: ${item.users.client}`);
+  }
+  if (!includeSampleData) console.log('\nNo sample customers/invoices were seeded. Set FIELDCORE_SEED_SAMPLE_DATA=true if you want one clean client invoice per region for QA.');
 }
 
 main()
