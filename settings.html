@@ -23,7 +23,8 @@
           <button class="settings-tab" type="button" data-settings-target="team">Team &amp; Roles</button>
           <button class="settings-tab" type="button" data-settings-target="jobs">Job Defaults</button>
           <button class="settings-tab" type="button" data-settings-target="scheduling">Scheduling</button>
-          <button class="settings-tab" type="button" data-settings-target="billing">Billing</button>
+          <button class="settings-tab" type="button" data-settings-target="billing">Invoice Defaults</button>
+          <button class="settings-tab" type="button" data-settings-target="subscription">FieldCore Subscription</button>
           <button class="settings-tab" type="button" data-settings-target="finance">Finance &amp; Exports</button>
           <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
           <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
@@ -277,44 +278,58 @@
           </div>
           <div class="panel settings-panel" data-settings-panel="billing" hidden>
             <div class="panel-head">
-              <h2>Billing</h2>
-              <span class="badge gray">Finance</span>
+              <h2>Invoice &amp; Payment Defaults</h2>
+              <span class="badge gray">Customer billing</span>
             </div>
-            <form class="form-grid">
+            <form class="form-grid" data-invoice-defaults-form>
               <div class="field">
-                <label for="currency">Currency</label>
-                <select id="currency">
-                  <option>USD</option>
-                  <option>ZWL</option>
-                  <option>ZAR</option>
-                  <option>GBP</option>
+                <label for="invoiceDefaultCurrency">Currency</label>
+                <select id="invoiceDefaultCurrency" name="defaultCurrency" data-finance-field="defaultCurrency">
+                  <option value="USD">USD — US Dollar</option>
+                  <option value="ZAR">ZAR — South African Rand</option>
+                  <option value="ZWG">ZWG — Zimbabwe Gold</option>
+                  <option value="GBP">GBP — Pound Sterling</option>
                 </select>
               </div>
               <div class="field">
-                <label for="paymentTerms">Default Payment Terms</label>
-                <select id="paymentTerms">
-                  <option>Due on receipt</option>
-                  <option>Net 7</option>
-                  <option>Net 14</option>
-                  <option>Net 30</option>
+                <label for="invoicePaymentTermsDays">Default Payment Terms</label>
+                <select id="invoicePaymentTermsDays" name="paymentTermsDays" data-finance-field="paymentTermsDays">
+                  <option value="0">Due on receipt</option>
+                  <option value="7">Net 7</option>
+                  <option value="14">Net 14</option>
+                  <option value="30">Net 30</option>
                 </select>
               </div>
               <div class="field">
-                <label for="invoicePrefix">Invoice Prefix</label>
-                <input id="invoicePrefix" value="INV">
+                <label for="invoiceDefaultPrefix">Invoice Prefix</label>
+                <input id="invoiceDefaultPrefix" name="invoicePrefix" value="INV" data-finance-field="invoicePrefix">
               </div>
               <div class="field">
-                <label for="taxRate">Default Tax Rate</label>
-                <input id="taxRate" type="number" min="0" step="0.01" placeholder="0.00">
+                <label for="invoiceDefaultTaxRate">Default Tax Rate</label>
+                <input id="invoiceDefaultTaxRate" name="taxRate" type="number" min="0" step="0.01" placeholder="0.00" data-finance-field="taxRate">
               </div>
               <div class="field span-2">
-                <label for="invoiceFooter">Invoice Footer</label>
-                <textarea id="invoiceFooter" placeholder="Payment instructions or legal footer."></textarea>
+                <label for="invoiceDefaultFooter">Invoice Footer</label>
+                <textarea id="invoiceDefaultFooter" name="invoiceFooter" placeholder="Payment instructions or legal footer." data-finance-field="invoiceFooter"></textarea>
               </div>
+              <div class="form-actions span-2">
+                <button class="primary-button" type="submit">Save Invoice Defaults</button>
+              </div>
+              <p class="fc-form-error span-2" data-invoice-defaults-message hidden></p>
             </form>
+          </div>
+
+          <div class="panel settings-panel" data-settings-panel="subscription" hidden>
+            <div class="panel-head">
+              <div>
+                <h2>FieldCore Subscription</h2>
+                <p class="muted">This is what the business pays FieldCore. It is separate from the invoices this business sends to its own customers.</p>
+              </div>
+              <span class="badge gray">SaaS billing</span>
+            </div>
             <div class="settings-subform" data-saas-billing-card>
               <div class="panel-head">
-                <h3>FieldCore Subscription</h3>
+                <h3>Subscription status</h3>
                 <span class="badge gray">Loading</span>
               </div>
               <div class="empty-state"><div><strong>Subscription status unavailable.</strong><span>Open this panel to load SaaS billing details.</span></div></div>

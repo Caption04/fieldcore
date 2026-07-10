@@ -1,7 +1,7 @@
 const { prisma } = require('../db');
 const { AppError } = require('../errors');
 const { createCheckoutSession, providerStatus } = require('./saasBillingProvider.service');
-const { DEFAULT_PLANS, billingSummary, getSubscription, logBillingEvent, publicSubscription } = require('./subscription.service');
+const { DEFAULT_PLANS, billingSummary, commercialPlanPrice, companyBillingMarket, getSubscription, logBillingEvent, publicSubscription } = require('./subscription.service');
 
 async function requireActivePlan(planId, { includeInactive = false } = {}) {
   if (!prisma.saaSPlan) {
@@ -15,15 +15,16 @@ async function requireActivePlan(planId, { includeInactive = false } = {}) {
 }
 
 async function createCheckout(companyId, planId, actorId) {
-  const [subscription, plan] = await Promise.all([getSubscription(companyId), requireActivePlan(planId)]);
-  const session = await createCheckoutSession({ companyId, plan, subscription });
+  const [subscription, plan, market] = await Promise.all([getSubscription(companyId), requireActivePlan(planId), companyBillingMarket(companyId)]);
+  const commercial = commercialPlanPrice(plan, market);
+  const session = await createCheckoutSession({ companyId, plan, subscription, commercial });
   await logBillingEvent(companyId, {
     subscriptionId: subscription.id,
     provider: session.provider,
     eventType: 'CHECKOUT_STARTED',
     status: session.checkoutUrl ? 'PENDING' : 'MANUAL_ACTION_REQUIRED',
-    amount: plan.price,
-    currency: plan.currency,
+    amount: commercial.price == null ? plan.price : commercial.price,
+    currency: commercial.currency || plan.currency,
     providerRef: session.providerRef,
     message: actorId ? `Checkout started by ${actorId}` : session.message
   });
@@ -33,7 +34,8 @@ async function createCheckout(companyId, planId, actorId) {
 async function changePlan(companyId, planId, actorId) {
   const status = providerStatus();
   if (!status.configured) throw new AppError(503, 'SaaS billing provider is not configured.', { code: 'SAAS_BILLING_PROVIDER_NOT_CONFIGURED' });
-  const [subscription, plan] = await Promise.all([getSubscription(companyId), requireActivePlan(planId)]);
+  const [subscription, plan, market] = await Promise.all([getSubscription(companyId), requireActivePlan(planId), companyBillingMarket(companyId)]);
+  const commercial = commercialPlanPrice(plan, market);
   if (!prisma.companySubscription) throw new AppError(503, 'SaaS billing storage is not available. Run migrations and regenerate Prisma Client.', { code: 'SAAS_BILLING_STORAGE_NOT_AVAILABLE' });
   const updated = await prisma.companySubscription.update({
     where: { companyId },
@@ -44,8 +46,8 @@ async function changePlan(companyId, planId, actorId) {
     provider: status.provider,
     eventType: 'PLAN_CHANGED',
     status: status.mode === 'manual' ? 'MANUAL_ACTION_REQUIRED' : 'PENDING',
-    amount: plan.price,
-    currency: plan.currency,
+    amount: commercial.price == null ? plan.price : commercial.price,
+    currency: commercial.currency || plan.currency,
     providerRef: null,
     message: actorId ? `Plan change requested by ${actorId}` : 'Plan change requested'
   });

@@ -165,6 +165,7 @@
     document.querySelectorAll('[data-market-value]').forEach((button) => {
       button.classList.toggle('active', button.dataset.marketValue === next);
     });
+    window.dispatchEvent(new CustomEvent('fieldcore:market-change', { detail: { market: next } }));
   }
 
   function setupMarketSwitcher() {

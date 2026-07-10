@@ -1,9 +1,40 @@
 (function(){
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
   const page = document.body.dataset.page || 'dashboard';
-  const money = { format(value) { const settings = state.financeSettings || {}; const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(value || 0)); } };
-  const receiptMoney = { format(value) { const settings = state.financeSettings || {}; const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0)); } };
   const state = { user: null, profile: null, branding: null, customers: [], services: [], workers: [], roles: [], jobs: [], assets: [], serviceContracts: [], invoices: [], schedule: [], scheduleSettings: null, scheduleView: 'week', scheduleDate: new Date(), scheduleFilters: { workerId: '', status: '' }, listFilters: {}, availability: {}, notificationLogs: [], integrations: [], messageLogs: [], storageUsage: null, billing: null, financeSettings: null, financeIntegrations: [], financeExportLogs: [], reports: null, activeReportTab: 'overview' };
+
+  const MARKET_DEFAULTS = {
+    ZW: { country: 'ZW', defaultCurrency: 'USD', numberFormat: 'en-ZW', taxName: 'VAT', allowedCurrencies: ['USD', 'ZAR'] },
+    SA: { country: 'ZA', defaultCurrency: 'ZAR', numberFormat: 'en-ZA', taxName: 'VAT', allowedCurrencies: ['ZAR', 'USD'] }
+  };
+
+  function currentMarket() {
+    return localStorage.getItem('fieldcore.market') === 'SA' ? 'SA' : 'ZW';
+  }
+
+  function effectiveFinanceSettings() {
+    return applyMarketCurrencyForDisplay(state.financeSettings);
+  }
+
+  function applyMarketCurrencyForDisplay(settings) {
+    const market = currentMarket();
+    const marketDefaults = MARKET_DEFAULTS[market] || MARKET_DEFAULTS.ZW;
+    const merged = { ...(settings || {}) };
+    if (market === 'SA') {
+      return {
+        ...merged,
+        country: 'ZA',
+        defaultCurrency: 'ZAR',
+        numberFormat: 'en-ZA',
+        taxName: merged.taxName || 'VAT',
+        allowedCurrencies: Array.from(new Set(['ZAR'].concat(Array.isArray(merged.allowedCurrencies) ? merged.allowedCurrencies : marketDefaults.allowedCurrencies)))
+      };
+    }
+    return { ...marketDefaults, ...merged };
+  }
+
+  const money = { format(value) { const settings = effectiveFinanceSettings(); const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(value || 0)); } };
+  const receiptMoney = { format(value) { const settings = effectiveFinanceSettings(); const currency = settings.defaultCurrency || 'USD'; const locale = settings.numberFormat || 'en-US'; return new Intl.NumberFormat(locale, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0)); } };
 
   const tableConfigs = {
     customers: {
@@ -1250,7 +1281,7 @@
       requests.push(api('/service-contracts').then((d) => state.serviceContracts = d).catch(() => []));
     }
     if (['quotes', 'invoices', 'schedule'].includes(page)) requests.push(api('/jobs').then((d) => state.jobs = d).catch(() => []));
-    if (['quotes', 'invoices', 'reports', 'settings'].includes(page)) requests.push(api('/company/finance-settings').then((d) => state.financeSettings = d).catch(() => null));
+    if (['dashboard', 'jobs', 'quotes', 'invoices', 'reports', 'settings', 'collections', 'assets', 'service-contracts'].includes(page)) requests.push(api('/company/finance-settings').then((d) => state.financeSettings = applyMarketCurrencyForDisplay(d)).catch(() => { state.financeSettings = applyMarketCurrencyForDisplay(null); }));
     if (['jobs', 'schedule'].includes(page) && !isWorker()) requests.push(api('/company/scheduling-settings').then((d) => state.scheduleSettings = d).catch(() => null));
     await Promise.all(requests);
   }
@@ -1311,7 +1342,7 @@
       };
     }
     if (resource === 'assets') return { title: 'New Asset', action: '/assets', fields: field('name', 'Asset Name', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Default Service', optionList(state.services, 'No service'), false) + field('assetType', 'Asset Type', 'text', 'required') + field('assetTag', 'Asset Tag') + field('serialNumber', 'Serial Number') + field('manufacturer', 'Manufacturer') + field('modelNumber', 'Model Number') + field('locationLabel', 'Location') + field('warrantyEndAt', 'Warranty Ends', 'date') };
-    if (resource === 'service-contracts') return { title: 'New Service Contract', action: '/service-contracts', fields: field('contractNumber', 'Contract Number', 'text', 'required') + field('name', 'Contract Name', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + field('startDate', 'Start Date', 'date', 'required') + field('endDate', 'End Date', 'date') + field('currency', 'Currency', 'text', 'maxlength="3" value="USD"') + field('contractValue', 'Contract Value', 'number', 'min="0" step="0.01"') + field('responseSlaHours', 'Response SLA Hours', 'number', 'min="1"') + field('completionSlaHours', 'Completion SLA Hours', 'number', 'min="1"') + field('includedVisits', 'Included Visits', 'number', 'min="0"') };
+    if (resource === 'service-contracts') return { title: 'New Service Contract', action: '/service-contracts', fields: field('contractNumber', 'Contract Number', 'text', 'required') + field('name', 'Contract Name', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + field('startDate', 'Start Date', 'date', 'required') + field('endDate', 'End Date', 'date') + field('currency', 'Currency', 'text', 'maxlength="3" value="' + escapeHtml(effectiveFinanceSettings().defaultCurrency || 'USD') + '"') + field('contractValue', 'Contract Value', 'number', 'min="0" step="0.01"') + field('responseSlaHours', 'Response SLA Hours', 'number', 'min="1"') + field('completionSlaHours', 'Completion SLA Hours', 'number', 'min="1"') + field('includedVisits', 'Included Visits', 'number', 'min="0"') };
     if (resource === 'quotes') return { title: 'New Quote', action: '/quotes', fields: field('title', 'Title', 'text', 'required') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('serviceId', 'Service', optionList(state.services, 'No service'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('validUntil', 'Valid Until', 'date') };
     if (resource === 'invoices') return { title: 'New Invoice', action: '/invoices', fields: field('number', 'Number') + select('customerId', 'Customer', optionList(state.customers, 'Select customer'), true) + select('jobId', 'Job', optionList(state.jobs, 'No job'), false) + field('amount', 'Amount', 'number', 'min="0" step="0.01"') + field('dueDate', 'Due Date', 'date') };
   }
@@ -2726,6 +2757,40 @@
     });
   }
 
+
+  const SAAS_PRICE_BOOK = {
+    ZW: {
+      starter: { currency: 'USD', price: 500, label: 'USD 500/month' },
+      growth: { currency: 'USD', price: 1500, label: 'USD 1,500/month' },
+      business: { currency: 'USD', price: null, label: 'Contact us' }
+    },
+    SA: {
+      starter: { currency: 'ZAR', price: 9500, label: 'R 9,500/month' },
+      growth: { currency: 'ZAR', price: 28500, label: 'R 28,500/month' },
+      business: { currency: 'ZAR', price: null, label: 'Contact us' }
+    }
+  };
+
+  function billingMarketLabel() {
+    return currentMarket() === 'SA' ? 'South Africa fixed ZAR price book' : 'Zimbabwe / USD price book';
+  }
+
+  function regionalPlanPrice(plan, interval) {
+    if (!plan) return { label: 'Not set', currency: effectiveFinanceSettings().defaultCurrency || 'USD', price: null };
+    if (plan.features && plan.features.customPricing) return { label: 'Contact us', currency: plan.currency || 'USD', price: null };
+    const book = SAAS_PRICE_BOOK[currentMarket()] || SAAS_PRICE_BOOK.ZW;
+    const regional = book[plan.id];
+    if (regional) return regional;
+    const currency = plan.currency || 'USD';
+    const price = plan.price == null ? null : Number(plan.price || 0);
+    return { currency, price, label: currency + ' ' + (price == null ? '-' : price.toLocaleString('en-US')) + '/' + (plan.interval || interval || 'month') };
+  }
+
+  function regionalEffectivePrice(plan) {
+    const price = regionalPlanPrice(plan).price;
+    return price == null ? Number.POSITIVE_INFINITY : Number(price || 0);
+  }
+
   function renderStorageUsage(storage) {
     const card = document.querySelector('[data-storage-usage-card]');
     if (!card) return;
@@ -2747,17 +2812,18 @@
     const statusBadge = '<span class="badge ' + (status === 'ACTIVE' || status === 'FREE_INTERNAL' ? 'green' : status === 'TRIALING' ? 'blue' : status === 'PAST_DUE' ? 'orange' : 'gray') + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span>';
     const currentPlanId = plan.id || subscription.planId;
     const currentPlan = plans.find((item) => item.id === currentPlanId) || plan;
-    const effectivePrice = (item) => item && item.features && item.features.customPricing ? Number.POSITIVE_INFINITY : Number(item && item.price || 0);
-    const currentPrice = effectivePrice(currentPlan);
-    const sortedPlans = plans.slice().sort((a, b) => effectivePrice(a) - effectivePrice(b));
-    const upgradePlans = sortedPlans.filter((item) => item.id !== currentPlanId && effectivePrice(item) > currentPrice);
+    const currentPrice = regionalEffectivePrice(currentPlan);
+    const sortedPlans = plans.slice().sort((a, b) => regionalEffectivePrice(a) - regionalEffectivePrice(b));
+    const upgradePlans = sortedPlans.filter((item) => item.id !== currentPlanId && regionalEffectivePrice(item) > currentPrice);
     const providerText = provider.configured ? (provider.mode === 'manual' ? 'Manual/internal billing mode' : 'Billing provider configured') : 'Billing provider not configured yet';
+    const providerCta = provider.configured ? (provider.mode === 'manual' ? 'Plan changes create a manual FieldCore billing request.' : 'Live checkout can process configured provider payments.') : 'Checkout is disabled until a SaaS billing provider is configured. Use manual plan-change requests during QA.';
     const interval = plan.interval || subscription.interval || 'month';
     const nextBillingDate = formatDate(subscription.currentPeriodEnd || subscription.trialEndsAt);
     const trial = subscription.trialDaysRemaining == null ? null : subscription.trialDaysRemaining + ' days remaining';
-    const planPriceText = (item) => item && item.features && item.features.customPricing ? 'Contact us' : (item && item.currency || 'USD') + ' ' + (item && item.price == null ? '-' : item.price) + '/' + (item && item.interval || interval);
+    const planPriceText = (item) => regionalPlanPrice(item, interval).label;
     const priceText = planPriceText(plan);
-    const cancelAction = subscription.id ? '<button class="secondary-button compact" type="button" data-billing-cancel>Cancel Plan</button>' : '';
+    const canCancel = subscription.id && !['FREE_INTERNAL', 'TRIALING'].includes(status) && !plan.features?.customPricing;
+    const cancelAction = canCancel ? '<button class="secondary-button compact" type="button" data-billing-cancel>Cancel Plan</button>' : '';
 
     const limitNames = {
       maxUsers: 'more office/admin users',
@@ -2806,11 +2872,18 @@
       const benefitList = benefits.length ? '<ul class="billing-benefit-list">' + benefits.map((benefit) => '<li>' + escapeHtml(benefit) + '</li>').join('') + '</ul>' : '<p class="muted">Higher limits and workspace capacity.</p>';
       const isCustom = Boolean(item.features && item.features.customPricing);
       const annualNote = item.features && item.features.annualFirst ? '<small class="billing-plan-note">Annual-first. Onboarding/training scoped separately.</small>' : '';
-      const action = isCustom ? '<button class="primary-button compact" type="button" data-billing-contact="' + escapeHtml(item.id) + '">Contact us</button>' : '<button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="primary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button>';
+      const checkoutDisabled = !provider.configured;
+      const action = isCustom
+        ? '<button class="primary-button compact" type="button" data-billing-contact="' + escapeHtml(item.id) + '">Contact us</button>'
+        : checkoutDisabled
+          ? '<button class="secondary-button compact" type="button" disabled title="Configure SAAS_BILLING_PROVIDER before plan changes can be submitted.">Provider required</button>'
+          : provider.mode === 'manual'
+            ? '<button class="primary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Request change</button>'
+            : '<button class="secondary-button compact" type="button" data-billing-checkout="' + escapeHtml(item.id) + '">Checkout</button><button class="primary-button compact" type="button" data-billing-change-plan="' + escapeHtml(item.id) + '">Change</button>';
       return '<div class="billing-upgrade-card"><div class="billing-plan-head"><div><strong>' + escapeHtml(item.name) + '</strong><span>' + escapeHtml(item.description || 'Upgrade your FieldCore workspace.') + '</span></div></div><div class="billing-plan-price"><strong>' + escapeHtml(planPriceText(item)) + '</strong></div>' + annualNote + benefitList + '<div class="billing-plan-actions">' + action + '</div></div>';
     }).join('') : '<div class="empty-state compact-empty"><div><strong>No upgrade available.</strong><span>This workspace is already on the highest available plan.</span></div></div>';
 
-    card.innerHTML = '<div class="panel-head billing-main-head"><div><h3>FieldCore Subscription</h3><p>' + escapeHtml(providerText) + '</p></div>' + statusBadge + '</div><div class="billing-essential-grid"><div class="billing-summary-item"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(priceText) + '</small></div><div class="billing-summary-item"><span>Billing Cycle</span><strong>' + escapeHtml(interval ? 'Every ' + interval : 'Not set') + '</strong><small>' + escapeHtml(nextBillingDate === '-' ? 'Next billing date not set' : 'Next bill: ' + nextBillingDate) + '</small></div><div class="billing-summary-item"><span>Trial / Renewal</span><strong>' + escapeHtml(trial || (subscription.cancelAtPeriodEnd ? 'Cancelling' : 'Active')) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Ends at current period close' : 'Managed by FieldCore') + '</small></div></div><div class="billing-section billing-upgrade-section"><div class="billing-section-head"><div><h3>Upgrade Benefits</h3><p class="muted">Only the useful plan differences are shown here.</p></div>' + cancelAction + '</div><div class="billing-upgrade-grid">' + upgradeCards + '</div></div><p class="fc-form-error billing-message" data-billing-message hidden></p>';
+    card.innerHTML = '<div class="panel-head billing-main-head"><div><h3>FieldCore Subscription</h3><p>' + escapeHtml(providerText) + '</p><p class="muted">' + escapeHtml(billingMarketLabel()) + ' · ' + escapeHtml(providerCta) + '</p></div>' + statusBadge + '</div><div class="billing-essential-grid"><div class="billing-summary-item"><span>Current Plan</span><strong>' + escapeHtml(plan.name || 'No plan') + '</strong><small>' + escapeHtml(priceText) + '</small></div><div class="billing-summary-item"><span>Billing Cycle</span><strong>' + escapeHtml(interval ? 'Every ' + interval : 'Not set') + '</strong><small>' + escapeHtml(nextBillingDate === '-' ? 'Next billing date not set' : 'Next bill: ' + nextBillingDate) + '</small></div><div class="billing-summary-item"><span>Trial / Renewal</span><strong>' + escapeHtml(trial || (subscription.cancelAtPeriodEnd ? 'Cancelling' : 'Active')) + '</strong><small>' + escapeHtml(subscription.cancelAtPeriodEnd ? 'Ends at current period close' : 'Managed by FieldCore') + '</small></div></div><div class="billing-section billing-upgrade-section"><div class="billing-section-head"><div><h3>Upgrade Benefits</h3><p class="muted">Only the useful plan differences are shown here.</p></div>' + cancelAction + '</div><div class="billing-upgrade-grid">' + upgradeCards + '</div></div><p class="fc-form-error billing-message" data-billing-message hidden></p>';
     bindBillingActions();
   }
 
@@ -2855,25 +2928,30 @@
     const data = Object.fromEntries(new FormData(form).entries());
     const allowedRaw = String(data.allowedCurrencies || '').trim();
     const paymentRaw = String(data.allowedPaymentMethods || '').trim();
-    return {
+    const payload = {
       country: data.country ? String(data.country).toUpperCase() : undefined,
       timezone: data.timezone || undefined,
       defaultCurrency: data.defaultCurrency ? String(data.defaultCurrency).toUpperCase() : undefined,
       allowedCurrencies: allowedRaw ? allowedRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
       taxName: data.taxName || undefined,
-      taxRate: data.taxRate === '' ? undefined : Number(data.taxRate),
-      pricesIncludeTax: Boolean(form.querySelector('[name="pricesIncludeTax"]') && form.querySelector('[name="pricesIncludeTax"]').checked),
+      taxRate: Object.prototype.hasOwnProperty.call(data, 'taxRate') && data.taxRate !== '' ? Number(data.taxRate) : undefined,
       dateFormat: data.dateFormat || undefined,
       numberFormat: data.numberFormat || undefined,
       invoicePrefix: data.invoicePrefix || undefined,
       receiptPrefix: data.receiptPrefix || undefined,
-      quoteExpiryDays: data.quoteExpiryDays === '' ? undefined : Number(data.quoteExpiryDays),
-      paymentTermsDays: data.paymentTermsDays === '' ? undefined : Number(data.paymentTermsDays),
-      fiscalYearStartMonth: data.fiscalYearStartMonth === '' ? undefined : Number(data.fiscalYearStartMonth),
+      quoteExpiryDays: Object.prototype.hasOwnProperty.call(data, 'quoteExpiryDays') && data.quoteExpiryDays !== '' ? Number(data.quoteExpiryDays) : undefined,
+      paymentTermsDays: Object.prototype.hasOwnProperty.call(data, 'paymentTermsDays') && data.paymentTermsDays !== '' ? Number(data.paymentTermsDays) : undefined,
+      fiscalYearStartMonth: Object.prototype.hasOwnProperty.call(data, 'fiscalYearStartMonth') && data.fiscalYearStartMonth !== '' ? Number(data.fiscalYearStartMonth) : undefined,
       invoiceFooter: data.invoiceFooter || undefined,
       allowedPaymentMethods: paymentRaw ? paymentRaw.split(',').map((item) => item.trim().toUpperCase()).filter(Boolean) : undefined,
       paymentInstructions: data.paymentInstructions || undefined
     };
+    const pricesIncludeTaxInput = form.querySelector('[name="pricesIncludeTax"]');
+    if (pricesIncludeTaxInput) payload.pricesIncludeTax = Boolean(pricesIncludeTaxInput.checked);
+    if (payload.defaultCurrency && !payload.allowedCurrencies && state.financeSettings && Array.isArray(state.financeSettings.allowedCurrencies)) {
+      payload.allowedCurrencies = Array.from(new Set([payload.defaultCurrency].concat(state.financeSettings.allowedCurrencies)));
+    }
+    return payload;
   }
 
   function fillFinanceForm(settings) {
@@ -2906,17 +2984,17 @@
   }
 
   async function loadFinanceSettings() {
-    if (!document.querySelector('[data-finance-settings-form]')) return;
+    if (!document.querySelector('[data-finance-settings-form]') && !document.querySelector('[data-invoice-defaults-form]')) return;
     try {
       const [settings, integrations, logs] = await Promise.all([
         api('/company/finance-settings'),
         api('/finance/integrations').catch(() => []),
         api('/finance/export-logs').catch(() => [])
       ]);
-      state.financeSettings = settings;
+      state.financeSettings = applyMarketCurrencyForDisplay(settings);
       state.financeIntegrations = integrations;
       state.financeExportLogs = logs;
-      fillFinanceForm(settings);
+      fillFinanceForm(state.financeSettings);
       renderFinanceIntegrations(integrations);
       renderFinanceExportLogs(logs);
     } catch (error) {
@@ -3009,7 +3087,7 @@
           panel.classList.toggle('active', active);
           panel.hidden = !active;
         });
-        if (target === 'billing') loadBilling();
+        if (target === 'subscription') loadBilling();
         if (target === 'finance') loadFinanceSettings();
         if (target === 'notifications') loadNotificationLogs();
         if (target === 'integrations') { loadIntegrations(); loadPaymentProviders(); }
@@ -3022,13 +3100,29 @@
       field.addEventListener('input', updateBrandingPreview);
     });
 
+    const invoiceDefaultsForm = document.querySelector('[data-invoice-defaults-form]');
+    if (invoiceDefaultsForm && !invoiceDefaultsForm.dataset.bound) {
+      invoiceDefaultsForm.dataset.bound = 'true';
+      invoiceDefaultsForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          const settings = applyMarketCurrencyForDisplay(await api('/company/finance-settings', { method: 'PATCH', body: JSON.stringify(financePayload(invoiceDefaultsForm)) }));
+          state.financeSettings = settings;
+          fillFinanceForm(settings);
+          setFormMessage('[data-invoice-defaults-message]', 'Invoice and payment defaults saved.', true);
+        } catch (error) {
+          setFormMessage('[data-invoice-defaults-message]', error.message, false);
+        }
+      });
+    }
+
     const financeForm = document.querySelector('[data-finance-settings-form]');
     if (financeForm && !financeForm.dataset.bound) {
       financeForm.dataset.bound = 'true';
       financeForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         try {
-          const settings = await api('/company/finance-settings', { method: 'PATCH', body: JSON.stringify(financePayload(financeForm)) });
+          const settings = applyMarketCurrencyForDisplay(await api('/company/finance-settings', { method: 'PATCH', body: JSON.stringify(financePayload(financeForm)) }));
           state.financeSettings = settings;
           fillFinanceForm(settings);
           setFormMessage('[data-finance-message]', 'Finance settings saved.', true);
@@ -3258,6 +3352,22 @@
     state.user = null;
     window.location.href = 'login.html';
   });
+
+  function rerenderAfterMarketChange() {
+    state.financeSettings = applyMarketCurrencyForDisplay(state.financeSettings);
+    fillFinanceForm(state.financeSettings);
+    if (state.billing) renderSaaSBilling(state.billing);
+    if (page === 'dashboard') api('/dashboard').then(renderDashboard).catch(() => {});
+    if (page === 'reports' && state.reports) renderReports(state.reports);
+    if (page === 'schedule' && state.schedule) renderSchedule(state.schedule, state.scheduleSettings || {});
+    if (tableConfigs[page] && page !== 'schedule' && state[page]) {
+      const data = page === 'assets' ? assetsForSelectedCustomer(filteredListData(page, state[page])) : filteredListData(page, state[page]);
+      renderTable(page, data);
+    }
+  }
+
+  window.addEventListener('fieldcore:market-change', rerenderAfterMarketChange);
+
   document.addEventListener('click', handleWorkerDashboardAction);
   document.addEventListener('click', handleRowAction);
   setupCreateButtons();

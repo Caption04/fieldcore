@@ -13,7 +13,7 @@ const saasPlans = [
     interval: 'month',
     isActive: true,
     limits: { maxUsers: 6, maxWorkers: 15, maxClients: 500, maxJobsPerMonth: 750, maxPublicBookingsPerMonth: 250, maxStorageMb: 10240, maxWhatsAppNotificationsPerMonth: 500, maxEmailNotificationsPerMonth: 2500 },
-    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: false, customBranding: false, multiLocation: false, apiAccess: false, annualFirst: false, implementationFee: false, customPricing: false }
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: false, customBranding: false, multiLocation: false, apiAccess: false, annualFirst: false, implementationFee: false, customPricing: false, regionalPrices: { ZW: { currency: 'USD', price: 500 }, SA: { currency: 'ZAR', price: 9500 } } }
   },
   {
     id: 'growth',
@@ -24,7 +24,7 @@ const saasPlans = [
     interval: 'month',
     isActive: true,
     limits: { maxUsers: 20, maxWorkers: 40, maxClients: 2500, maxJobsPerMonth: 5000, maxPublicBookingsPerMonth: 1500, maxStorageMb: 51200, maxWhatsAppNotificationsPerMonth: 5000, maxEmailNotificationsPerMonth: 25000 },
-    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: false, annualFirst: true, implementationFee: true, customPricing: false }
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: false, annualFirst: true, implementationFee: true, customPricing: false, regionalPrices: { ZW: { currency: 'USD', price: 1500 }, SA: { currency: 'ZAR', price: 28500 } } }
   },
   {
     id: 'business',
@@ -35,7 +35,7 @@ const saasPlans = [
     interval: 'month',
     isActive: true,
     limits: { maxUsers: null, maxWorkers: null, maxClients: null, maxJobsPerMonth: null, maxPublicBookingsPerMonth: null, maxStorageMb: null, maxWhatsAppNotificationsPerMonth: null, maxEmailNotificationsPerMonth: null },
-    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: true, annualFirst: true, implementationFee: true, customPricing: true, advertisedPrice: 'Contact us' }
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: true, annualFirst: true, implementationFee: true, customPricing: true, advertisedPrice: 'Contact us', regionalPrices: { ZW: { currency: 'USD', price: null, label: 'Contact us' }, SA: { currency: 'ZAR', price: null, label: 'Contact us' } } }
   },
   {
     id: 'free-internal',

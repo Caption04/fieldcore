@@ -14,7 +14,7 @@ const DEFAULT_PLANS = [
     interval: 'month',
     isActive: true,
     limits: { maxUsers: 6, maxWorkers: 15, maxClients: 500, maxJobsPerMonth: 750, maxPublicBookingsPerMonth: 250, maxStorageMb: 10240, maxWhatsAppNotificationsPerMonth: 500, maxEmailNotificationsPerMonth: 2500 },
-    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: false, customBranding: false, multiLocation: false, apiAccess: false, annualFirst: false, implementationFee: false, customPricing: false }
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: false, customBranding: false, multiLocation: false, apiAccess: false, annualFirst: false, implementationFee: false, customPricing: false, regionalPrices: { ZW: { currency: 'USD', price: 500 }, SA: { currency: 'ZAR', price: 9500 } } }
   },
   {
     id: 'growth',
@@ -25,7 +25,7 @@ const DEFAULT_PLANS = [
     interval: 'month',
     isActive: true,
     limits: { maxUsers: 20, maxWorkers: 40, maxClients: 2500, maxJobsPerMonth: 5000, maxPublicBookingsPerMonth: 1500, maxStorageMb: 51200, maxWhatsAppNotificationsPerMonth: 5000, maxEmailNotificationsPerMonth: 25000 },
-    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: false, annualFirst: true, implementationFee: true, customPricing: false }
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: false, annualFirst: true, implementationFee: true, customPricing: false, regionalPrices: { ZW: { currency: 'USD', price: 1500 }, SA: { currency: 'ZAR', price: 28500 } } }
   },
   {
     id: 'business',
@@ -36,7 +36,7 @@ const DEFAULT_PLANS = [
     interval: 'month',
     isActive: true,
     limits: { maxUsers: null, maxWorkers: null, maxClients: null, maxJobsPerMonth: null, maxPublicBookingsPerMonth: null, maxStorageMb: null, maxWhatsAppNotificationsPerMonth: null, maxEmailNotificationsPerMonth: null },
-    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: true, annualFirst: true, implementationFee: true, customPricing: true, advertisedPrice: 'Contact us' }
+    features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, advancedReports: true, customBranding: true, multiLocation: true, apiAccess: true, annualFirst: true, implementationFee: true, customPricing: true, advertisedPrice: 'Contact us', regionalPrices: { ZW: { currency: 'USD', price: null, label: 'Contact us' }, SA: { currency: 'ZAR', price: null, label: 'Contact us' } } }
   }
 ];
 
@@ -82,6 +82,30 @@ function planToResponse(plan, { includeInactive = false } = {}) {
     limits: plan.limits || {},
     features: plan.features || {}
   };
+}
+
+
+function marketFromFinanceSettings(settings) {
+  const country = String(settings && settings.country || '').toUpperCase();
+  return country === 'ZA' || country === 'SA' ? 'SA' : 'ZW';
+}
+
+async function companyBillingMarket(companyId) {
+  if (!companyId || !prisma.companyFinanceSettings) return 'ZW';
+  const settings = await prisma.companyFinanceSettings.findUnique({ where: { companyId } }).catch(() => null);
+  return marketFromFinanceSettings(settings);
+}
+
+function commercialPlanPrice(plan, market = 'ZW') {
+  const features = plan && plan.features || {};
+  const regional = features.regionalPrices && features.regionalPrices[market] || features.regionalPrices && features.regionalPrices.ZW;
+  if (features.customPricing || features.advertisedPrice === 'Contact us') {
+    return { price: null, currency: regional && regional.currency || plan && plan.currency || 'USD', label: regional && regional.label || 'Contact us', custom: true };
+  }
+  if (regional) {
+    return { price: regional.price == null ? null : Number(regional.price), currency: regional.currency || plan.currency || 'USD', label: regional.label || null, custom: false };
+  }
+  return { price: decimalToNumber(plan && plan.price), currency: plan && plan.currency || 'USD', label: null, custom: false };
 }
 
 async function ensureDefaultPlans() {
@@ -282,6 +306,8 @@ module.exports = {
   billingSummary,
   canUseFeature,
   checkPlanLimit,
+  commercialPlanPrice,
+  companyBillingMarket,
   defaultTrialSubscription,
   ensureDefaultPlans,
   getSubscription,

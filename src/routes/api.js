@@ -599,19 +599,42 @@ async function requireInvoice(req, id) {
   return record;
 }
 
-function financeSettingsDefaults(companyId) {
+function regionFinanceDefaults(country = 'ZW') {
+  const normalized = String(country || 'ZW').toUpperCase();
+  if (normalized === 'ZA' || normalized === 'SA') {
+    return {
+      country: 'ZA',
+      timezone: 'Africa/Johannesburg',
+      defaultCurrency: 'ZAR',
+      allowedCurrencies: ['ZAR', 'USD'],
+      numberFormat: 'en-ZA',
+      taxName: 'VAT'
+    };
+  }
   return {
-    id: null,
-    companyId,
     country: 'ZW',
     timezone: 'Africa/Harare',
     defaultCurrency: 'USD',
     allowedCurrencies: ['USD', 'ZAR'],
-    taxName: 'Tax',
+    numberFormat: 'en-ZW',
+    taxName: 'Tax'
+  };
+}
+
+function financeSettingsDefaults(companyId, country = 'ZW') {
+  const region = regionFinanceDefaults(country);
+  return {
+    id: null,
+    companyId,
+    country: region.country,
+    timezone: region.timezone,
+    defaultCurrency: region.defaultCurrency,
+    allowedCurrencies: region.allowedCurrencies,
+    taxName: region.taxName,
     taxRate: 0,
     pricesIncludeTax: false,
     dateFormat: 'yyyy-MM-dd',
-    numberFormat: 'en-ZW',
+    numberFormat: region.numberFormat,
     invoicePrefix: 'INV',
     receiptPrefix: 'RCT',
     quoteExpiryDays: 14,
@@ -629,7 +652,8 @@ function financeSettingsDefaults(companyId) {
 }
 
 function financeLocalization(settings) {
-  const merged = { ...financeSettingsDefaults(settings && settings.companyId || null), ...(settings || {}) };
+  const regionCountry = settings && settings.country || 'ZW';
+  const merged = { ...financeSettingsDefaults(settings && settings.companyId || null, regionCountry), ...(settings || {}) };
   return {
     country: merged.country,
     timezone: merged.timezone,
@@ -3276,10 +3300,21 @@ router.get('/company/payment-methods', requireRole(...adminRoles), asyncHandler(
 
 router.patch('/company/finance-settings', requireRole(...adminRoles), validate(financeSettingsSchema), asyncHandler(async (req, res) => {
   const update = { ...req.body };
+  if (update.country === 'ZA') {
+    const region = regionFinanceDefaults('ZA');
+    if (!update.timezone) update.timezone = region.timezone;
+    if (!update.defaultCurrency) update.defaultCurrency = region.defaultCurrency;
+    if (!update.allowedCurrencies) update.allowedCurrencies = region.allowedCurrencies;
+    if (!update.numberFormat) update.numberFormat = region.numberFormat;
+    if (!update.taxName) update.taxName = region.taxName;
+  }
+  if (update.defaultCurrency && Array.isArray(update.allowedCurrencies) && !update.allowedCurrencies.includes(update.defaultCurrency)) {
+    update.allowedCurrencies = [update.defaultCurrency, ...update.allowedCurrencies];
+  }
   const data = await prisma.companyFinanceSettings.upsert({
     where: { companyId: req.companyId },
     update,
-    create: { ...financeSettingsDefaults(req.companyId), ...update, id: undefined, createdAt: undefined, updatedAt: undefined }
+    create: { ...financeSettingsDefaults(req.companyId, update.country || 'ZW'), ...update, id: undefined, createdAt: undefined, updatedAt: undefined }
   });
   if (update.timezone) {
     await prisma.companySchedulingSettings.upsert({ where: { companyId: req.companyId }, update: { timezone: update.timezone }, create: { ...schedulingDefaults(), companyId: req.companyId, timezone: update.timezone } });

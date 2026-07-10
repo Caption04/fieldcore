@@ -1,6 +1,6 @@
 const API = "/api";
 const page = document.body.dataset.clientPage;
-const state = { dashboard: null, requests: [], quotes: [], jobs: [], assets: [], contracts: [], invoices: [], receipts: [], payments: [], properties: [], profile: null };
+const state = { dashboard: null, requests: [], quotes: [], jobs: [], assets: [], contracts: [], invoices: [], receipts: [], payments: [], properties: [], profile: null, localization: { defaultCurrency: "USD", numberFormat: "en-US" } };
 
 async function api(path, options) {
   const response = await fetch(API + path, { credentials: "include", headers: { "Content-Type": "application/json" }, ...(options || {}) });
@@ -24,7 +24,10 @@ function message(el, text, ok) {
 }
 
 function money(value) {
-  return "$" + Number(value || 0).toFixed(2);
+  const settings = state.localization || {};
+  const currency = settings.defaultCurrency || "USD";
+  const locale = settings.numberFormat || "en-US";
+  return new Intl.NumberFormat(locale, { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0));
 }
 
 function date(value) {
@@ -57,6 +60,7 @@ function escapeHtml(value) {
 async function brand() {
   try {
     const company = await api("/public/company");
+    state.localization = company.localization || state.localization;
     document.querySelectorAll("[data-client-brand]").forEach(function(el) { el.textContent = company.brandName || "FieldCore"; });
     document.querySelectorAll("[data-client-logo]").forEach(function(el) {
       const brandName = company.brandName || "FieldCore";
