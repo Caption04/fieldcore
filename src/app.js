@@ -92,19 +92,38 @@ const staffHtmlPages = new Map([
   ['mobile-sync.html', ['OWNER', 'ADMIN']],
   ['executive-dashboard.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['onboarding.html', ['OWNER', 'ADMIN']],
-  ['security-center.html', ['OWNER', 'ADMIN', 'WORKER']]
-  ,['plan-selection.html', ['OWNER']]
-  ,['subscription.html', ['OWNER']]
+  ['security-center.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['no-access.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['plan-selection.html', ['OWNER']],
+  ['subscription.html', ['OWNER']]
 ]);
 
 const staffPagePermissions = new Map([
   ['index.html', 'dashboard.operational.view'], ['jobs.html', 'jobs.view'], ['schedule.html', 'schedule.view'], ['map.html', 'workers.location.view'],
   ['customers.html', 'customers.view'], ['members.html', 'members.view'], ['booking-requests.html', 'bookings.view'], ['quotes.html', 'quotes.view'], ['invoices.html', 'invoices.view'],
   ['reports.html', 'finance.reports.view'], ['settings.html', 'company.settings.view'], ['branches.html', 'branch.view'], ['approvals.html', 'approval.request.decide'],
-  ['inventory.html', 'inventory.view'], ['purchase-requests.html', 'purchaseRequest.create'], ['purchase-orders.html', 'purchaseOrder.manage'],
-  ['collections.html', 'payments.view'], ['executive-dashboard.html', 'dashboard.executive.view'], ['security-center.html', 'security.view'],
-  ['subscription.html', 'subscription.view']
+  ['assets.html', 'contract.automation.manage'], ['service-contracts.html', 'contract.automation.manage'], ['contract-automation.html', 'contract.automation.manage'],
+  ['inventory.html', 'inventory.view'], ['purchase-requests.html', 'purchaseRequest.create'], ['purchase-orders.html', 'purchaseOrder.manage'], ['procurement-costing.html', 'inventory.manage'],
+  ['collections.html', 'payments.view'], ['mobile-sync.html', 'mobile.sync.manage'], ['executive-dashboard.html', 'dashboard.executive.view'], ['onboarding.html', 'company.settings.manage'],
+  ['security-center.html', 'security.view'], ['subscription.html', 'subscription.view']
 ]);
+
+const staffPagePriority = [
+  'index.html', 'jobs.html', 'schedule.html', 'customers.html', 'booking-requests.html', 'quotes.html', 'invoices.html', 'collections.html',
+  'map.html', 'members.html', 'inventory.html', 'purchase-requests.html', 'purchase-orders.html', 'branches.html', 'approvals.html',
+  'assets.html', 'service-contracts.html', 'contract-automation.html', 'procurement-costing.html', 'mobile-sync.html', 'reports.html',
+  'executive-dashboard.html', 'settings.html', 'security-center.html', 'subscription.html'
+];
+
+function firstAllowedStaffPage(user, access) {
+  const permissions = new Set(access && access.permissions || []);
+  for (const page of staffPagePriority) {
+    const roles = staffHtmlPages.get(page) || [];
+    const permission = staffPagePermissions.get(page);
+    if (roles.includes(user.role) && (!permission || permissions.has(permission))) return `/${page}`;
+  }
+  return '/no-access.html';
+}
 
 const clientHtmlPages = new Set(['client-portal.html']);
 
@@ -167,12 +186,16 @@ async function htmlPageAccessGuard(req, res, next) {
   if (!user) return res.redirect(302, '/login.html');
   if (user.company && user.company.onboardingState !== 'COMPLETED' && page !== 'plan-selection.html') return res.redirect(302, '/plan-selection.html');
   if (page === 'plan-selection.html' && user.company && user.company.onboardingState === 'COMPLETED') return res.redirect(302, '/index.html');
-  if (!allowedRoles.includes(user.role)) return res.redirect(302, '/index.html');
-  const requiredPermission = staffPagePermissions.get(page);
-  if (requiredPermission) {
-    const access = await effectiveAccessForUser(user, { companyId: user.companyId });
-    if (!access.permissions.includes(requiredPermission)) return res.redirect(302, '/index.html');
+
+  const access = await effectiveAccessForUser(user, { companyId: user.companyId });
+  const fallback = firstAllowedStaffPage(user, access);
+  if (page === 'no-access.html') {
+    if (fallback !== '/no-access.html') return res.redirect(302, fallback);
+    return next();
   }
+  if (!allowedRoles.includes(user.role)) return res.redirect(302, fallback);
+  const requiredPermission = staffPagePermissions.get(page);
+  if (requiredPermission && !access.permissions.includes(requiredPermission)) return res.redirect(302, fallback);
 
   return next();
 }

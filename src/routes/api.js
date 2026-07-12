@@ -3413,6 +3413,40 @@ const resourcePermissionRules = [
   { method: 'GET', pattern: /^\/billing\/(?:catalog|plans|subscription|usage)$/, permission: 'subscription.view' },
   { method: 'POST', pattern: /^\/billing\/(?:mock-select|checkout|change-plan|cancel)$/, permission: 'subscription.manage' },
 
+  { method: 'POST', pattern: /^\/branches(?:\/|$)/, permission: 'branch.manage' },
+  { method: 'PATCH', pattern: /^\/branches(?:\/|$)/, permission: 'branch.manage' },
+  { method: 'DELETE', pattern: /^\/branches(?:\/|$)/, permission: 'branch.manage' },
+  { method: 'GET', pattern: /^\/approvals(?:\/|$)/, permission: 'approval.request.decide' },
+  { method: 'POST', pattern: /^\/approvals(?:\/|$)/, permission: 'approval.request.decide' },
+  { method: 'GET', pattern: /^\/assets(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'POST', pattern: /^\/assets(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'PATCH', pattern: /^\/assets(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'DELETE', pattern: /^\/assets(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'GET', pattern: /^\/service-contracts(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'POST', pattern: /^\/service-contracts(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'PATCH', pattern: /^\/service-contracts(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'DELETE', pattern: /^\/service-contracts(?:\/|$)/, permission: 'contract.automation.manage' },
+  { method: 'GET', pattern: /^\/onboarding(?:\/|$)/, permission: 'company.settings.manage' },
+  { method: 'POST', pattern: /^\/onboarding(?:\/|$)/, permission: 'company.settings.manage' },
+  { method: 'PATCH', pattern: /^\/onboarding(?:\/|$)/, permission: 'company.settings.manage' },
+  { method: 'POST', pattern: /^\/inventory\/adjustments(?:\/|$)/, permission: 'stock.adjust' },
+  { method: 'GET', pattern: /^\/inventory(?:\/|$)/, permission: 'inventory.view' },
+  { method: 'POST', pattern: /^\/inventory(?:\/|$)/, permission: 'inventory.manage' },
+  { method: 'PATCH', pattern: /^\/inventory(?:\/|$)/, permission: 'inventory.manage' },
+  { method: 'DELETE', pattern: /^\/inventory(?:\/|$)/, permission: 'inventory.manage' },
+  { method: 'POST', pattern: /^\/purchase-requests\/[^/]+\/(?:approve|reject|convert-to-po)$/, permission: 'purchaseRequest.approve' },
+  { method: 'GET', pattern: /^\/purchase-requests(?:\/|$)/, permission: 'purchaseRequest.create' },
+  { method: 'POST', pattern: /^\/purchase-requests(?:\/|$)/, permission: 'purchaseRequest.create' },
+  { method: 'PATCH', pattern: /^\/purchase-requests(?:\/|$)/, permission: 'purchaseRequest.create' },
+  { method: 'POST', pattern: /^\/purchase-orders\/[^/]+\/approve$/, permission: 'purchaseOrder.approve' },
+  { method: 'POST', pattern: /^\/purchase-orders\/[^/]+\/send$/, permission: 'purchaseOrder.send' },
+  { method: 'GET', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
+  { method: 'POST', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
+  { method: 'PATCH', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
+  { method: 'DELETE', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
+  { method: 'GET', pattern: /^\/analytics\/contracts-sla$/, permission: 'report.enterprise.view' },
+  { method: 'POST', pattern: /^\/jobs\/[^/]+\/sla\/(?:evaluate|waive)$/, permission: 'contract.sla.override' },
+
   { method: 'GET', pattern: /^\/customers(?:\/|$)/, permission: 'customers.view' },
   { method: 'POST', pattern: /^\/customers$/, permission: 'customers.create' },
   { method: 'PATCH', pattern: /^\/customers\//, permission: 'customers.edit' },
@@ -4131,46 +4165,38 @@ function companyRoleKey(name) {
 }
 
 async function resolveCompanyRole(req, body, permissions) {
-  let selected = null;
   if (body.roleTemplateId) {
-    selected = await prisma.permissionRoleTemplate.findFirst({
+    const selected = await prisma.permissionRoleTemplate.findFirst({
       where: { id: body.roleTemplateId, active: true, OR: [{ companyId: req.companyId }, { companyId: null }] }
     });
     if (!selected) throw notFound('Saved role not found');
     if (selected.systemRole === 'OWNER') throw new AppError(403, 'Ownership cannot be granted through a role.');
-    // Keep legacy/system role IDs working for older clients, but never expose them as
-    // selectable presets in the current UI. New or edited roles become company-owned.
-    if (selected.companyId === null && !body.roleName) return selected;
+    return selected;
   }
 
-  const name = String(body.roleName || selected && selected.name || '').trim();
+  const name = String(body.roleName || '').trim();
   if (name.length < 2) throw new AppError(400, 'Enter a role name.');
   const key = companyRoleKey(name);
   if (!key) throw new AppError(400, 'Enter a valid role name.');
   const verticalKey = req.user.company && req.user.company.verticalKey || 'generic';
-  const systemRole = body.systemRole === 'WORKER' ? 'WORKER' : body.systemRole === 'ADMIN' ? 'ADMIN' : selected && selected.systemRole || 'ADMIN';
-  const data = {
-    key,
-    name,
-    description: selected && selected.description || null,
-    verticalKey,
-    systemRole,
-    isSystemTemplate: false,
-    isCustom: true,
-    defaultPermissions: permissions,
-    defaultScopeType: body.scopeType || 'COMPANY',
-    active: true
-  };
-
-  if (selected && selected.companyId === req.companyId) {
-    const conflict = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: req.companyId, key, verticalKey } });
-    if (conflict && conflict.id !== selected.id) throw new AppError(409, 'A saved role with this name already exists.');
-    return prisma.permissionRoleTemplate.update({ where: { id: selected.id }, data });
-  }
-
   const existing = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: req.companyId, key, verticalKey } });
-  if (existing) return prisma.permissionRoleTemplate.update({ where: { id: existing.id }, data });
-  return prisma.permissionRoleTemplate.create({ data: { companyId: req.companyId, ...data } });
+  if (existing) throw new AppError(409, 'A saved role with this name already exists. Choose it from the role list or use another name.');
+
+  return prisma.permissionRoleTemplate.create({
+    data: {
+      companyId: req.companyId,
+      key,
+      name,
+      description: null,
+      verticalKey,
+      systemRole: body.systemRole === 'WORKER' ? 'WORKER' : 'ADMIN',
+      isSystemTemplate: false,
+      isCustom: true,
+      defaultPermissions: permissions,
+      defaultScopeType: body.scopeType || 'COMPANY',
+      active: true
+    }
+  });
 }
 
 router.get('/role-templates', asyncHandler(async (req, res) => {
@@ -4225,7 +4251,17 @@ async function validateInvitationScope(req, body) {
 
 router.get('/members', asyncHandler(async (req, res) => {
   await requirePermission(req, 'members.view');
-  const rows = await prisma.user.findMany({ where: { companyId: req.companyId, ...userScopeWhere(req) }, select: { ...SAFE_USER_SELECT, jobTitle: true, defaultScopeType: true, roleTemplate: { select: { id: true, key: true, name: true } }, sessions: { select: { lastSeenAt: true }, orderBy: { lastSeenAt: 'desc' }, take: 1 } }, orderBy: { name: 'asc' } });
+  const rows = await prisma.user.findMany({
+    where: {
+      companyId: req.companyId,
+      AND: [
+        userScopeWhere(req),
+        { OR: [{ role: { not: 'OWNER' } }, { id: req.user.id }] }
+      ]
+    },
+    select: { ...SAFE_USER_SELECT, jobTitle: true, defaultScopeType: true, roleTemplate: { select: { id: true, key: true, name: true } }, sessions: { select: { lastSeenAt: true }, orderBy: { lastSeenAt: 'desc' }, take: 1 } },
+    orderBy: { name: 'asc' }
+  });
   const enriched = await Promise.all(rows.map(async (user) => {
     const access = await effectiveAccessForUser(user, { companyId: req.companyId });
     return { ...user, effectivePermissions: access.permissions, accessScope: { type: access.scopeType, branchIds: access.branchIds, teamIds: access.teamIds }, lastActivityAt: user.sessions && user.sessions[0] && user.sessions[0].lastSeenAt, sessions: undefined };

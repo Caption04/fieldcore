@@ -8,6 +8,7 @@
   }
 
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
+  let currentPermissionSet = new Set();
 
   const adminPages = [
     ['dashboard', 'Dashboard', 'index.html', 'dashboard'],
@@ -85,8 +86,11 @@
 
   const pagePermissions = {
     dashboard: 'dashboard.operational.view', jobs: 'jobs.view', schedule: 'schedule.view', map: 'workers.location.view', 'booking-requests': 'bookings.view', customers: 'customers.view', members: 'members.view',
-    quotes: 'quotes.view', invoices: 'invoices.view', collections: 'payments.view', branches: 'branch.view', approvals: 'approval.request.decide', inventory: 'inventory.view',
-    'purchase-requests': 'purchaseRequest.create', 'purchase-orders': 'purchaseOrder.manage', reports: 'finance.reports.view', 'executive-dashboard': 'dashboard.executive.view', settings: 'company.settings.view', 'security-center': 'security.view'
+    quotes: 'quotes.view', invoices: 'invoices.view', collections: 'payments.view', branches: 'branch.view', approvals: 'approval.request.decide',
+    assets: 'contract.automation.manage', 'service-contracts': 'contract.automation.manage', 'contract-automation': 'contract.automation.manage',
+    inventory: 'inventory.view', 'purchase-requests': 'purchaseRequest.create', 'purchase-orders': 'purchaseOrder.manage', 'procurement-costing': 'inventory.manage',
+    'mobile-sync': 'mobile.sync.manage', reports: 'finance.reports.view', 'executive-dashboard': 'dashboard.executive.view', onboarding: 'company.settings.manage',
+    settings: 'company.settings.view', 'security-center': 'security.view'
   };
 
   function navLink([key, label, href, iconName], current) {
@@ -97,6 +101,7 @@
 
   function nav(current, role, permissions) {
     const permissionSet = new Set(permissions || []);
+    if (!role) return '';
     if (role === 'WORKER') {
       const combined = new Map([...normalizePages(workerPages), ...normalizePages(adminPages)].map((page) => [page[0], page]));
       return Array.from(combined.values())
@@ -105,10 +110,11 @@
         .join('');
     }
 
-    const normalized = normalizePages(adminPages).filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]) || !role);
+    const normalized = normalizePages(adminPages).filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]));
     const byKey = new Map(normalized.map((page) => [page[0], page]));
     return adminNavGroups.map(([title, purpose, keys]) => {
       const links = keys.map((key) => byKey.get(key)).filter(Boolean);
+      if (!links.length) return '';
       const isOpen = links.some((page) => page[0] === current);
       return `<details class="nav-group"${isOpen ? ' open' : ''}>
         <summary class="nav-group-title">
@@ -120,14 +126,15 @@
     }).join('');
   }
 
-  function shouldShowQuickCard(current, role) {
-    if (role === 'WORKER') return false;
-    if (current === 'settings') return false;
-    return true;
+  function shouldShowQuickCard(current, role, permissions) {
+    if (!role || role === 'WORKER') return false;
+    if (current === 'settings' || current === 'no-access') return false;
+    const permissionSet = new Set(permissions || []);
+    return permissionSet.has('jobs.create') && permissionSet.has('jobs.view');
   }
 
   function quickCard() {
-    return `<div class="quick-card" data-quick-card>
+    return `<div class="quick-card" data-quick-card hidden>
       <strong>Quick Create</strong>
       <p>Create a new job, quote, or invoice in seconds.</p>
       <a href="jobs.html">+ New Job</a>
@@ -163,11 +170,12 @@
     const navNode = document.querySelector('.sidebar .nav');
     const quick = document.querySelector('[data-quick-card]');
 
+    currentPermissionSet = new Set(user && user.effectivePermissions || []);
     if (navNode) navNode.innerHTML = nav(current, role, user && user.effectivePermissions);
     renderAccountIdentity(user);
 
     if (quick) {
-      quick.hidden = !shouldShowQuickCard(current, role);
+      quick.hidden = !shouldShowQuickCard(current, role, user && user.effectivePermissions);
     }
 
     document.body.dataset.userRole = role || '';
@@ -215,7 +223,7 @@
         <span class="account-chevron" aria-hidden="true">⌄</span>
       </button>
       <div class="account-dropdown" role="menu" data-account-dropdown hidden>
-        <a role="menuitem" href="settings.html">Settings</a>
+        <a role="menuitem" href="settings.html" data-required-permission="company.settings.view" hidden>Settings</a>
         <a role="menuitem" href="subscription.html" data-required-permission="subscription.view" hidden>FieldCore Subscription</a>
         <a role="menuitem" href="security-center.html" data-required-permission="security.view" hidden>Security</a>
         <button role="menuitem" type="button" data-logout>Log out</button>
@@ -407,7 +415,7 @@
         results.hidden = false;
         results.innerHTML = '<div class="search-result muted">Searching...</div>';
         const found = [];
-        await Promise.all(searchResources.map(async ([key, endpoint, label, title]) => {
+        await Promise.all(searchResources.filter(([key]) => !pagePermissions[key] || currentPermissionSet.has(pagePermissions[key])).map(async ([key, endpoint, label, title]) => {
           try {
             const response = await fetch(`${API_BASE}${endpoint}`, { credentials: 'include' });
             const payload = await response.json().catch(() => ({}));

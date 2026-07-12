@@ -1127,6 +1127,77 @@ test('new invitation roles are company-owned and system templates stay hidden', 
   assert.deepEqual(visibleRoles.body.data.map((item) => item.name), ['Dispatch Lead']);
 });
 
+test('restricted invitations keep exact access and land on the first allowed page', async () => {
+  const app = await buildApp();
+  const owner = await login(app, 'owner-a@test.local');
+  let delivered;
+  require('../src/services/emailProvider.service').setEmailProvider(async (message) => { delivered = message; return { status: 'SENT' }; });
+
+  const invited = await owner.post('/api/member-invitations').send({
+    email: 'jobs-only@test.local',
+    jobTitle: 'Job Viewer',
+    roleName: 'Job Viewer',
+    systemRole: 'ADMIN',
+    fullAccess: false,
+    permissions: ['jobs.view'],
+    scopeType: 'COMPANY',
+    branchIds: [],
+    teamIds: []
+  });
+  assert.equal(invited.status, 201);
+
+  const token = new URL(delivered.text.match(/https?:\/\/[^\s]+/)[0]).searchParams.get('token');
+  const member = request.agent(app);
+  const accepted = await member.post('/api/public/member-invitations/accept').send({ token, name: 'Jobs Only', password: 'AnotherStrong123!' });
+  assert.equal(accepted.status, 201);
+  assert.deepEqual(accepted.body.data.effectivePermissions, ['jobs.view']);
+  assert.equal((await member.get('/api/jobs')).status, 200);
+  assert.equal((await member.get('/api/invoices')).status, 403);
+
+  const landing = await member.get('/index.html');
+  assert.equal(landing.status, 302);
+  assert.equal(landing.headers.location, '/jobs.html');
+});
+
+test('saved role use does not change the saved role or grant extra access', async () => {
+  const app = await buildApp();
+  app.locals.testDb.permissionRoleTemplates.push({ id: 'company-role-jobs', companyId: 'company-a', key: 'job-viewer', name: 'Job Viewer', verticalKey: 'generic', systemRole: 'ADMIN', isSystemTemplate: false, isCustom: true, defaultPermissions: ['jobs.view'], defaultScopeType: 'COMPANY', active: true });
+  const owner = await login(app, 'owner-a@test.local');
+  require('../src/services/emailProvider.service').setEmailProvider(async () => ({ status: 'SENT' }));
+
+  const invited = await owner.post('/api/member-invitations').send({
+    email: 'saved-role@test.local',
+    jobTitle: 'Job Viewer',
+    roleName: 'Job Viewer',
+    roleTemplateId: 'company-role-jobs',
+    systemRole: 'ADMIN',
+    fullAccess: false,
+    permissions: ['invoices.view'],
+    scopeType: 'COMPANY',
+    branchIds: [],
+    teamIds: []
+  });
+
+  assert.equal(invited.status, 201);
+  const saved = app.locals.testDb.permissionRoleTemplates.find((item) => item.id === 'company-role-jobs');
+  assert.deepEqual(saved.defaultPermissions, ['jobs.view']);
+  assert.deepEqual(app.locals.testDb.memberInvitations.find((item) => item.email === 'saved-role@test.local').permissions, ['invoices.view']);
+});
+
+test('company members hide owners from other members but keep the current account visible', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const adminMembers = await admin.get('/api/members');
+  assert.equal(adminMembers.status, 200);
+  assert.equal(adminMembers.body.data.some((item) => item.id === 'owner-a'), false);
+  assert.equal(adminMembers.body.data.some((item) => item.id === 'admin-a'), true);
+
+  const owner = await login(app, 'owner-a@test.local');
+  const ownerMembers = await owner.get('/api/members');
+  assert.equal(ownerMembers.status, 200);
+  assert.equal(ownerMembers.body.data.some((item) => item.id === 'owner-a'), true);
+});
+
 test('role templates and scopes enforce finance operations team and owner boundaries', async () => {
   const app = await buildApp();
   app.locals.testDb.permissionRoleTemplates.push(

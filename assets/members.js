@@ -132,13 +132,20 @@
     return Object.entries(data.permissions.groups || {}).map(([group, keys]) => `<fieldset class="permission-group"><legend>${escapeHtml(permissionGroupLabels[group] || group)} <button type="button" data-select-category>Select all</button></legend>${keys.map((key) => `<label><input type="checkbox" name="permissions" value="${escapeHtml(key)}"${selectedSet.has(key) ? ' checked' : ''}> ${escapeHtml(permissionLabel(key))}</label>`).join('')}</fieldset>`).join('');
   }
 
-  function bindCategoryButtons(root) {
+  function updateCategoryButton(button) {
+    const boxes = Array.from(button.closest('fieldset').querySelectorAll('input[type="checkbox"]'));
+    button.textContent = boxes.length && boxes.every((box) => box.checked) ? 'Clear' : 'Select all';
+  }
+
+  function bindCategoryButtons(root, onChange) {
     root.querySelectorAll('[data-select-category]').forEach((button) => {
+      updateCategoryButton(button);
       button.onclick = () => {
         const boxes = Array.from(button.closest('fieldset').querySelectorAll('input[type="checkbox"]'));
-        const all = boxes.every((box) => box.checked);
-        boxes.forEach((box) => { box.checked = !all; });
-        button.textContent = all ? 'Select all' : 'Clear';
+        const shouldSelect = !boxes.every((box) => box.checked);
+        boxes.forEach((box) => { box.checked = shouldSelect; });
+        updateCategoryButton(button);
+        if (onChange) onChange();
       };
     });
   }
@@ -156,9 +163,16 @@
     return `<option value="">Create a new role</option>${data.templates.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === selectedId ? ' selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}`;
   }
 
-  function setPermissionBoxes(permissionWrap, permissions) {
+  function setPermissionBoxes(permissionWrap, permissions, onChange) {
     permissionWrap.innerHTML = permissionEditor(permissions);
-    bindCategoryButtons(permissionWrap);
+    permissionWrap.querySelectorAll('input[name="permissions"]').forEach((box) => {
+      box.addEventListener('change', () => {
+        const categoryButton = box.closest('fieldset').querySelector('[data-select-category]');
+        if (categoryButton) updateCategoryButton(categoryButton);
+        if (onChange) onChange();
+      });
+    });
+    bindCategoryButtons(permissionWrap, onChange);
   }
 
   function bindAccessForm(modal, form, initial = {}) {
@@ -166,6 +180,22 @@
     const fullAccess = form.querySelector('[name="fullAccess"]');
     const scopeWrap = modal.querySelector('[data-scope-picker]');
     const savedRole = form.querySelector('[name="roleTemplateId"]');
+    let changingAll = false;
+
+    function permissionBoxes() {
+      return Array.from(permissionWrap.querySelectorAll('input[name="permissions"]'));
+    }
+
+    function syncFullAccess() {
+      if (changingAll) return;
+      const boxes = permissionBoxes();
+      fullAccess.checked = Boolean(boxes.length && boxes.every((box) => box.checked));
+    }
+
+    function rebuildPermissions(permissions) {
+      setPermissionBoxes(permissionWrap, permissions, syncFullAccess);
+      syncFullAccess();
+    }
 
     function updateScope(selectedIds = []) {
       const needsChoice = ['BRANCH', 'TEAM'].includes(form.scopeType.value);
@@ -175,27 +205,40 @@
     }
 
     function applyTemplate(template) {
-      if (!template) return;
+      if (!template) {
+        form.roleName.readOnly = false;
+        form.roleName.value = '';
+        form.fieldWorker.disabled = false;
+        form.fieldWorker.checked = false;
+        form.scopeType.value = 'COMPANY';
+        rebuildPermissions([]);
+        updateScope([]);
+        return;
+      }
       form.roleName.value = template.name || '';
+      form.roleName.readOnly = true;
       form.fieldWorker.checked = template.systemRole === 'WORKER';
+      form.fieldWorker.disabled = true;
       form.scopeType.value = template.defaultScopeType || 'COMPANY';
-      fullAccess.checked = false;
-      setPermissionBoxes(permissionWrap, template.defaultPermissions || []);
+      rebuildPermissions(template.defaultPermissions || []);
       updateScope([]);
     }
 
     if (savedRole) savedRole.onchange = () => applyTemplate(data.templates.find((item) => item.id === savedRole.value));
     form.scopeType.onchange = () => updateScope([]);
     fullAccess.onchange = () => {
-      const boxes = permissionWrap.querySelectorAll('input[name="permissions"]');
-      boxes.forEach((box) => {
-        if (fullAccess.checked) box.checked = true;
-        box.disabled = fullAccess.checked;
-      });
+      changingAll = true;
+      permissionBoxes().forEach((box) => { box.checked = fullAccess.checked; });
+      permissionWrap.querySelectorAll('[data-select-category]').forEach(updateCategoryButton);
+      changingAll = false;
     };
 
-    setPermissionBoxes(permissionWrap, initial.permissions || []);
+    rebuildPermissions(initial.permissions || []);
     updateScope(initial.scopeIds || []);
+    if (savedRole && savedRole.value) {
+      form.roleName.readOnly = true;
+      form.fieldWorker.disabled = true;
+    }
     if (initial.fullAccess) {
       fullAccess.checked = true;
       fullAccess.dispatchEvent(new Event('change'));
@@ -205,15 +248,21 @@
 
   function renderMembers() {
     document.querySelector('[data-member-count]').textContent = data.members.length;
-    document.querySelector('[data-members-body]').innerHTML = data.members.map((member) => `<tr>
-      <td><strong>${escapeHtml(member.name)}</strong></td>
+    document.querySelector('[data-members-body]').innerHTML = data.members.map((member) => {
+      const isCurrentUser = Boolean(data.currentUser && member.id === data.currentUser.id);
+      const actions = isCurrentUser
+        ? '<span class="muted">Your account</span>'
+        : `${can('permissions.manage') ? `<button class="secondary-button compact" type="button" data-edit-member="${escapeHtml(member.id)}">Edit</button>` : ''}${can('members.manage') ? `<button class="secondary-button compact${member.disabledAt ? '' : ' danger'}" type="button" data-toggle-member="${escapeHtml(member.id)}">${member.disabledAt ? 'Reactivate' : 'Disable'}</button>` : ''}`;
+      return `<tr${isCurrentUser ? ' class="current-member-row"' : ''}>
+      <td><strong>${escapeHtml(member.name)}</strong>${isCurrentUser ? '<small class="current-member-label">You</small>' : ''}</td>
       <td>${escapeHtml(member.email)}</td>
       <td>${escapeHtml(member.role === 'OWNER' ? 'Owner' : member.roleTemplate && member.roleTemplate.name || member.jobTitle || 'Team member')}</td>
       <td>${escapeHtml(accessLabel(member.accessScope && member.accessScope.type || member.defaultScopeType || 'COMPANY'))}</td>
       <td><span class="badge ${member.disabledAt ? 'orange' : 'green'}">${member.disabledAt ? 'Disabled' : 'Active'}</span></td>
       <td>${escapeHtml(formatDate(member.lastActivityAt))}</td>
-      <td><div class="row-actions">${member.role === 'OWNER' ? '<span class="muted">Protected owner</span>' : `${can('permissions.manage') ? `<button class="secondary-button compact" type="button" data-edit-member="${escapeHtml(member.id)}">Edit</button>` : ''}${can('members.manage') ? `<button class="secondary-button compact${member.disabledAt ? '' : ' danger'}" type="button" data-toggle-member="${escapeHtml(member.id)}">${member.disabledAt ? 'Reactivate' : 'Disable'}</button>` : ''}`}</div></td>
-    </tr>`).join('') || '<tr><td colspan="7">No members found.</td></tr>';
+      <td><div class="row-actions">${actions}</div></td>
+    </tr>`;
+    }).join('') || '<tr><td colspan="7">No members found.</td></tr>';
 
     document.querySelectorAll('[data-edit-member]').forEach((button) => button.onclick = () => openMember(data.members.find((member) => member.id === button.dataset.editMember)));
     document.querySelectorAll('[data-toggle-member]').forEach((button) => button.onclick = () => toggleMember(data.members.find((member) => member.id === button.dataset.toggleMember)));

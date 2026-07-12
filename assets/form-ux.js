@@ -67,6 +67,11 @@
 
   function validateInput(input, showSuccess) {
     if (!input || !isVisible(input)) return true;
+    if ((input.type === 'checkbox' || input.type === 'radio') && !input.required) {
+      input.classList.remove('field-input-invalid', 'field-input-valid');
+      input.removeAttribute('aria-invalid');
+      return true;
+    }
     const message = validationMessage(input);
     const node = errorNode(input);
     node.textContent = message;

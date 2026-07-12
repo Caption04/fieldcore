@@ -4846,11 +4846,11 @@ body[data-page="approvals"] .table-wrap {
   transform: translateY(-1px) rotate(-45deg) scale(0);
   transition: .16s ease;
 }
-.member-choice > input:checked + .member-choice-box {
+.member-choice > input:checked ~ .member-choice-box {
   border-color: var(--blue);
   background: var(--blue);
 }
-.member-choice > input:checked + .member-choice-box::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
+.member-choice > input:checked ~ .member-choice-box::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
 .member-choice-copy { display: grid; gap: 3px; }
 .member-choice-copy strong { color: #17233c; font-size: 14px; line-height: 1.35; }
 .member-choice-copy small { color: #64748b; font-size: 12px; line-height: 1.4; }
@@ -4858,3 +4858,14 @@ body[data-page="approvals"] .table-wrap {
 
 /* The Role column now replaces the old duplicate Job title column. */
 .members-page .members-table-card table { min-width: 860px; }
+
+
+.current-member-row { background: #f8fbff; }
+.current-member-row td:first-child { display: flex; align-items: center; gap: 8px; }
+.current-member-label { display: inline-flex; padding: 3px 7px; border-radius: 999px; background: #e8f0ff; color: var(--blue); font-size: 10px; font-weight: 850; text-transform: uppercase; }
+
+.simple-access-page { display: grid; min-height: 60vh; place-items: center; }
+.simple-access-card { width: min(560px, 100%); padding: 34px; border: 1px solid #dce6f3; border-radius: 16px; background: #fff; text-align: center; box-shadow: 0 16px 40px rgba(15, 23, 42, .08); }
+.simple-access-card h1 { margin: 4px 0 12px; }
+.simple-access-card p { margin: 0 auto; max-width: 420px; color: #64748b; line-height: 1.55; }
+.simple-access-card .secondary-button { margin-top: 20px; }
