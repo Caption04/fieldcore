@@ -21,7 +21,10 @@
   };
 
   function currentMarket() {
-    return localStorage.getItem('fieldcore.market') === 'SA' ? 'SA' : 'ZW';
+    const country = state.financeSettings && String(state.financeSettings.country || '').toUpperCase();
+    if (country === 'ZA') return 'SA';
+    if (country === 'ZW') return 'ZW';
+    return window.location.port === '3001' ? 'SA' : 'ZW';
   }
 
   function effectiveFinanceSettings() {
@@ -136,19 +139,11 @@
   }
 
   function showToast(message, ok = true) {
-    let stack = document.querySelector('[data-toast-stack]');
-    if (!stack) {
-      stack = document.createElement('div');
-      stack.className = 'toast-stack';
-      stack.dataset.toastStack = 'true';
-      document.body.appendChild(stack);
+    if (window.FieldCoreUI) {
+      window.FieldCoreUI.notify(message, { type: ok ? 'success' : 'error' });
+      return;
     }
-    const toast = document.createElement('div');
-    toast.className = 'corner-toast' + (ok ? '' : ' error');
-    toast.innerHTML = '<strong>' + escapeHtml(ok ? 'Done' : 'Action failed') + '</strong><span>' + escapeHtml(message) + '</span><i></i>';
-    stack.appendChild(toast);
-    window.setTimeout(() => { toast.classList.add('toast-hiding'); }, 3400);
-    window.setTimeout(() => { toast.remove(); if (!stack.children.length) stack.remove(); }, 4000);
+    console[ok ? 'info' : 'error'](message);
   }
 
 
@@ -185,6 +180,10 @@
     document.querySelectorAll('.quick-card').forEach((node) => { node.hidden = Boolean(isWorker()); });
     document.querySelectorAll('.primary-button').forEach((button) => {
       if (!button.closest('form') && button.textContent.trim().toLowerCase().startsWith('+ new ')) button.hidden = Boolean(isWorker());
+    });
+    const isOwner = Boolean(state.user && state.user.role === 'OWNER');
+    document.querySelectorAll('[data-settings-target="subscription"], [data-settings-panel="subscription"]').forEach((node) => {
+      node.hidden = !isOwner;
     });
     if (!isWorker()) return;
     const title = document.querySelector('h1, h2');
@@ -1337,7 +1336,7 @@
 
   function formFor(resource) {
     if (resource === 'customers') return { title: 'New Customer', action: '/customers', fields: field('name', 'Name', 'text', 'required') + field('email', 'Email', 'email') + field('phone', 'Phone') + field('address', 'Address') };
-    if (resource === 'workers') return { title: 'New Worker', action: '/workers', fields: field('name', 'Name', 'text', 'required') + field('email', 'Email', 'email', 'required') + field('password', 'Temporary Password', 'password', 'required minlength="8"') + field('title', 'Title') + field('phone', 'Phone') };
+    if (resource === 'workers') return { title: 'New Worker', action: '/workers', fields: field('name', 'Name', 'text', 'required') + field('email', 'Email', 'email', 'required') + field('password', 'Temporary Password', 'password', 'required minlength="12"') + field('title', 'Title') + field('phone', 'Phone') };
     if (resource === 'jobs') {
       const settings = state.scheduleSettings || {};
       const duration = settings.defaultJobDurationMinutes || 60;
@@ -1674,7 +1673,7 @@
     const title = document.querySelector('[data-people-title]');
     const copy = document.querySelector('[data-people-copy]');
     const create = document.querySelector('[data-people-create]');
-    if (title) title.textContent = resource === 'workers' ? 'Workers' : 'People/Members';
+    if (title) title.textContent = resource === 'workers' ? 'Workers' : 'Customers';
     if (copy) copy.textContent = resource === 'workers'
       ? 'Manage field workers, contact details, titles, and active team status.'
       : 'Customer records, balances, and service history will appear here once created.';
@@ -2362,7 +2361,7 @@
     const pageEl = document.querySelector('.page');
     if (!pageEl) return;
     const prefs = workerPreferences();
-    pageEl.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Settings</h2><p>Manage your account, job alerts, and sign-in security.</p></div><span class="api-status" data-api-status>Connected</span></div><section class="settings-layout worker-settings"><aside class="panel settings-tabs" aria-label="Settings sections"><button class="settings-tab active" type="button" data-settings-target="account">Account</button><button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button><button class="settings-tab" type="button" data-settings-target="security">Security</button></aside><div class="settings-panels"><div class="panel settings-panel active" data-settings-panel="account"><div class="panel-head"><h2>Account</h2><span class="badge gray">Worker</span></div><form class="form-grid" data-worker-account-form><div class="field"><label for="workerName">Name</label><input id="workerName" name="name" required maxlength="120" value="' + escapeHtml(state.user && state.user.name || '') + '"></div><div class="field"><label for="workerEmail">Email</label><input id="workerEmail" name="email" type="email" required value="' + escapeHtml(state.user && state.user.email || '') + '"></div><div class="field"><label>Role</label><input value="' + escapeHtml(state.user && state.user.role || 'WORKER') + '" disabled></div><div class="field"><label>Workspace</label><input value="' + escapeHtml(state.user && state.user.company && state.user.company.name || 'FieldCore') + '" disabled></div><div class="form-actions span-2"><button class="primary-button" type="submit">Save Account</button></div><p class="fc-form-error span-2" data-worker-account-message hidden></p></form></div><div class="panel settings-panel" data-settings-panel="notifications" hidden><div class="panel-head"><h2>Notifications</h2><span class="badge gray">Jobs</span></div><form class="form-grid" data-worker-preferences-form><div class="settings-checks span-2"><label><input type="checkbox" name="jobAssigned" ' + (prefs.jobAssigned !== false ? 'checked' : '') + '> New assigned jobs</label><label><input type="checkbox" name="scheduleChanged" ' + (prefs.scheduleChanged !== false ? 'checked' : '') + '> Schedule changes</label><label><input type="checkbox" name="completionReminders" ' + (prefs.completionReminders !== false ? 'checked' : '') + '> Completion evidence reminders</label></div><div class="field span-2"><label for="workerReminderLead">Reminder Lead Time</label><select id="workerReminderLead" name="reminderLead"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Save Preferences</button></div><p class="fc-form-error span-2" data-worker-preferences-message hidden></p></form></div><div class="panel settings-panel" data-settings-panel="security" hidden><div class="panel-head"><h2>Security</h2><span class="badge blue">Protected</span></div><form class="form-grid" data-worker-password-form><div class="field"><label for="currentPassword">Current Password</label><input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label for="newPassword">New Password</label><input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="8" required></div><div class="field span-2"><label for="confirmPassword">Confirm New Password</label><input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required></div><div class="settings-checks span-2"><label><input type="checkbox" checked disabled> Secure HTTP-only session cookie</label><label><input type="checkbox" checked disabled> Company-scoped account access</label></div><div class="form-actions span-2"><button class="primary-button" type="submit">Update Password</button></div><p class="fc-form-error span-2" data-worker-password-message hidden></p></form></div></div></section>';
+    pageEl.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Settings</h2><p>Manage your account, job alerts, and sign-in security.</p></div><span class="api-status" data-api-status>Connected</span></div><section class="settings-layout worker-settings"><aside class="panel settings-tabs" aria-label="Settings sections"><button class="settings-tab active" type="button" data-settings-target="account">Account</button><button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button><button class="settings-tab" type="button" data-settings-target="security">Security</button></aside><div class="settings-panels"><div class="panel settings-panel active" data-settings-panel="account"><div class="panel-head"><h2>Account</h2><span class="badge gray">Worker</span></div><form class="form-grid" data-worker-account-form><div class="field"><label for="workerName">Name</label><input id="workerName" name="name" required maxlength="120" value="' + escapeHtml(state.user && state.user.name || '') + '"></div><div class="field"><label for="workerEmail">Email</label><input id="workerEmail" name="email" type="email" required value="' + escapeHtml(state.user && state.user.email || '') + '"></div><div class="field"><label>Role</label><input value="' + escapeHtml(state.user && state.user.role || 'WORKER') + '" disabled></div><div class="field"><label>Workspace</label><input value="' + escapeHtml(state.user && state.user.company && state.user.company.name || 'FieldCore') + '" disabled></div><div class="form-actions span-2"><button class="primary-button" type="submit">Save Account</button></div><p class="fc-form-error span-2" data-worker-account-message hidden></p></form></div><div class="panel settings-panel" data-settings-panel="notifications" hidden><div class="panel-head"><h2>Notifications</h2><span class="badge gray">Jobs</span></div><form class="form-grid" data-worker-preferences-form><div class="settings-checks span-2"><label><input type="checkbox" name="jobAssigned" ' + (prefs.jobAssigned !== false ? 'checked' : '') + '> New assigned jobs</label><label><input type="checkbox" name="scheduleChanged" ' + (prefs.scheduleChanged !== false ? 'checked' : '') + '> Schedule changes</label><label><input type="checkbox" name="completionReminders" ' + (prefs.completionReminders !== false ? 'checked' : '') + '> Completion evidence reminders</label></div><div class="field span-2"><label for="workerReminderLead">Reminder Lead Time</label><select id="workerReminderLead" name="reminderLead"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Save Preferences</button></div><p class="fc-form-error span-2" data-worker-preferences-message hidden></p></form></div><div class="panel settings-panel" data-settings-panel="security" hidden><div class="panel-head"><h2>Security</h2><span class="badge blue">Protected</span></div><form class="form-grid" data-worker-password-form><div class="field"><label for="currentPassword">Current Password</label><input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required></div><div class="field"><label for="newPassword">New Password</label><input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="12" required></div><div class="field span-2"><label for="confirmPassword">Confirm New Password</label><input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required></div><div class="settings-checks span-2"><label><input type="checkbox" checked disabled> Secure HTTP-only session cookie</label><label><input type="checkbox" checked disabled> Company-scoped account access</label></div><div class="form-actions span-2"><button class="primary-button" type="submit">Update Password</button></div><p class="fc-form-error span-2" data-worker-password-message hidden></p></form></div></div></section>';
     const reminder = pageEl.querySelector('[name="reminderLead"]');
     if (reminder) reminder.value = prefs.reminderLead || '30';
     setupSettings();
@@ -2416,30 +2415,6 @@
     });
   }
 
-  function securityPayload(form) {
-    const body = Object.fromEntries(new FormData(form).entries());
-    body.sessionLengthHours = Number(body.sessionLengthHours || 8);
-    body.passwordMinimum = Number(body.passwordMinimum || 8);
-    body.twoFactorEnabled = Boolean(body.twoFactorEnabled);
-    body.twoFactorRequired = Boolean(body.twoFactorRequired);
-    return body;
-  }
-
-  async function loadSecuritySettings() {
-    const form = document.querySelector('[data-security-preferences-form]');
-    if (!form) return;
-    try {
-      const settings = await api('/company/security-settings');
-      document.querySelectorAll('[data-security-field]').forEach((field) => {
-        const value = settings[field.dataset.securityField];
-        if (field.type === 'checkbox') field.checked = Boolean(value);
-        else field.value = value == null ? '' : value;
-      });
-    } catch (error) {
-      setFormMessage('[data-security-message]', error.message, false);
-    }
-  }
-
   function setupAdminSecurity() {
     const passwordForm = document.querySelector('[data-admin-password-form]');
     if (passwordForm) passwordForm.addEventListener('submit', async (event) => {
@@ -2455,28 +2430,6 @@
       }
     });
 
-    const securityForm = document.querySelector('[data-security-preferences-form]');
-    if (securityForm) {
-      securityForm.addEventListener('change', (event) => {
-        if (event.target.name === 'twoFactorRequired' && event.target.checked && securityForm.elements.twoFactorEnabled) {
-          securityForm.elements.twoFactorEnabled.checked = true;
-        }
-      });
-      securityForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        try {
-          const settings = await api('/company/security-settings', { method: 'PATCH', body: JSON.stringify(securityPayload(securityForm)) });
-          document.querySelectorAll('[data-security-field]').forEach((field) => {
-            const value = settings[field.dataset.securityField];
-            if (field.type === 'checkbox') field.checked = Boolean(value);
-            else field.value = value == null ? '' : value;
-          });
-          setFormMessage('[data-security-message]', 'Security settings saved.', true);
-        } catch (error) {
-          setFormMessage('[data-security-message]', error.message, false);
-        }
-      });
-    }
   }
 
   function settingsPayload(form) {
@@ -2910,6 +2863,7 @@
   }
 
   async function loadBilling() {
+    if (!state.user || state.user.role !== 'OWNER') return;
     if (!document.querySelector('[data-saas-billing-card]')) return;
     try {
       state.billing = await api('/billing/subscription');
@@ -3170,7 +3124,6 @@
         if (target === 'notifications') loadNotificationLogs();
         if (target === 'integrations') { loadIntegrations(); loadPaymentProviders(); }
         if (target === 'admin-tools') loadAdminTools();
-        if (target === 'security') loadSecuritySettings();
       });
     });
 
@@ -3350,7 +3303,8 @@
       state.user = await api('/auth/session');
       if (!state.user) throw new Error('Authentication required');
       document.querySelectorAll('[data-current-user-name]').forEach((node) => { node.textContent = state.user.name || state.user.email || 'Signed in'; });
-      document.querySelectorAll('[data-current-user-role]').forEach((node) => { node.textContent = state.user.role || 'Account'; });
+      document.querySelectorAll('[data-current-user-role]').forEach((node) => { node.textContent = state.user.jobTitle || state.user.roleTemplate && state.user.roleTemplate.name || state.user.role || 'Account'; });
+      document.querySelectorAll('[data-account-initials]').forEach((node) => { node.textContent = String(state.user.name || state.user.email || 'FC').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase(); });
       await loadCompanyBranding();
       applyRoleUi();
       if (isWorker() && !['dashboard', 'jobs', 'schedule', 'map', 'settings'].includes(page)) {

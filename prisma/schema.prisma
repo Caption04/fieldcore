@@ -13,6 +13,27 @@ enum Role {
   WORKER
 }
 
+enum OnboardingState {
+  ACCOUNT_CREATED
+  PLAN_SELECTION_REQUIRED
+  PLAN_SELECTED
+  COMPLETED
+}
+
+enum AccessScopeType {
+  COMPANY
+  BRANCH
+  TEAM
+  SELF
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
 enum JobStatus {
   NEW
   SCHEDULED
@@ -490,6 +511,10 @@ model Company {
   purchaseRequestApprovalThreshold Decimal          @default(1000) @db.Decimal(12, 2)
   purchaseOrderApprovalThreshold Decimal            @default(2500) @db.Decimal(12, 2)
   stockAdjustmentApprovalThreshold Decimal          @default(500) @db.Decimal(12, 2)
+  market                 String?
+  verticalKey            String                     @default("generic")
+  teamSizeBand           String?
+  onboardingState        OnboardingState            @default(COMPLETED)
   users                  User[]
   customers              Customer[]
   workers                WorkerProfile[]
@@ -578,6 +603,10 @@ model Company {
   permissionRoleTemplates PermissionRoleTemplate[]
   userPermissionOverrides UserPermissionOverride[]
   userBranchAccesses      UserBranchAccess[]
+  userAccessGrants        UserAccessGrant[]
+  teams                   Team[]
+  teamMemberships         TeamMembership[]
+  memberInvitations       MemberInvitation[]
   implementationSettings  CompanyImplementationSettings?
   onboardingPackages      CompanyOnboardingPackage[]
   dataImportJobs          DataImportJob[]
@@ -614,6 +643,7 @@ model CompanySubscription {
   provider           String?
   providerCustomerId String?
   providerSubId      String?
+  billingInterval    BillingInterval    @default(MONTHLY)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   company            Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -672,9 +702,13 @@ model User {
   phone                       String?
   passwordHash                String
   role                        Role                    @default(WORKER)
+  jobTitle                    String?
+  roleTemplateId              String?
+  defaultScopeType            AccessScopeType         @default(COMPANY)
   createdAt                   DateTime                @default(now())
   updatedAt                   DateTime                @updatedAt
   company                     Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  roleTemplate                PermissionRoleTemplate? @relation(fields: [roleTemplateId], references: [id], onDelete: SetNull)
   worker                      WorkerProfile?
   auditLogs                   AuditLog[]
   quoteStatusChanges          QuoteStatusHistory[]
@@ -701,6 +735,10 @@ model User {
   approvalRequestsDecided     ApprovalRequest[]       @relation("ApprovalRequestDecidedBy")
   permissionOverrides         UserPermissionOverride[]
   branchAccesses              UserBranchAccess[]
+  accessGrants                UserAccessGrant[]
+  teamMemberships             TeamMembership[]
+  invitationsSent             MemberInvitation[]      @relation("MemberInvitationInvitedBy")
+  invitationsAccepted         MemberInvitation[]      @relation("MemberInvitationAcceptedBy")
   twoFactorEnabled            Boolean                 @default(false)
   twoFactorSecretHash         String?
   twoFactorRecoveryCodes      Json?
@@ -714,6 +752,7 @@ model User {
 
   @@index([companyId])
   @@index([companyId, role])
+  @@index([companyId, roleTemplateId])
   @@index([companyId, lockedUntil])
 }
 
@@ -747,6 +786,8 @@ model Branch {
   approvalPolicies ApprovalPolicy[]
   approvalRequests ApprovalRequest[]
   userBranchAccesses UserBranchAccess[]
+  accessGrants       UserAccessGrant[]
+  teams              Team[]
 
   @@unique([companyId, code])
   @@index([companyId, active])
@@ -812,16 +853,27 @@ model ApprovalRequest {
 
 
 model PermissionRoleTemplate {
-  id          String   @id @default(cuid())
-  companyId   String?
-  role        Role
-  permissions Json
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  company     Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                 String          @id @default(cuid())
+  companyId          String?
+  key                String
+  name               String
+  description        String?
+  verticalKey        String          @default("generic")
+  systemRole          Role            @default(ADMIN)
+  isSystemTemplate   Boolean         @default(false)
+  isCustom           Boolean         @default(false)
+  defaultPermissions Json
+  defaultScopeType   AccessScopeType @default(COMPANY)
+  active             Boolean         @default(true)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  company            Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  users              User[]
+  invitations        MemberInvitation[]
 
-  @@unique([companyId, role])
-  @@index([companyId])
+  @@unique([companyId, key, verticalKey])
+  @@index([companyId, active])
+  @@index([verticalKey, isSystemTemplate, active])
 }
 
 model UserPermissionOverride {
@@ -857,6 +909,92 @@ model UserBranchAccess {
   @@unique([companyId, userId, branchId])
   @@index([companyId, branchId])
   @@index([companyId, userId, active])
+}
+
+model Team {
+  id          String   @id @default(cuid())
+  companyId   String
+  branchId    String?
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  memberships TeamMembership[]
+  accessGrants UserAccessGrant[]
+  jobs        Job[]
+
+  @@unique([companyId, name])
+  @@index([companyId, branchId, active])
+}
+
+model TeamMembership {
+  id        String   @id @default(cuid())
+  companyId String
+  teamId    String
+  userId    String
+  isLead    Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, teamId, userId])
+  @@index([companyId, userId, active])
+}
+
+model UserAccessGrant {
+  id          String          @id @default(cuid())
+  companyId   String
+  userId      String
+  scopeType   AccessScopeType
+  branchId    String?
+  teamId      String?
+  permissions Json?
+  active      Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  company     Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch      Branch?         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  team        Team?           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, userId, active])
+  @@index([companyId, branchId, active])
+  @@index([companyId, teamId, active])
+}
+
+model MemberInvitation {
+  id                 String           @id @default(cuid())
+  companyId          String
+  email              String
+  invitedByUserId    String
+  acceptedByUserId   String?
+  roleTemplateId     String?
+  systemRole         Role             @default(ADMIN)
+  jobTitle           String?
+  permissions        Json?
+  fullAccess         Boolean          @default(false)
+  scopeType          AccessScopeType  @default(COMPANY)
+  scopeConfig        Json?
+  tokenHash          String           @unique
+  status             InvitationStatus @default(PENDING)
+  expiresAt          DateTime
+  acceptedAt         DateTime?
+  revokedAt          DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invitedBy          User             @relation("MemberInvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+  acceptedBy         User?            @relation("MemberInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  roleTemplate       PermissionRoleTemplate? @relation(fields: [roleTemplateId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, email, status])
+  @@index([companyId, status, expiresAt])
 }
 
 model Customer {
@@ -1015,6 +1153,7 @@ model Job {
   id                   String                 @id @default(cuid())
   companyId            String
   branchId             String?
+  teamId               String?
   customerId           String
   serviceId            String?
   workerId             String?
@@ -1062,6 +1201,7 @@ model Job {
   updatedAt            DateTime               @updatedAt
   company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
   branch               Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  team                 Team?                  @relation(fields: [teamId], references: [id], onDelete: SetNull)
   customer             Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
   service              Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   contract             ServiceContract?       @relation(fields: [contractId], references: [id], onDelete: SetNull)
@@ -1089,6 +1229,7 @@ model Job {
   @@index([companyId, contractId])
   @@index([companyId, slaStatus])
   @@index([companyId, branchId])
+  @@index([companyId, teamId])
   @@index([companyId, contractBillingStatus])
   @@index([companyId, contractLineId])
 }

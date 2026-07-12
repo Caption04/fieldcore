@@ -10,10 +10,12 @@ const { prisma } = require('../db');
 const { AppError, asyncHandler, notFound, sendData } = require('../errors');
 const { configStatus } = require('../config/env');
 const { notify } = require('../services/notification.service');
-const { billingSummary, cancelSubscription, changePlan, createCheckout } = require('../services/saasBilling.service');
+const { sendEmail } = require('../services/emailProvider.service');
+const { billingSummary, cancelSubscription, changePlan, createCheckout, selectMockPlan } = require('../services/saasBilling.service');
 const { reportCsv, reportData } = require('../services/reporting.service');
 const { analyticsCsv, buildExecutiveAnalytics } = require('../services/executiveAnalytics.service');
-const { canUseFeature, getUsage, listPlans, requireFeature, requirePlanLimit } = require('../services/subscription.service');
+const { billingCatalog, canUseFeature, getUsage, listPlans, requireFeature, requirePlanLimit } = require('../services/subscription.service');
+const { PERMISSION_GROUPS, defaultPermissionBundles, delegatablePermissionKeys, effectiveAccessForUser, isSubset, permissionKeys, scopeContains, uniquePermissions } = require('../services/accessControl.service');
 const { getStorageObjectForCompany, readStorageObject, storeUploadedFile } = require('../services/integrations/storage.service');
 const {
   disableIntegrationConnection,
@@ -114,34 +116,6 @@ const offlineActionStatusValues = ['RECEIVED', 'PROCESSED', 'FAILED', 'DUPLICATE
 const offlineActionTypeValues = ['JOB_ARRIVE', 'JOB_START', 'JOB_PAUSE', 'JOB_RESUME', 'JOB_COMPLETE', 'JOB_NOTE', 'PROOF_PHOTO_UPLOADED', 'SIGNATURE_CAPTURED', 'LOCATION_CAPTURED', 'GPS_CHECKPOINT', 'PART_USED', 'PART_SHORTAGE', 'CHECKLIST_COMPLETED', 'ISSUE_NOTE', 'CUSTOMER_UNAVAILABLE'];
 const approvalEventTypeValues = ['QUOTE_DISCOUNT', 'QUOTE_SEND', 'INVOICE_DISCOUNT', 'INVOICE_VOID', 'PAYMENT_REFUND', 'PURCHASE_REQUEST_APPROVE', 'PURCHASE_ORDER_SEND', 'PURCHASE_ORDER_APPROVE', 'STOCK_ADJUSTMENT', 'JOB_RESCHEDULE', 'JOB_REASSIGN_AFTER_DISPATCH', 'SLA_WAIVE', 'CONTRACT_CANCEL'];
 const approvalStatusValues = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'];
-const permissionKeys = [
-  'invoice.void',
-  'invoice.discount.approve',
-  'payment.refund',
-  'quote.discount.approve',
-  'purchaseRequest.approve',
-  'purchaseOrder.send',
-  'purchaseOrder.approve',
-  'stock.adjust',
-  'contract.sla.override',
-  'job.reassign.after_dispatch',
-  'branch.manage',
-  'report.enterprise.view',
-  'settings.finance.manage',
-  'integration.manage',
-  'approval.policy.manage',
-  'approval.request.decide',
-  'audit.view',
-  'mobile.sync.manage',
-  'contract.automation.manage',
-  'security.manage'
-];
-const defaultPermissionBundles = {
-  OWNER: permissionKeys,
-  ADMIN: permissionKeys.filter((key) => !['integration.manage'].includes(key)),
-  WORKER: [],
-  CLIENT: []
-};
 const approvalActionMap = {
   INVOICE_VOID: 'invoice.void',
   PAYMENT_REFUND: 'payment.refund',
@@ -179,6 +153,13 @@ function normalize(record) {
   return output;
 }
 
+async function publicStaffUser(user) {
+  const safe = publicUser(user);
+  if (!safe) return safe;
+  const access = await effectiveAccessForUser(user, { companyId: user.companyId });
+  return { ...safe, effectivePermissions: access.permissions, accessScope: { type: access.scopeType, branchIds: access.branchIds, teamIds: access.teamIds } };
+}
+
 function pagination(req) {
   const page = Math.max(Number.parseInt(req.query.page || '1', 10) || 1, 1);
   const limit = Math.min(Math.max(Number.parseInt(req.query.limit || '25', 10) || 25, 1), 100);
@@ -199,13 +180,15 @@ async function paged(model, req, args) {
 }
 
 function workerJobScope(req) {
-  if (req.user.role !== 'WORKER') return {};
-  return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
+  return accessScopeWhere(req);
 }
 
 function branchFilterFromQuery(req) {
   const branchId = req.query && req.query.branchId ? String(req.query.branchId).trim() : '';
-  return branchId ? { branchId } : {};
+  if (!branchId) return {};
+  const access = req.effectiveAccess;
+  if (access && access.scopeType === 'BRANCH' && !access.branchIds.includes(branchId)) throw new AppError(403, 'Branch is outside your access scope.');
+  return { branchId };
 }
 
 async function requireBranch(req, id) {
@@ -271,21 +254,10 @@ async function addEnterpriseAudit(req, action, entity, entityId, metadata) {
   });
 }
 
-function roleBundle(role) {
-  return new Set(defaultPermissionBundles[role] || []);
-}
-
 async function getEffectivePermissionSet(req, userId = req.user.id, branchId) {
   const user = userId === req.user.id ? req.user : await requireCompanyUser(req, userId);
-  const permissions = roleBundle(user.role);
-  const overrides = await prisma.userPermissionOverride.findMany({ where: { companyId: req.companyId, userId } });
-  for (const override of overrides.filter((item) => !item.branchId || item.branchId === branchId)) {
-    if (override.allowed) permissions.add(override.permissionKey);
-    else permissions.delete(override.permissionKey);
-  }
-  const branchAccess = branchId ? await prisma.userBranchAccess.findFirst({ where: { companyId: req.companyId, userId, branchId, active: true } }) : null;
-  if (branchAccess && Array.isArray(branchAccess.permissions)) for (const key of branchAccess.permissions) permissions.add(key);
-  return permissions;
+  const access = await effectiveAccessForUser(user, { companyId: req.companyId, branchId });
+  return new Set(access.permissions);
 }
 
 async function hasPermission(req, permissionKey, options = {}) {
@@ -296,6 +268,104 @@ async function hasPermission(req, permissionKey, options = {}) {
 
 async function requirePermission(req, permissionKey, options = {}) {
   if (!(await hasPermission(req, permissionKey, options))) throw new AppError(403, 'Missing permission: ' + permissionKey);
+}
+
+function requestedAccessBody(body = {}) {
+  return {
+    scopeType: body.scopeType || 'COMPANY',
+    branchIds: Array.isArray(body.branchIds) ? body.branchIds : [],
+    teamIds: Array.isArray(body.teamIds) ? body.teamIds : []
+  };
+}
+
+async function resolveDelegatedPermissions(req, body = {}) {
+  const actorAccess = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId: req.companyId });
+  const requested = body.fullAccess
+    ? (req.user.role === 'OWNER' ? delegatablePermissionKeys : delegatablePermissionKeys.filter((key) => actorAccess.permissions.includes(key)))
+    : uniquePermissions(body.permissions);
+  if (req.user.role !== 'OWNER' && !isSubset(requested, actorAccess.permissions)) {
+    throw new AppError(403, 'You cannot grant permissions that you do not have.');
+  }
+  if (req.user.role !== 'OWNER' && !scopeContains(actorAccess, requestedAccessBody(body))) {
+    throw new AppError(403, 'You cannot grant access outside your own scope.');
+  }
+  return requested;
+}
+
+function accessScopeWhere(req, fields = {}) {
+  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
+  const branchField = fields.branchField || 'branchId';
+  const teamField = fields.teamField || 'teamId';
+  const workerField = fields.workerField || 'workerId';
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { [branchField]: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+  if (access.scopeType === 'TEAM') return { [teamField]: { in: access.teamIds.length ? access.teamIds : ['__none__'] } };
+  return { [workerField]: req.user.worker ? req.user.worker.id : '__none__' };
+}
+
+function scheduleScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { job: { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } };
+  if (access.scopeType === 'TEAM') return { job: { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } };
+  return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
+}
+
+function financeRecordScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+  if (access.scopeType === 'TEAM') return { job: { is: { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } };
+  return { job: { is: { workerId: req.user.worker ? req.user.worker.id : '__none__' } } };
+}
+
+function customerScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+  if (access.scopeType === 'TEAM') return { jobs: { some: { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } };
+  return { jobs: { some: { workerId: req.user.worker ? req.user.worker.id : '__none__' } } };
+}
+
+function workerProfileScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+  if (access.scopeType === 'TEAM') return { user: { teamMemberships: { some: { companyId: req.companyId, active: true, teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } } };
+  return { userId: req.user.id };
+}
+
+function workerLocationScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { worker: { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } };
+  if (access.scopeType === 'TEAM') return { worker: { user: { teamMemberships: { some: { companyId: req.companyId, active: true, teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } } } };
+  return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
+}
+
+function teamScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+  if (access.scopeType === 'TEAM') return { id: { in: access.teamIds.length ? access.teamIds : ['__none__'] } };
+  return { id: '__none__' };
+}
+
+function userScopeWhere(req) {
+  const access = req.effectiveAccess || { scopeType: 'COMPANY', branchIds: [], teamIds: [] };
+  if (access.scopeType === 'COMPANY') return {};
+  if (access.scopeType === 'TEAM') return { teamMemberships: { some: { companyId: req.companyId, active: true, teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } };
+  if (access.scopeType === 'BRANCH') return { OR: [
+    { worker: { is: { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } } },
+    { branchAccesses: { some: { companyId: req.companyId, active: true, branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } } }
+  ] };
+  return { id: req.user.id };
+}
+
+async function requireScopedJob(req, id) {
+  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...workerJobScope(req) } });
+  if (!record) throw notFound('Job not found');
+  return record;
 }
 
 function roleRank(role) {
@@ -368,7 +438,7 @@ async function requireApprovalOrProceed(req, config) {
 }
 
 async function requireCustomer(req, id) {
-  const record = await prisma.customer.findFirst({ where: { id, companyId: req.companyId } });
+  const record = await prisma.customer.findFirst({ where: { id, companyId: req.companyId, ...customerScopeWhere(req) } });
   if (!record) throw notFound('Customer not found');
   return record;
 }
@@ -561,7 +631,7 @@ async function requireContractServiceLine(req, contractId, lineId) {
 
 async function requireWorker(req, id) {
   if (!id) return null;
-  const record = await prisma.workerProfile.findFirst({ where: { id, companyId: req.companyId }, include: SAFE_WORKER_INCLUDE });
+  const record = await prisma.workerProfile.findFirst({ where: { id, companyId: req.companyId, ...workerProfileScopeWhere(req) }, include: SAFE_WORKER_INCLUDE });
   if (!record) throw notFound('Worker not found');
   return record;
 }
@@ -580,21 +650,21 @@ async function ensureWorkerRole(req, name, tx = prisma) {
 }
 
 async function requireJob(req, id, options = {}) {
-  const assignedOnly = options.assignedOnly !== false;
-  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...(assignedOnly ? workerJobScope(req) : {}) } });
+  const scopeWhere = options.ignoreAccessScope === true ? {} : workerJobScope(req);
+  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...scopeWhere } });
   if (!record) throw notFound('Job not found');
   return record;
 }
 
 async function requireQuote(req, id, options = {}) {
   const includeDeleted = options.includeDeleted === true;
-  const record = await prisma.quote.findFirst({ where: { id, companyId: req.companyId, ...(includeDeleted ? {} : { deletedAt: null }) } });
+  const record = await prisma.quote.findFirst({ where: { id, companyId: req.companyId, ...financeRecordScopeWhere(req), ...(includeDeleted ? {} : { deletedAt: null }) } });
   if (!record) throw notFound('Quote not found');
   return record;
 }
 
 async function requireInvoice(req, id) {
-  const record = await prisma.invoice.findFirst({ where: { id, companyId: req.companyId } });
+  const record = await prisma.invoice.findFirst({ where: { id, companyId: req.companyId, ...financeRecordScopeWhere(req) } });
   if (!record) throw notFound('Invoice not found');
   return record;
 }
@@ -1204,6 +1274,13 @@ const branchAccessSchema = z.object({
   permissions: z.array(z.enum(permissionKeys)).optional(),
   active: z.boolean().optional()
 });
+const roleTemplateSchema = z.object({ name: z.string().trim().min(2).max(120), description: optionalText(500), key: z.string().trim().regex(/^[a-z0-9-]+$/).max(80).optional(), systemRole: z.enum(['ADMIN', 'WORKER']).default('ADMIN'), permissions: z.array(z.enum(permissionKeys)).default([]), defaultScopeType: z.enum(['COMPANY', 'BRANCH', 'TEAM', 'SELF']).default('COMPANY') });
+const memberAccessSchema = z.object({ jobTitle: z.string().trim().min(2).max(120), roleName: optionalText(120), roleTemplateId: optionalText(160), systemRole: z.enum(['ADMIN', 'WORKER']).optional(), fullAccess: z.boolean().default(false), permissions: z.array(z.enum(permissionKeys)).default([]), scopeType: z.enum(['COMPANY', 'BRANCH', 'TEAM', 'SELF']).default('COMPANY'), branchIds: z.array(z.string().min(1)).max(50).default([]), teamIds: z.array(z.string().min(1)).max(50).default([]) });
+const invitationSchema = memberAccessSchema.extend({ email: z.string().email().transform((value) => value.toLowerCase()) });
+const memberStatusSchema = z.object({ disabled: z.boolean() });
+const invitationTokenSchema = z.object({ token: z.string().min(32).max(500) });
+const invitationAcceptSchema = invitationTokenSchema.extend({ password: z.string().min(12).max(128), name: z.string().trim().min(2).max(120) });
+const teamSchema = z.object({ name: z.string().trim().min(2).max(120), description: optionalText(500), branchId: optionalText(160), active: z.boolean().optional() });
 const approvalExecutionSchema = z.object({
   decisionNote: optionalText(1000)
 });
@@ -1982,7 +2059,7 @@ async function getSchedulingSettings(companyId) {
 }
 
 async function requireScheduleItem(req, id) {
-  const where = { id, companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) };
+  const where = { id, companyId: req.companyId, ...scheduleScopeWhere(req) };
   const record = await prisma.scheduleItem.findFirst({ where, include: scheduleInclude });
   if (!record) throw notFound('Schedule item not found');
   return record;
@@ -2087,7 +2164,10 @@ const registerSchema = z.object({
   companyName: z.string().min(2),
   name: z.string().min(2),
   email: z.string().email().transform((v) => v.toLowerCase()),
-  password: z.string().min(8)
+  password: z.string().min(12).max(128),
+  market: z.enum(['ZW', 'SA']),
+  verticalKey: z.string().trim().regex(/^[a-z0-9-]+$/).max(80).default('generic'),
+  teamSizeBand: z.enum(['1-5', '6-15', '16-40', '41-100', '101+'])
 });
 
 const loginSchema = z.object({
@@ -2104,13 +2184,13 @@ const accountPatchSchema = z.object({
 
 const passwordPatchSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(8)
+  newPassword: z.string().min(12).max(128)
 });
 
 const companySecuritySettingsSchema = z.object({
   sessionLengthHours: z.coerce.number().int().min(1).max(24).default(8),
   sessionIdleTimeoutMinutes: z.coerce.number().int().min(5).max(1440).default(120),
-  passwordMinimum: z.coerce.number().int().min(8).max(128).default(8),
+  passwordMinimum: z.coerce.number().int().min(12).max(128).default(12),
   requirePasswordResetOnInvite: z.boolean().default(true),
   twoFactorEnabled: z.boolean().default(false),
   twoFactorRequired: z.boolean().default(false),
@@ -2140,7 +2220,7 @@ const dataExportParamSchema = z.object({ type: z.enum(['customers', 'jobs', 'inv
 const securityDefaults = () => ({
   sessionLengthHours: 8,
   sessionIdleTimeoutMinutes: 120,
-  passwordMinimum: 8,
+  passwordMinimum: 12,
   requirePasswordResetOnInvite: true,
   twoFactorEnabled: false,
   twoFactorRequired: false,
@@ -2156,7 +2236,16 @@ const securityDefaults = () => ({
 async function getCompanySecuritySettings(companyId) {
   if (!prisma.companySecuritySettings) return securityDefaults();
   const existing = await prisma.companySecuritySettings.findUnique({ where: { companyId } });
-  return { ...securityDefaults(), ...(existing || {}) };
+  const settings = { ...securityDefaults(), ...(existing || {}) };
+  return {
+    ...settings,
+    sessionLengthHours: Math.min(Number(settings.sessionLengthHours || 8), 8),
+    sessionIdleTimeoutMinutes: Math.min(Number(settings.sessionIdleTimeoutMinutes || 120), 120),
+    passwordMinimum: Math.max(Number(settings.passwordMinimum || 12), 12),
+    requirePasswordResetOnInvite: true,
+    failedLoginLockoutThreshold: Math.min(Number(settings.failedLoginLockoutThreshold || 5), 5),
+    lockoutDurationMinutes: Math.max(Number(settings.lockoutDurationMinutes || 30), 30)
+  };
 }
 
 async function saveCompanySecuritySettings(companyId, input) {
@@ -2254,18 +2343,24 @@ function exportRowsToCsv(rows) {
 
 router.post('/auth/register', validate(registerSchema), asyncHandler(async (req, res) => {
   const user = await prisma.$transaction(async (tx) => {
-    const company = await tx.company.create({ data: { name: req.body.companyName } });
+    const isSa = req.body.market === 'SA';
+    const company = await tx.company.create({ data: { name: req.body.companyName, market: req.body.market, verticalKey: req.body.verticalKey || 'generic', teamSizeBand: req.body.teamSizeBand, onboardingState: 'PLAN_SELECTION_REQUIRED' } });
     const trialStartedAt = new Date();
-    const trialEndsAt = new Date(trialStartedAt.getTime() + 14 * 24 * 60 * 60 * 1000);
+    const trialEndsAt = new Date(trialStartedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
     if (tx.companySubscription) {
-      await tx.companySubscription.create({ data: { companyId: company.id, status: 'TRIALING', trialStartedAt, trialEndsAt, currentPeriodStart: trialStartedAt, currentPeriodEnd: trialEndsAt, provider: process.env.SAAS_BILLING_PROVIDER || null } });
+      await tx.companySubscription.create({ data: { companyId: company.id, status: 'TRIALING', billingInterval: 'MONTHLY', trialStartedAt, trialEndsAt, currentPeriodStart: trialStartedAt, currentPeriodEnd: trialEndsAt, provider: 'MOCK_INTERNAL' } });
     }
+    if (tx.companyFinanceSettings) await tx.companyFinanceSettings.create({ data: { companyId: company.id, country: isSa ? 'ZA' : 'ZW', timezone: isSa ? 'Africa/Johannesburg' : 'Africa/Harare', defaultCurrency: isSa ? 'ZAR' : 'USD', allowedCurrencies: [isSa ? 'ZAR' : 'USD'], taxName: 'VAT', taxRate: 15, numberFormat: isSa ? 'en-ZA' : 'en-ZW', allowedPaymentMethods: isSa ? ['CASH', 'BANK_TRANSFER', 'OZOW', 'YOCO', 'PAYFAST', 'SNAPSCAN'] : ['CASH', 'BANK_TRANSFER', 'PAYNOW'] } });
+    const ownerTemplate = tx.permissionRoleTemplate ? await tx.permissionRoleTemplate.findFirst({ where: { companyId: null, key: 'owner', verticalKey: 'generic', active: true } }) : null;
     return tx.user.create({
       data: {
         companyId: company.id,
         email: req.body.email,
         name: req.body.name,
         role: 'OWNER',
+        jobTitle: 'Company Owner',
+        roleTemplateId: ownerTemplate && ownerTemplate.id,
+        defaultScopeType: 'COMPANY',
         passwordHash: await hashPassword(req.body.password)
       },
       select: SAFE_LOGIN_USER_SELECT
@@ -2274,7 +2369,7 @@ router.post('/auth/register', validate(registerSchema), asyncHandler(async (req,
   clearClientAuthCookie(res);
   setAuthCookie(res, user);
   await audit({ companyId: user.companyId, user }, 'REGISTER', 'User', user.id, { companyName: user.company && user.company.name });
-  sendData(res, publicUser(user), 201);
+  sendData(res, await publicStaffUser(user), 201);
 }));
 
 router.post('/auth/login', validate(loginSchema), asyncHandler(async (req, res) => {
@@ -2307,7 +2402,7 @@ router.post('/auth/login', validate(loginSchema), asyncHandler(async (req, res) 
   setAuthCookie(res, { ...user, currentSessionId: session.id }, { sessionId: session.id, expiresInHours: settings.sessionLengthHours });
   await audit({ companyId: user.companyId, user, ip: req.ip, get: req.get.bind(req) }, 'LOGIN', 'User', user.id, { sessionId: session.id });
   await recordSecurityEvent(user.companyId, 'LOGIN_SUCCESS', { userId: user.id, severity: 'INFO', req, metadata: { sessionId: session.id } });
-  sendData(res, { ...publicUser(user), sessionId: session.id, expiresAt: session.expiresAt });
+  sendData(res, { ...(await publicStaffUser(user)), sessionId: session.id, expiresAt: session.expiresAt });
 }));
 
 router.post('/auth/logout', (req, res) => {
@@ -2323,12 +2418,12 @@ router.get('/auth/session', asyncHandler(async (req, res) => {
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : null;
   const token = req.cookies[COOKIE_NAME] || bearer;
   if (!token) return sendData(res, null);
-  return requireAuth(req, res, (error) => {
+  return requireAuth(req, res, async (error) => {
     if (error) return sendData(res, null);
-    return sendData(res, publicUser(req.user));
+    return sendData(res, await publicStaffUser(req.user));
   });
 }));
-router.get('/auth/me', requireAuth, (req, res) => sendData(res, publicUser(req.user)));
+router.get('/auth/me', requireAuth, asyncHandler(async (req, res) => sendData(res, await publicStaffUser(req.user))));
 
 router.patch('/auth/me', requireAuth, validate(accountPatchSchema), asyncHandler(async (req, res) => {
   const existing = await prisma.user.findFirst({ where: { id: req.user.id, companyId: req.companyId } });
@@ -2351,18 +2446,6 @@ router.patch('/auth/me/password', requireAuth, validate(passwordPatchSchema), as
   await audit({ companyId: req.companyId, user: data }, 'UPDATE', 'User', data.id, { section: 'password', sessionsRevoked: true });
   await recordSecurityEvent(req.companyId, 'PASSWORD_CHANGED', { userId: data.id, severity: 'WARN', req, metadata: { sessionsRevoked: true } });
   sendData(res, { updated: true, sessionsRevoked: true });
-}));
-
-router.get('/company/security-settings', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  sendData(res, normalize(await getCompanySecuritySettings(req.companyId)));
-}));
-
-router.patch('/company/security-settings', requireAuth, requireRole(...adminRoles), validate(companySecuritySettingsSchema), asyncHandler(async (req, res) => {
-  const body = { ...req.body, twoFactorRequired: Boolean(req.body.twoFactorRequired), twoFactorEnabled: Boolean(req.body.twoFactorEnabled || req.body.twoFactorRequired) };
-  const data = await saveCompanySecuritySettings(req.companyId, body);
-  await audit(req, 'UPDATE', 'CompanySecuritySettings', req.companyId, { section: 'security', fields: Object.keys(body) });
-  await recordSecurityEvent(req.companyId, 'SECURITY_SETTINGS_CHANGED', { userId: req.user.id, severity: 'WARN', req, metadata: { fields: Object.keys(body) } });
-  sendData(res, normalize(data));
 }));
 
 router.post('/auth/2fa/enable', requireAuth, requireRole(...adminRoles), validate(twoFactorSetupSchema), asyncHandler(async (req, res) => {
@@ -2417,7 +2500,10 @@ router.post('/auth/sessions/:id/revoke', requireAuth, validate(idParam, 'params'
   sendData(res, normalize({ revoked: true, session: updated }));
 }));
 
-router.get('/security/events', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/security/events', requireAuth, asyncHandler(async (req, res) => {
+  await requirePermission(req, 'security.view');
+  const access = await effectiveAccessForUser(req.user, { companyId: req.companyId });
+  if (access.scopeType !== 'COMPANY' && req.user.role !== 'OWNER') throw new AppError(403, 'Security events require company-wide scope.');
   const result = await paged(prisma.securityEvent, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(result.data.map((event) => ({ id: event.id, eventType: event.eventType, severity: event.severity, userId: event.userId || null, metadata: safeAuditMetadata(event.metadata || {}), createdAt: event.createdAt }))), 200, result.meta);
 }));
@@ -2437,6 +2523,10 @@ router.post('/admin/security/identity-providers', requireAuth, requireRole(...ow
 router.patch('/users/:id/role', requireAuth, requireRole(...ownerRoles), validate(idParam, 'params'), validate(rolePatchSchema), asyncHandler(async (req, res) => {
   const existing = await requireCompanyUser(req, req.params.id);
   if (existing.id === req.user.id && req.body.role !== 'OWNER') throw new AppError(409, 'Owners cannot demote their own account.');
+  if (existing.role === 'OWNER' && req.body.role !== 'OWNER') {
+    const ownerCount = await prisma.user.count({ where: { companyId: req.companyId, role: 'OWNER', disabledAt: null } });
+    if (ownerCount <= 1) throw new AppError(409, 'The final company owner cannot be demoted.');
+  }
   const data = await prisma.user.update({ where: { id: existing.id }, data: { role: req.body.role }, select: SAFE_LOGIN_USER_SELECT });
   if (prisma.userSession) await prisma.userSession.updateMany({ where: { companyId: req.companyId, userId: existing.id, revokedAt: null }, data: { revokedAt: new Date(), revokedById: req.user.id } });
   await audit(req, 'CHANGE_ROLE', 'User', existing.id, { fromRole: existing.role, toRole: req.body.role, sessionsRevoked: true });
@@ -2444,7 +2534,8 @@ router.patch('/users/:id/role', requireAuth, requireRole(...ownerRoles), validat
   sendData(res, publicUser(data));
 }));
 
-router.get('/admin/data-export/:type', requireAuth, requireRole(...adminRoles), validate(dataExportParamSchema, 'params'), asyncHandler(async (req, res) => {
+router.get('/admin/data-export/:type', requireAuth, validate(dataExportParamSchema, 'params'), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'finance.exports.manage');
   const modelByType = {
     customers: prisma.customer,
     jobs: prisma.job,
@@ -2454,7 +2545,14 @@ router.get('/admin/data-export/:type', requireAuth, requireRole(...adminRoles), 
     contracts: prisma.serviceContract
   };
   const model = modelByType[req.params.type];
-  const rows = await model.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' }, take: Math.min(Number(req.query.limit || 1000), 5000) });
+  const access = await effectiveAccessForUser(req.user, { companyId: req.companyId });
+  let scopeWhere = {};
+  if (access.scopeType === 'BRANCH') scopeWhere = { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+  else if (access.scopeType === 'TEAM' || access.scopeType === 'SELF') {
+    if (req.params.type !== 'jobs') throw new AppError(403, 'This export is not available for team/self-scoped access.');
+    scopeWhere = workerJobScope({ ...req, effectiveAccess: access });
+  }
+  const rows = await model.findMany({ where: { companyId: req.companyId, ...scopeWhere }, orderBy: { createdAt: 'desc' }, take: Math.min(Number(req.query.limit || 1000), 5000) });
   await audit(req, 'DATA_EXPORT', req.params.type, req.companyId, { recordCount: rows.length, format: req.query.format || 'json' });
   await recordSecurityEvent(req.companyId, 'DATA_EXPORT_CREATED', { userId: req.user.id, severity: 'WARN', req, metadata: { type: req.params.type, recordCount: rows.length } });
   const data = normalize(rows.map((row) => safeAuditMetadata(row)));
@@ -2650,7 +2748,7 @@ const CLIENT_COOKIE_NAME = process.env.CLIENT_COOKIE_NAME || "fieldcore_client_t
 const CLIENT_COOKIE_OPTIONS = { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 1000 * 60 * 60 * 8 };
 const CLIENT_JWT_SECRET = process.env.JWT_SECRET || "dev-only-change-me";
 const clientEmailSchema = z.string().trim().email().transform(function(value) { return value.toLowerCase(); });
-const clientPasswordSchema = z.string().min(8).max(200);
+const clientPasswordSchema = z.string().min(12).max(128);
 const clientRegisterSchema = z.object({ name: z.string().trim().min(2).max(160), email: clientEmailSchema, phone: optionalText(60), password: clientPasswordSchema });
 const clientLoginSchema = z.object({ email: clientEmailSchema, password: z.string().min(1).max(200) });
 const clientProfilePatchSchema = z.object({ name: z.string().trim().min(2).max(160).optional(), phone: optionalText(60) });
@@ -3247,7 +3345,115 @@ router.get('/payment-return/:provider/:companyId', validate(paymentWebhookParam,
   res.status(200).type('html').send(paymentReturnHtml({ provider: req.params.provider, reference, status, message }));
 }));
 
+function invitationTokenHash(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+router.get('/public/member-invitations/preview', validate(invitationTokenSchema, 'query'), asyncHandler(async (req, res) => {
+  const invitation = await prisma.memberInvitation.findUnique({ where: { tokenHash: invitationTokenHash(req.query.token) }, include: { company: { select: { id: true, name: true } }, roleTemplate: { select: { id: true, name: true, description: true } } } });
+  if (!invitation || invitation.status !== 'PENDING' || invitation.revokedAt) throw notFound('Invitation not found');
+  if (new Date(invitation.expiresAt) <= new Date()) throw new AppError(410, 'Invitation has expired.');
+  sendData(res, { email: invitation.email, company: invitation.company, jobTitle: invitation.jobTitle, roleTemplate: invitation.roleTemplate, scopeType: invitation.scopeType, expiresAt: invitation.expiresAt });
+}));
+
+router.post('/public/member-invitations/accept', validate(invitationAcceptSchema), asyncHandler(async (req, res) => {
+  const hash = invitationTokenHash(req.body.token);
+  const invitation = await prisma.memberInvitation.findUnique({ where: { tokenHash: hash }, include: { company: true, roleTemplate: true } });
+  if (!invitation || invitation.status !== 'PENDING' || invitation.revokedAt || invitation.acceptedAt) throw new AppError(409, 'Invitation is no longer valid.');
+  if (new Date(invitation.expiresAt) <= new Date()) throw new AppError(410, 'Invitation has expired.');
+  const existing = await prisma.user.findUnique({ where: { email: invitation.email } });
+  if (existing) throw new AppError(409, 'This email already belongs to a FieldCore account. Contact support to join another workspace safely.');
+  const selected = uniquePermissions(invitation.permissions);
+  const scope = invitation.scopeConfig || {};
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({ data: { companyId: invitation.companyId, email: invitation.email, name: req.body.name, passwordHash: await hashPassword(req.body.password), role: invitation.systemRole, jobTitle: invitation.jobTitle, roleTemplateId: invitation.roleTemplateId, defaultScopeType: invitation.scopeType }, select: SAFE_LOGIN_USER_SELECT });
+    for (const permissionKey of permissionKeys) await tx.userPermissionOverride.create({ data: { companyId: invitation.companyId, userId: created.id, permissionKey, allowed: selected.includes(permissionKey) } });
+    for (const branchId of Array.isArray(scope.branchIds) ? scope.branchIds : []) await tx.userBranchAccess.create({ data: { companyId: invitation.companyId, userId: created.id, branchId, permissions: selected, active: true } });
+    for (const teamId of Array.isArray(scope.teamIds) ? scope.teamIds : []) {
+      await tx.userAccessGrant.create({ data: { companyId: invitation.companyId, userId: created.id, scopeType: 'TEAM', teamId, permissions: selected, active: true } });
+      await tx.teamMembership.create({ data: { companyId: invitation.companyId, userId: created.id, teamId, isLead: invitation.systemRole === 'WORKER', active: true } });
+    }
+    if (invitation.systemRole === 'WORKER') await tx.workerProfile.create({ data: { companyId: invitation.companyId, userId: created.id, title: invitation.jobTitle, active: true } });
+    await tx.memberInvitation.update({ where: { id: invitation.id }, data: { status: 'ACCEPTED', acceptedAt: new Date(), acceptedByUserId: created.id } });
+    await tx.auditLog.create({ data: { companyId: invitation.companyId, userId: created.id, action: 'INVITATION_ACCEPTED', entity: 'MemberInvitation', entityId: invitation.id, metadata: { roleTemplateId: invitation.roleTemplateId, scopeType: invitation.scopeType } } });
+    return created;
+  });
+  const settings = await getCompanySecuritySettings(invitation.companyId);
+  const session = await createAuthSession(req, user, settings);
+  setAuthCookie(res, { ...user, currentSessionId: session.id }, { sessionId: session.id, expiresInHours: settings.sessionLengthHours });
+  sendData(res, await publicStaffUser(user), 201);
+}));
+
 router.use(requireAuth);
+
+router.use(asyncHandler(async (req, res, next) => {
+  req.effectiveAccess = await effectiveAccessForUser(req.user, { companyId: req.companyId });
+  next();
+}));
+
+const resourcePermissionRules = [
+  // Put action-specific rules before broad resource rules.
+  { method: 'POST', pattern: /^\/jobs\/[^/]+\/assign-worker$/, permission: 'jobs.assign' },
+  { method: 'POST', pattern: /^\/jobs\/[^/]+\/(?:schedule|reschedule|unschedule)$/, permission: 'schedule.manage' },
+  { method: 'POST', pattern: /^\/quotes\/[^/]+\/send$/, permission: 'quotes.send' },
+  { method: 'POST', pattern: /^\/quotes\/[^/]+\/(?:accept|reject)$/, permission: 'quotes.edit' },
+  { method: 'DELETE', pattern: /^\/quotes\/[^/]+$/, permission: 'quotes.edit' },
+  { method: 'POST', pattern: /^\/invoices\/[^/]+\/send$/, permission: 'invoices.send' },
+  { method: 'POST', pattern: /^\/invoices\/[^/]+\/(?:mark-paid|payments)$/, permission: 'payments.manage' },
+  { method: 'POST', pattern: /^\/invoices\/[^/]+\/void$/, permission: 'invoice.void' },
+  { method: 'POST', pattern: /^\/payments\/[^/]+\/confirm$/, permission: 'payments.manage' },
+  { method: 'POST', pattern: /^\/payments\/[^/]+\/refund$/, permission: 'payment.refund' },
+  { method: 'PATCH', pattern: /^\/schedule\/[^/]+$/, permission: 'schedule.manage' },
+  { method: 'DELETE', pattern: /^\/schedule\/[^/]+$/, permission: 'schedule.manage' },
+  { method: 'POST', pattern: /^\/schedule\/check-conflicts$/, permission: 'schedule.manage' },
+  { method: 'GET', pattern: /^\/reports(?:\/|$)/, permission: 'finance.reports.view' },
+  { method: 'GET', pattern: /^\/security(?:\/|$)/, permission: 'security.view' },
+  { method: 'GET', pattern: /^\/audit-logs(?:\/|$)/, permission: 'audit.view' },
+  { method: 'GET', pattern: /^\/admin\/data-export(?:\/|$)/, permission: 'finance.exports.manage' },
+  { method: 'GET', pattern: /^\/billing\/(?:catalog|plans|subscription|usage)$/, permission: 'subscription.view' },
+  { method: 'POST', pattern: /^\/billing\/(?:mock-select|checkout|change-plan|cancel)$/, permission: 'subscription.manage' },
+
+  { method: 'GET', pattern: /^\/customers(?:\/|$)/, permission: 'customers.view' },
+  { method: 'POST', pattern: /^\/customers$/, permission: 'customers.create' },
+  { method: 'PATCH', pattern: /^\/customers\//, permission: 'customers.edit' },
+  { method: 'DELETE', pattern: /^\/customers\//, permission: 'customers.delete' },
+  { method: 'GET', pattern: /^\/worker-location\/latest$/, permission: 'workers.location.view' },
+  { method: 'GET', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.view' },
+  { method: 'POST', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.manage' },
+  { method: 'PATCH', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.manage' },
+  { method: 'PUT', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.manage' },
+  { method: 'POST', pattern: /^\/workers\/[^/]+\/time-off$/, permission: 'workers.manage' },
+  { method: 'PATCH', pattern: /^\/workers\/[^/]+\/time-off\/[^/]+$/, permission: 'workers.manage' },
+  { method: 'GET', pattern: /^\/workers(?:\/|$)/, permission: 'workers.view' },
+  { method: 'POST', pattern: /^\/workers$/, permission: 'workers.manage' },
+  { method: 'PATCH', pattern: /^\/workers\//, permission: 'workers.manage' },
+  { method: 'GET', pattern: /^\/jobs(?:\/|$)/, permission: 'jobs.view' },
+  { method: 'POST', pattern: /^\/jobs$/, permission: 'jobs.create' },
+  { method: 'PATCH', pattern: /^\/jobs\/[^/]+$/, permission: 'jobs.edit' },
+  { method: 'GET', pattern: /^\/schedule(?:\/|$)/, permission: 'schedule.view' },
+  { method: 'POST', pattern: /^\/schedule$/, permission: 'schedule.manage' },
+  { method: 'GET', pattern: /^\/quotes(?:\/|$)/, permission: 'quotes.view' },
+  { method: 'POST', pattern: /^\/quotes$/, permission: 'quotes.create' },
+  { method: 'PATCH', pattern: /^\/quotes\//, permission: 'quotes.edit' },
+  { method: 'GET', pattern: /^\/invoices(?:\/|$)/, permission: 'invoices.view' },
+  { method: 'POST', pattern: /^\/invoices$/, permission: 'invoices.create' },
+  { method: 'PATCH', pattern: /^\/invoices\//, permission: 'invoices.edit' },
+  { method: 'GET', pattern: /^\/payments(?:\/|$)/, permission: 'payments.view' },
+  { method: 'POST', pattern: /^\/payments$/, permission: 'payments.manage' },
+  { method: 'GET', pattern: /^\/booking-requests(?:\/|$)/, permission: 'bookings.view' },
+  { method: 'GET', pattern: /^\/branches(?:\/|$)/, permission: 'branch.view' },
+  { method: 'PATCH', pattern: /^\/company\/(?:profile|scheduling-settings)/, permission: 'company.settings.manage' },
+  { method: 'PATCH', pattern: /^\/company\/branding/, permission: 'company.branding.manage' },
+  { method: 'PATCH', pattern: /^\/company\/finance-settings/, permission: 'settings.finance.manage' },
+  { method: 'GET', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.view' },
+  { method: 'POST', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.manage' }
+];
+
+router.use(asyncHandler(async (req, res, next) => {
+  const rule = resourcePermissionRules.find((item) => item.method === req.method && item.pattern.test(req.path));
+  if (rule) await requirePermission(req, rule.permission, { branchId: req.query && req.query.branchId || req.body && req.body.branchId });
+  next();
+}));
 
 router.post('/worker/devices/register', requireRole('WORKER'), validate(workerDeviceRegisterSchema), asyncHandler(async (req, res) => {
   const device = await registerOrTouchWorkerDevice(req, req.body);
@@ -3604,7 +3810,7 @@ router.get('/payment-links', requireRole(...adminRoles), asyncHandler(async (req
   sendData(res, normalize(result.data.map(safePaymentLink)), 200, result.meta);
 }));
 
-router.post('/invoices/:id/payment-links', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentLinkSchema), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/payment-links', validate(idParam, 'params'), validate(paymentLinkSchema), asyncHandler(async (req, res) => {
   const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { quote: true, customer: true } });
   if (!invoice) throw notFound('Invoice not found');
   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Payment links can only be generated for open invoices');
@@ -3621,7 +3827,7 @@ router.post('/invoices/:id/payment-links', requireRole(...adminRoles), validate(
   sendData(res, normalize(safePaymentLink(data)), 201);
 }));
 
-router.post('/invoices/:id/payment-promise', requireRole(...adminRoles), validate(idParam, 'params'), validate(promisePaymentSchema), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/payment-promise', validate(idParam, 'params'), validate(promisePaymentSchema), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   const data = await prisma.invoice.update({ where: { id: invoice.id }, data: { promisedPaymentDate: req.body.promisedPaymentDate, paymentPlanNotes: req.body.paymentPlanNotes } });
   await audit(req, 'UPDATE_PAYMENT_PROMISE', 'Invoice', invoice.id, { promisedPaymentDate: req.body.promisedPaymentDate });
@@ -3915,11 +4121,233 @@ router.post('/approvals/:id/execute', requireRole(...adminRoles), validate(idPar
   sendData(res, normalize(data));
 }));
 
-router.get('/permissions', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  sendData(res, { keys: permissionKeys, bundles: defaultPermissionBundles });
+router.get('/permissions', asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.view');
+  sendData(res, { keys: permissionKeys, groups: PERMISSION_GROUPS, bundles: defaultPermissionBundles });
 }));
 
-router.get('/users/:id/permissions', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+function companyRoleKey(name) {
+  return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+}
+
+async function resolveCompanyRole(req, body, permissions) {
+  let selected = null;
+  if (body.roleTemplateId) {
+    selected = await prisma.permissionRoleTemplate.findFirst({
+      where: { id: body.roleTemplateId, active: true, OR: [{ companyId: req.companyId }, { companyId: null }] }
+    });
+    if (!selected) throw notFound('Saved role not found');
+    if (selected.systemRole === 'OWNER') throw new AppError(403, 'Ownership cannot be granted through a role.');
+    // Keep legacy/system role IDs working for older clients, but never expose them as
+    // selectable presets in the current UI. New or edited roles become company-owned.
+    if (selected.companyId === null && !body.roleName) return selected;
+  }
+
+  const name = String(body.roleName || selected && selected.name || '').trim();
+  if (name.length < 2) throw new AppError(400, 'Enter a role name.');
+  const key = companyRoleKey(name);
+  if (!key) throw new AppError(400, 'Enter a valid role name.');
+  const verticalKey = req.user.company && req.user.company.verticalKey || 'generic';
+  const systemRole = body.systemRole === 'WORKER' ? 'WORKER' : body.systemRole === 'ADMIN' ? 'ADMIN' : selected && selected.systemRole || 'ADMIN';
+  const data = {
+    key,
+    name,
+    description: selected && selected.description || null,
+    verticalKey,
+    systemRole,
+    isSystemTemplate: false,
+    isCustom: true,
+    defaultPermissions: permissions,
+    defaultScopeType: body.scopeType || 'COMPANY',
+    active: true
+  };
+
+  if (selected && selected.companyId === req.companyId) {
+    const conflict = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: req.companyId, key, verticalKey } });
+    if (conflict && conflict.id !== selected.id) throw new AppError(409, 'A saved role with this name already exists.');
+    return prisma.permissionRoleTemplate.update({ where: { id: selected.id }, data });
+  }
+
+  const existing = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: req.companyId, key, verticalKey } });
+  if (existing) return prisma.permissionRoleTemplate.update({ where: { id: existing.id }, data });
+  return prisma.permissionRoleTemplate.create({ data: { companyId: req.companyId, ...data } });
+}
+
+router.get('/role-templates', asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.view');
+  const rows = await prisma.permissionRoleTemplate.findMany({
+    where: { companyId: req.companyId, active: true, isCustom: true },
+    orderBy: { name: 'asc' }
+  });
+  sendData(res, normalize(rows));
+}));
+
+router.post('/role-templates', validate(roleTemplateSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'roles.manage');
+  const key = req.body.key || req.body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const existing = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: req.companyId, key, verticalKey: req.user.company && req.user.company.verticalKey || 'generic' } });
+  if (existing) throw new AppError(409, 'A saved role with this name already exists.');
+  const permissions = await resolveDelegatedPermissions(req, { permissions: req.body.permissions, scopeType: req.body.defaultScopeType, branchIds: [], teamIds: [] });
+  const data = await prisma.permissionRoleTemplate.create({ data: { companyId: req.companyId, key, name: req.body.name, description: req.body.description, verticalKey: req.user.company && req.user.company.verticalKey || 'generic', systemRole: req.body.systemRole, isSystemTemplate: false, isCustom: true, defaultPermissions: permissions, defaultScopeType: req.body.defaultScopeType, active: true } });
+  await addEnterpriseAudit(req, 'ROLE_TEMPLATE_CREATED', 'PermissionRoleTemplate', data.id, { key, permissions, defaultScopeType: req.body.defaultScopeType });
+  sendData(res, normalize(data), 201);
+}));
+
+function memberInvitationBaseUrl(req) {
+  if (process.env.NODE_ENV !== 'production' && req && req.get && req.get('host')) return `${req.protocol}://${req.get('host')}`;
+  const configured = String(process.env.APP_BASE_URL || '').replace(/\/$/, '');
+  return configured || null;
+}
+
+async function sendMemberInvitationEmail(invitation, token, req) {
+  const base = memberInvitationBaseUrl(req);
+  if (!base) return { status: 'FAILED', error: 'Public app URL is not configured' };
+  const link = `${base}/accept-invite.html?token=${encodeURIComponent(token)}`;
+  const delivery = await sendEmail({
+    to: invitation.email,
+    subject: `Join ${invitation.company.name} on FieldCore`,
+    text: `${invitation.invitedBy.name} invited you to join ${invitation.company.name} as ${invitation.jobTitle || invitation.roleTemplate && invitation.roleTemplate.name || 'a team member'}. Use this one-time link to set your password and join: ${link}`,
+    html: `<p>${invitation.invitedBy.name} invited you to join <strong>${invitation.company.name}</strong>.</p><p><a href="${link}">Set your password and join</a></p><p>This one-time link expires at ${new Date(invitation.expiresAt).toISOString()}.</p>`
+  });
+  if (delivery && delivery.console && process.env.NODE_ENV !== 'production') return { ...delivery, setupUrl: link };
+  return delivery;
+}
+
+async function validateInvitationScope(req, body) {
+  for (const branchId of body.branchIds || []) await requireBranch(req, branchId);
+  for (const teamId of body.teamIds || []) {
+    const team = await prisma.team.findFirst({ where: { id: teamId, companyId: req.companyId, active: true } });
+    if (!team) throw notFound('Team not found');
+  }
+  if (body.scopeType === 'BRANCH' && !body.branchIds.length) throw new AppError(400, 'Choose at least one branch.');
+  if (body.scopeType === 'TEAM' && !body.teamIds.length) throw new AppError(400, 'Choose at least one team.');
+}
+
+router.get('/members', asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.view');
+  const rows = await prisma.user.findMany({ where: { companyId: req.companyId, ...userScopeWhere(req) }, select: { ...SAFE_USER_SELECT, jobTitle: true, defaultScopeType: true, roleTemplate: { select: { id: true, key: true, name: true } }, sessions: { select: { lastSeenAt: true }, orderBy: { lastSeenAt: 'desc' }, take: 1 } }, orderBy: { name: 'asc' } });
+  const enriched = await Promise.all(rows.map(async (user) => {
+    const access = await effectiveAccessForUser(user, { companyId: req.companyId });
+    return { ...user, effectivePermissions: access.permissions, accessScope: { type: access.scopeType, branchIds: access.branchIds, teamIds: access.teamIds }, lastActivityAt: user.sessions && user.sessions[0] && user.sessions[0].lastSeenAt, sessions: undefined };
+  }));
+  sendData(res, normalize(enriched));
+}));
+
+router.patch('/members/:id/access', validate(idParam, 'params'), validate(memberAccessSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'permissions.manage');
+  if (req.params.id === req.user.id) throw new AppError(403, 'You cannot change your own role or permissions.');
+  const member = await requireCompanyUser(req, req.params.id);
+  if (member.role === 'OWNER') throw new AppError(403, 'Owner access cannot be changed here.');
+  await validateInvitationScope(req, req.body);
+  const permissions = await resolveDelegatedPermissions(req, req.body);
+  const template = await resolveCompanyRole(req, req.body, permissions);
+  const updated = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.update({ where: { id: member.id }, data: { role: template.systemRole, jobTitle: req.body.jobTitle, roleTemplateId: template.id, defaultScopeType: req.body.scopeType } });
+    await tx.userPermissionOverride.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+    for (const permissionKey of permissionKeys) await tx.userPermissionOverride.create({ data: { companyId: req.companyId, userId: member.id, permissionKey, allowed: permissions.includes(permissionKey) } });
+    await tx.userBranchAccess.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+    await tx.userAccessGrant.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+    await tx.teamMembership.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+    for (const branchId of req.body.branchIds) await tx.userBranchAccess.create({ data: { companyId: req.companyId, userId: member.id, branchId, permissions, active: true } });
+    for (const teamId of req.body.teamIds) {
+      await tx.userAccessGrant.create({ data: { companyId: req.companyId, userId: member.id, scopeType: 'TEAM', teamId, permissions, active: true } });
+      await tx.teamMembership.create({ data: { companyId: req.companyId, userId: member.id, teamId, isLead: template.systemRole === 'ADMIN', active: true } });
+    }
+    if (template.systemRole === 'WORKER') {
+      await tx.workerProfile.upsert({ where: { userId: member.id }, update: { title: req.body.jobTitle, active: true }, create: { companyId: req.companyId, userId: member.id, title: req.body.jobTitle, active: true } });
+    } else {
+      await tx.workerProfile.updateMany({ where: { companyId: req.companyId, userId: member.id }, data: { active: false } });
+    }
+    return user;
+  });
+  await addEnterpriseAudit(req, 'MEMBER_ACCESS_CHANGED', 'User', member.id, { roleTemplateId: template.id, roleName: template.name, jobTitle: req.body.jobTitle, fullAccess: req.body.fullAccess, permissions, scopeType: req.body.scopeType, branchIds: req.body.branchIds, teamIds: req.body.teamIds });
+  sendData(res, normalize(updated));
+}));
+
+router.patch('/members/:id/status', validate(idParam, 'params'), validate(memberStatusSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.manage');
+  if (req.params.id === req.user.id) throw new AppError(409, 'You cannot disable your own account.');
+  const member = await requireCompanyUser(req, req.params.id);
+  if (member.role === 'OWNER' && req.body.disabled) {
+    const owners = await prisma.user.count({ where: { companyId: req.companyId, role: 'OWNER', disabledAt: null } });
+    if (owners <= 1) throw new AppError(409, 'The final company owner cannot be disabled.');
+  }
+  const disabledAt = req.body.disabled ? new Date() : null;
+  const updated = await prisma.user.update({ where: { id: member.id }, data: { disabledAt }, select: SAFE_USER_SELECT });
+  if (req.body.disabled && prisma.userSession) await prisma.userSession.updateMany({ where: { companyId: req.companyId, userId: member.id, revokedAt: null }, data: { revokedAt: new Date(), revokedById: req.user.id } });
+  await addEnterpriseAudit(req, req.body.disabled ? 'MEMBER_DISABLED' : 'MEMBER_REACTIVATED', 'User', member.id, {});
+  sendData(res, normalize(updated));
+}));
+
+router.get('/member-invitations', asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.view');
+  const rows = await prisma.memberInvitation.findMany({ where: { companyId: req.companyId }, include: { roleTemplate: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true, email: true } } }, orderBy: { createdAt: 'desc' } });
+  sendData(res, normalize(rows.map(({ tokenHash, ...row }) => row)));
+}));
+
+router.post('/member-invitations', validate(invitationSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.invite');
+  await validateInvitationScope(req, req.body);
+  if (await prisma.user.findUnique({ where: { email: req.body.email } })) throw new AppError(409, 'This email already belongs to a FieldCore account.');
+  const pending = await prisma.memberInvitation.findFirst({ where: { companyId: req.companyId, email: req.body.email, status: 'PENDING' } });
+  if (pending) throw new AppError(409, 'A pending invitation already exists for this email.');
+  const permissions = await resolveDelegatedPermissions(req, req.body);
+  const template = await resolveCompanyRole(req, req.body, permissions);
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const created = await prisma.memberInvitation.create({ data: { companyId: req.companyId, email: req.body.email, invitedByUserId: req.user.id, roleTemplateId: template.id, systemRole: template.systemRole, jobTitle: req.body.jobTitle, permissions, fullAccess: req.body.fullAccess, scopeType: req.body.scopeType, scopeConfig: { branchIds: req.body.branchIds, teamIds: req.body.teamIds }, tokenHash: invitationTokenHash(token), status: 'PENDING', expiresAt }, include: { company: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true } }, roleTemplate: { select: { id: true, name: true } } } });
+  const delivery = await sendMemberInvitationEmail(created, token, req);
+  await addEnterpriseAudit(req, 'INVITATION_CREATED', 'MemberInvitation', created.id, { email: created.email, roleTemplateId: created.roleTemplateId, roleName: template.name, fullAccess: created.fullAccess, scopeType: created.scopeType, deliveryStatus: delivery.status });
+  const { tokenHash, ...safe } = created;
+  sendData(res, normalize({ ...safe, delivery: { status: delivery.status, error: delivery.error || null, setupUrl: delivery.setupUrl || undefined } }), 201);
+}));
+
+router.post('/member-invitations/:id/resend', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.invite');
+  const existing = await prisma.memberInvitation.findFirst({ where: { id: req.params.id, companyId: req.companyId, status: 'PENDING' }, include: { company: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true } }, roleTemplate: { select: { id: true, name: true } } } });
+  if (!existing || existing.revokedAt || existing.acceptedAt) throw notFound('Pending invitation not found');
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const updated = await prisma.memberInvitation.update({ where: { id: existing.id }, data: { tokenHash: invitationTokenHash(token), expiresAt }, include: { company: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true } }, roleTemplate: { select: { id: true, name: true } } } });
+  const delivery = await sendMemberInvitationEmail(updated, token, req);
+  await addEnterpriseAudit(req, 'INVITATION_RESENT', 'MemberInvitation', updated.id, { email: updated.email, deliveryStatus: delivery.status });
+  sendData(res, { resent: true, expiresAt, delivery: { status: delivery.status, error: delivery.error || null, setupUrl: delivery.setupUrl || undefined } });
+}));
+
+router.post('/member-invitations/:id/revoke', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'members.manage');
+  const existing = await prisma.memberInvitation.findFirst({ where: { id: req.params.id, companyId: req.companyId, status: 'PENDING' } });
+  if (!existing) throw notFound('Pending invitation not found');
+  await prisma.memberInvitation.update({ where: { id: existing.id }, data: { status: 'REVOKED', revokedAt: new Date() } });
+  await addEnterpriseAudit(req, 'INVITATION_REVOKED', 'MemberInvitation', existing.id, { email: existing.email });
+  sendData(res, { revoked: true });
+}));
+
+router.get('/teams', asyncHandler(async (req, res) => {
+  await requirePermission(req, 'team.view');
+  sendData(res, normalize(await prisma.team.findMany({ where: { companyId: req.companyId, ...teamScopeWhere(req) }, include: { branch: true, memberships: { where: { active: true }, include: { user: { select: SAFE_USER_SELECT } } } }, orderBy: { name: 'asc' } })));
+}));
+
+router.post('/teams', validate(teamSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'team.manage');
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
+  const data = await prisma.team.create({ data: { companyId: req.companyId, name: req.body.name, description: req.body.description, branchId: req.body.branchId, active: req.body.active !== false } });
+  await addEnterpriseAudit(req, 'TEAM_CREATED', 'Team', data.id, { branchId: data.branchId });
+  sendData(res, normalize(data), 201);
+}));
+
+router.patch('/teams/:id', validate(idParam, 'params'), validate(teamSchema.partial()), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'team.manage');
+  const existing = await prisma.team.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!existing) throw notFound('Team not found');
+  if (req.body.branchId) await requireBranch(req, req.body.branchId);
+  const data = await prisma.team.update({ where: { id: existing.id }, data: req.body });
+  await addEnterpriseAudit(req, 'TEAM_UPDATED', 'Team', data.id, { branchId: data.branchId, active: data.active });
+  sendData(res, normalize(data));
+}));
+
+router.get('/users/:id/permissions', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'permissions.manage');
   await requireCompanyUser(req, req.params.id);
   const [overrides, branchAccess] = await Promise.all([
     prisma.userPermissionOverride.findMany({ where: { companyId: req.companyId, userId: req.params.id }, orderBy: { createdAt: 'desc' } }),
@@ -3928,9 +4356,13 @@ router.get('/users/:id/permissions', requireRole(...adminRoles), validate(idPara
   sendData(res, normalize({ overrides, branchAccess }));
 }));
 
-router.post('/users/:id/permissions', requireRole(...adminRoles), validate(idParam, 'params'), validate(permissionOverrideSchema), asyncHandler(async (req, res) => {
-  await requireCompanyUser(req, req.params.id);
+router.post('/users/:id/permissions', validate(idParam, 'params'), validate(permissionOverrideSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'permissions.manage');
+  if (req.params.id === req.user.id) throw new AppError(403, 'You cannot change your own permissions.');
+  const target = await requireCompanyUser(req, req.params.id);
+  if (target.role === 'OWNER') throw new AppError(403, 'Owner permissions cannot be changed through delegated access controls.');
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
+  await resolveDelegatedPermissions(req, { permissions: [req.body.permissionKey], scopeType: req.body.branchId ? 'BRANCH' : 'COMPANY', branchIds: req.body.branchId ? [req.body.branchId] : [], teamIds: [] });
   const data = await prisma.userPermissionOverride.upsert({
     where: { companyId_userId_permissionKey_branchId: { companyId: req.companyId, userId: req.params.id, permissionKey: req.body.permissionKey, branchId: req.body.branchId || null } },
     update: { allowed: req.body.allowed, branchId: req.body.branchId || null },
@@ -3940,13 +4372,17 @@ router.post('/users/:id/permissions', requireRole(...adminRoles), validate(idPar
   sendData(res, normalize(data), 201);
 }));
 
-router.post('/users/:id/branch-access', requireRole(...adminRoles), validate(idParam, 'params'), validate(branchAccessSchema), asyncHandler(async (req, res) => {
-  await requireCompanyUser(req, req.params.id);
+router.post('/users/:id/branch-access', validate(idParam, 'params'), validate(branchAccessSchema), asyncHandler(async (req, res) => {
+  await requirePermission(req, 'permissions.manage');
+  if (req.params.id === req.user.id) throw new AppError(403, 'You cannot change your own access scope.');
+  const target = await requireCompanyUser(req, req.params.id);
+  if (target.role === 'OWNER') throw new AppError(403, 'Owner scope cannot be changed through delegated access controls.');
   await requireBranch(req, req.body.branchId);
+  const delegated = await resolveDelegatedPermissions(req, { permissions: req.body.permissions || [], scopeType: 'BRANCH', branchIds: [req.body.branchId], teamIds: [] });
   const data = await prisma.userBranchAccess.upsert({
     where: { companyId_userId_branchId: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId } },
-    update: { permissions: req.body.permissions || [], active: req.body.active !== false },
-    create: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId, permissions: req.body.permissions || [], active: req.body.active !== false }
+    update: { permissions: delegated, active: req.body.active !== false },
+    create: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId, permissions: delegated, active: req.body.active !== false }
   });
   await addEnterpriseAudit(req, 'UPSERT_BRANCH_ACCESS', 'User', req.params.id, { branchId: req.body.branchId, active: req.body.active !== false });
   sendData(res, normalize(data), 201);
@@ -4005,16 +4441,27 @@ async function executeApprovedAction(req, approval, decisionNote) {
 
 router.get('/dashboard', asyncHandler(async (req, res) => {
   const companyId = req.companyId;
-  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  const access = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId });
+  const canOperational = access.permissions.includes('dashboard.operational.view');
+  const canFinancial = access.permissions.includes('dashboard.financial.view');
+  const canExecutive = access.permissions.includes('dashboard.executive.view');
+  if (!canOperational && !canFinancial && !canExecutive) throw new AppError(403, 'Missing dashboard permission.');
+
+  if (req.query.branchId) {
+    await requireBranch(req, String(req.query.branchId));
+    if (access.scopeType === 'BRANCH' && !access.branchIds.includes(String(req.query.branchId))) throw new AppError(403, 'Branch is outside your access scope.');
+  }
   const branchWhere = branchFilterFromQuery(req);
-  const jobWhere = { companyId, ...branchWhere, ...workerJobScope(req) };
+  const jobWhere = { companyId, ...workerJobScope(req), ...branchWhere };
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
 
-  if (req.user.role === 'WORKER') {
-    const workerId = req.user.worker ? req.user.worker.id : '__none__';
+  // SELF-scoped workforce users receive the worker dashboard even if their coarse
+  // classification changes later. TEAM/BRANCH supervisors receive a scoped manager view.
+  if (access.scopeType === 'SELF' && req.user.worker) {
+    const workerId = req.user.worker.id;
     const workerWhere = { companyId, workerId };
     const [company, activeJob, jobsToday, upcomingJobs, completedJobs, assignedJobs] = await Promise.all([
       getCompanyWithBranding(companyId),
@@ -4029,22 +4476,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     const recentActivity = assignedJobIds.length
       ? await prisma.jobActivity.findMany({ where: { companyId, jobId: { in: assignedJobIds }, type: { in: ['ARRIVED', 'STARTED', 'PAUSED', 'RESUMED', 'COMPLETED'] } }, include: { ...jobActivityInclude, job: { include: { customer: true } } }, orderBy: { createdAt: 'desc' }, take: 8 })
       : [];
-    const workerJobSummary = (job) => job && ({
-      id: job.id,
-      title: job.title,
-      status: job.status,
-      scheduledStart: job.scheduledStart,
-      scheduledEnd: job.scheduledEnd,
-      customer: job.customer ? { id: job.customer.id, name: job.customer.name, address: job.customer.address } : null
-    });
-    const workerActivitySummary = (item) => ({
-      id: item.id,
-      jobId: item.jobId,
-      type: item.type,
-      note: item.note,
-      createdAt: item.createdAt,
-      job: workerJobSummary(item.job)
-    });
+    const workerJobSummary = (job) => job && ({ id: job.id, title: job.title, status: job.status, scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, customer: job.customer ? { id: job.customer.id, name: job.customer.name, address: job.customer.address } : null });
+    const workerActivitySummary = (item) => ({ id: item.id, jobId: item.jobId, type: item.type, note: item.note, createdAt: item.createdAt, job: workerJobSummary(item.job) });
     const requiredActions = [];
     if (activeJob && activeJob.status === 'IN_PROGRESS') requiredActions.push({ type: 'COMPLETE_ACTIVE_JOB', label: 'Complete active job', jobId: activeJob.id });
     if (activeJob && activeJob.status === 'PAUSED') requiredActions.push({ type: 'RESUME_PAUSED_JOB', label: 'Resume paused job', jobId: activeJob.id });
@@ -4058,12 +4491,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
       role: 'WORKER',
       branding: publicBranding(company),
       company: profileResponse(company),
-      today: {
-        totalJobs: jobsToday.length,
-        completedJobs,
-        remainingJobs: Math.max(jobsToday.length - completedJobs, 0),
-        activeJob: workerJobSummary(activeJob)
-      },
+      capabilities: { operational: true, financial: canFinancial, executive: canExecutive },
+      today: { totalJobs: jobsToday.length, completedJobs, remainingJobs: Math.max(jobsToday.length - completedJobs, 0), activeJob: workerJobSummary(activeJob) },
       jobsToday: jobsToday.map(workerJobSummary),
       upcomingJobs: upcomingJobs.map(workerJobSummary),
       recentActivity: recentActivity.map(workerActivitySummary),
@@ -4071,26 +4500,43 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
     }));
   }
 
-  const [company, jobsToday, activeWorkers, recentJobs, schedule, workers, pipeline, unpaid] = await Promise.all([
+  const financeWhere = { companyId, ...financeRecordScopeWhere(req), ...branchWhere };
+  const [company, jobsToday, activeWorkers, recentJobs, schedule, workers] = await Promise.all([
     getCompanyWithBranding(companyId),
     prisma.job.count({ where: { ...jobWhere, scheduledStart: { gte: start, lt: end } } }),
-    req.user.role === 'WORKER' ? Promise.resolve(req.user.worker && req.user.worker.active ? 1 : 0) : prisma.workerProfile.count({ where: { companyId, active: true } }),
+    prisma.workerProfile.count({ where: { companyId, active: true, ...workerProfileScopeWhere(req) } }),
     prisma.job.findMany({ where: jobWhere, include: { customer: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { createdAt: 'desc' }, take: 5 }),
-    prisma.scheduleItem.findMany({ where: { companyId, startsAt: { gte: start, lt: end }, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) }, include: { job: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { startsAt: 'asc' }, take: 5 }),
-    req.user.role === 'WORKER' ? Promise.resolve(req.user.worker ? [req.user.worker] : []) : prisma.workerProfile.findMany({ where: { companyId }, include: SAFE_WORKER_INCLUDE, take: 5 }),
-    req.user.role === 'WORKER' ? Promise.resolve([]) : prisma.quote.groupBy({ by: ['status'], where: { companyId, deletedAt: null }, _count: true }),
-    req.user.role === 'WORKER' ? Promise.resolve([]) : prisma.invoice.findMany({ where: { companyId, status: { in: ['SENT', 'OVERDUE'] } }, select: { amount: true } })
+    prisma.scheduleItem.findMany({ where: { companyId, startsAt: { gte: start, lt: end }, ...scheduleScopeWhere(req) }, include: { job: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { startsAt: 'asc' }, take: 5 }),
+    prisma.workerProfile.findMany({ where: { companyId, ...workerProfileScopeWhere(req) }, include: SAFE_WORKER_INCLUDE, take: 5 })
   ]);
 
-  const unpaidInvoices = unpaid.reduce((sum, invoice) => sum + Number(invoice.amount), 0);
-  const totals = { jobsToday, revenueMonthToDate: 0, unpaidInvoices, activeWorkers };
-  const pipe = { leads: 0, quoted: 0, won: 0 };
-  for (const item of pipeline) {
-    if (item.status === 'DRAFT') pipe.leads += item._count;
-    if (item.status === 'SENT') pipe.quoted += item._count;
-    if (item.status === 'ACCEPTED') pipe.won += item._count;
+  const totals = { jobsToday, activeWorkers };
+  let pipeline;
+  if (canFinancial) {
+    const [pipelineRows, unpaid] = await Promise.all([
+      prisma.quote.groupBy({ by: ['status'], where: { ...financeWhere, deletedAt: null }, _count: true }),
+      prisma.invoice.findMany({ where: { ...financeWhere, status: { in: ['SENT', 'OVERDUE'] } }, select: { amount: true } })
+    ]);
+    totals.revenueMonthToDate = 0;
+    totals.unpaidInvoices = unpaid.reduce((sum, invoice) => sum + Number(invoice.amount), 0);
+    pipeline = { leads: 0, quoted: 0, won: 0 };
+    for (const item of pipelineRows) {
+      if (item.status === 'DRAFT') pipeline.leads += item._count;
+      if (item.status === 'SENT') pipeline.quoted += item._count;
+      if (item.status === 'ACCEPTED') pipeline.won += item._count;
+    }
   }
-  sendData(res, normalize({ branding: publicBranding(company), company: profileResponse(company), totals, schedule, workers, recentJobs, pipeline: pipe }));
+
+  sendData(res, normalize({
+    branding: publicBranding(company),
+    company: profileResponse(company),
+    capabilities: { operational: canOperational, financial: canFinancial, executive: canExecutive },
+    totals,
+    schedule,
+    workers,
+    recentJobs,
+    ...(pipeline ? { pipeline } : {})
+  }));
 }));
 
 router.get('/notification-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
@@ -4165,7 +4611,8 @@ router.post('/admin/integrations/:id/disable', requireRole(...adminRoles), valid
   sendData(res, normalize(data));
 }));
 
-router.get('/audit-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/audit-logs', asyncHandler(async (req, res) => {
+  if (req.effectiveAccess.scopeType !== 'COMPANY' && req.user.role !== 'OWNER') throw new AppError(403, 'Audit logs require company-wide scope.');
   const result = await paged(prisma.auditLog, req, { where: { companyId: req.companyId }, include: { user: { select: SAFE_USER_SELECT } }, orderBy: { createdAt: 'desc' } });
   const data = result.data.map((item) => ({
     id: item.id,
@@ -4184,38 +4631,56 @@ router.get('/system/status', requireRole(...adminRoles), asyncHandler(async (req
 }));
 
 const billingPlanSchema = z.object({ planId: z.string().min(1) });
+const mockPlanSelectionSchema = z.object({ planId: z.string().min(1), billingInterval: z.enum(['MONTHLY', 'ANNUAL']) });
 
-router.get('/billing/plans', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/billing/catalog', asyncHandler(async (req, res) => {
+  sendData(res, await billingCatalog(req.companyId));
+}));
+
+router.post('/billing/mock-select', validate(mockPlanSelectionSchema), asyncHandler(async (req, res) => {
+  const data = await selectMockPlan(req.companyId, req.body.planId, req.body.billingInterval, req.user.id);
+  await audit(req, data.pricing.custom ? 'ENTERPRISE_CONTACT_REQUESTED' : 'MOCK_PLAN_SELECTED', 'CompanySubscription', req.companyId, { planId: req.body.planId, billingInterval: req.body.billingInterval, provider: 'MOCK_INTERNAL', externalPaymentProcessed: false });
+  sendData(res, normalize(data));
+}));
+
+router.get('/billing/plans', asyncHandler(async (req, res) => {
   sendData(res, await listPlans());
 }));
 
-router.get('/billing/subscription', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/billing/subscription', asyncHandler(async (req, res) => {
   sendData(res, normalize(await billingSummary(req.companyId)));
 }));
 
-router.get('/billing/usage', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/billing/usage', asyncHandler(async (req, res) => {
   sendData(res, normalize(await getUsage(req.companyId)));
 }));
 
-router.post('/billing/checkout', requireRole(...ownerRoles), validate(billingPlanSchema), asyncHandler(async (req, res) => {
+router.post('/billing/checkout', validate(billingPlanSchema), asyncHandler(async (req, res) => {
   const data = await createCheckout(req.companyId, req.body.planId, req.user.id);
   await audit(req, 'CHECKOUT_STARTED', 'CompanySubscription', req.companyId, { planId: req.body.planId, provider: data.provider, mode: data.mode });
   sendData(res, normalize(data), 202);
 }));
 
-router.post('/billing/change-plan', requireRole(...ownerRoles), validate(billingPlanSchema), asyncHandler(async (req, res) => {
+router.post('/billing/change-plan', validate(billingPlanSchema), asyncHandler(async (req, res) => {
   const data = await changePlan(req.companyId, req.body.planId, req.user.id);
   await audit(req, 'CHANGE_PLAN', 'CompanySubscription', req.companyId, { planId: req.body.planId });
   sendData(res, normalize(data));
 }));
 
-router.post('/billing/cancel', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
+router.post('/billing/cancel', asyncHandler(async (req, res) => {
   const data = await cancelSubscription(req.companyId, req.user.id);
   await audit(req, 'CANCEL_SUBSCRIPTION', 'CompanySubscription', req.companyId);
   sendData(res, normalize(data));
 }));
 
-router.get('/reports', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+function requireCompanyReportScope(req) {
+  if (!req.effectiveAccess || req.effectiveAccess.scopeType !== 'COMPANY') {
+    throw new AppError(403, 'This report requires company-wide reporting scope.');
+  }
+}
+
+router.get('/reports', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   sendData(res, normalize(await reportData(req.companyId, req.query)));
 }));
 
@@ -4231,11 +4696,14 @@ function dateRangeWhere(query, field = 'createdAt') {
 }
 
 async function reportBranchWhere(req) {
+  const access = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId: req.companyId });
+  if (access.scopeType === 'TEAM' || access.scopeType === 'SELF') throw new AppError(403, 'Financial reports require company or branch scope.');
   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+  if (access.scopeType === 'BRANCH' && !req.query.branchId) return { companyId: req.companyId, branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
   return { companyId: req.companyId, ...branchFilterFromQuery(req) };
 }
 
-router.get('/reports/branch-performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/branch-performance', asyncHandler(async (req, res) => {
   const where = await reportBranchWhere(req);
   const [branches, jobs, invoices, payments] = await Promise.all([
     prisma.branch.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } }),
@@ -4251,7 +4719,7 @@ router.get('/reports/branch-performance', requireRole(...adminRoles), asyncHandl
   sendData(res, normalize(Array.from(byBranch.values()).filter((row) => req.query.branchId ? row.branch && row.branch.id === req.query.branchId : true)));
 }));
 
-router.get('/reports/service-profitability', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/service-profitability', asyncHandler(async (req, res) => {
   const where = await reportBranchWhere(req);
   const [jobs, parts] = await Promise.all([
     prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) }, include: { service: true } }),
@@ -4268,7 +4736,7 @@ router.get('/reports/service-profitability', requireRole(...adminRoles), asyncHa
   sendData(res, normalize(Array.from(rows.values())));
 }));
 
-router.get('/reports/technician-productivity', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/technician-productivity', asyncHandler(async (req, res) => {
   const where = await reportBranchWhere(req);
   const jobs = await prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) }, include: { worker: { include: SAFE_WORKER_INCLUDE } } });
   const rows = new Map();
@@ -4280,7 +4748,7 @@ router.get('/reports/technician-productivity', requireRole(...adminRoles), async
   sendData(res, normalize(Array.from(rows.values())));
 }));
 
-router.get('/reports/sla-performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/sla-performance', asyncHandler(async (req, res) => {
   const where = await reportBranchWhere(req);
   const jobs = await prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) } });
   const rows = Object.fromEntries(slaStatusValues.map((status) => [status, 0]));
@@ -4288,7 +4756,7 @@ router.get('/reports/sla-performance', requireRole(...adminRoles), asyncHandler(
   sendData(res, { total: jobs.length, byStatus: rows, breached: rows.BREACHED || 0, waived: rows.WAIVED || 0 });
 }));
 
-router.get('/reports/contract-profitability', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/contract-profitability', asyncHandler(async (req, res) => {
   const where = await reportBranchWhere(req);
   const contracts = await prisma.serviceContract.findMany({ where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: contractInclude });
   const jobs = await prisma.job.findMany({ where: { ...where, contractId: { not: null }, ...dateRangeWhere(req.query) }, include: { contract: true } });
@@ -4307,7 +4775,8 @@ router.get('/reports/contract-profitability', requireRole(...adminRoles), asyncH
   sendData(res, normalize({ rows, totalRevenue: rows.reduce((sum, row) => sum + row.revenue, 0), totalPartsCost: rows.reduce((sum, row) => sum + row.partsCost, 0), totalGrossMarginEstimate: rows.reduce((sum, row) => sum + row.grossMarginEstimate, 0) }));
 }));
 
-router.get('/reports/inventory-value', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/inventory-value', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const locationWhere = { companyId: req.companyId, ...branchFilterFromQuery(req) };
   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
   const locations = await prisma.stockLocation.findMany({ where: locationWhere });
@@ -4316,7 +4785,8 @@ router.get('/reports/inventory-value', requireRole(...adminRoles), asyncHandler(
   sendData(res, normalize({ totalValue: rows.reduce((sum, row) => sum + row.value, 0), rows }));
 }));
 
-router.get('/reports/purchase-spend', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/purchase-spend', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const where = { companyId: req.companyId, ...branchFilterFromQuery(req), ...dateRangeWhere(req.query) };
   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
   const orders = await prisma.purchaseOrder.findMany({ where, include: { supplier: true, lines: { include: { item: true } } } });
@@ -4324,7 +4794,8 @@ router.get('/reports/purchase-spend', requireRole(...adminRoles), asyncHandler(a
   sendData(res, normalize({ totalSpend: rows.reduce((sum, row) => sum + row.total, 0), rows }));
 }));
 
-router.get('/reports/accounts-receivable-aging', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/accounts-receivable-aging', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const where = { companyId: req.companyId, ...branchFilterFromQuery(req), status: { in: ['SENT', 'PARTIALLY_PAID', 'OVERDUE'] } };
   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
   const invoices = await prisma.invoice.findMany({ where, include: { customer: true } });
@@ -4361,7 +4832,8 @@ async function analyticsPayload(req) {
   return buildExecutiveAnalytics(req.companyId, req.query, { branchIds });
 }
 
-router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/export', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const section = String(req.query.section || 'revenue');
   if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'Unsupported report export section.');
   const data = await reportData(req.companyId, req.query);
@@ -4908,24 +5380,24 @@ const customerSchema = z.object({
   notes: z.string().optional()
 });
 
-router.get('/customers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/customers', asyncHandler(async (req, res) => {
   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
-  const result = await paged(prisma.customer, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, orderBy: { createdAt: 'desc' }, include: { jobs: true, invoices: true } });
+  const result = await paged(prisma.customer, req, { where: { companyId: req.companyId, ...customerScopeWhere(req), ...branchFilterFromQuery(req) }, orderBy: { createdAt: 'desc' }, include: { jobs: true, invoices: true } });
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
-router.post('/customers', requireRole(...adminRoles), validate(customerSchema), asyncHandler(async (req, res) => {
+router.post('/customers', validate(customerSchema), asyncHandler(async (req, res) => {
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.customer.create({ data: { ...req.body, companyId: req.companyId } });
   await audit(req, 'CREATE', 'Customer', data.id);
   sendData(res, normalize(data), 201);
 }));
 
-router.get('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/customers/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   sendData(res, normalize(await requireCustomer(req, req.params.id)));
 }));
 
-router.patch('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(customerSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/customers/:id', validate(idParam, 'params'), validate(customerSchema.partial()), asyncHandler(async (req, res) => {
   await requireCustomer(req, req.params.id);
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   const data = await prisma.customer.update({ where: { id: req.params.id }, data: req.body });
@@ -4933,7 +5405,7 @@ router.patch('/customers/:id', requireRole(...adminRoles), validate(idParam, 'pa
   sendData(res, normalize(data));
 }));
 
-router.delete('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.delete('/customers/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireCustomer(req, req.params.id);
   await prisma.customer.delete({ where: { id: req.params.id } });
   await audit(req, 'DELETE', 'Customer', req.params.id);
@@ -5677,7 +6149,7 @@ const workerCreateSchema = z.object({
   branchId: z.string().min(1).optional(),
   name: z.string().min(2),
   email: z.string().email().transform((v) => v.toLowerCase()),
-  password: z.string().min(8),
+  password: z.string().min(12).max(128),
   roleId: z.string().optional(),
   title: z.string().optional(),
   phone: z.string().optional(),
@@ -5685,31 +6157,31 @@ const workerCreateSchema = z.object({
 });
 const workerPatchSchema = z.object({ branchId: z.string().min(1).nullable().optional(), roleId: z.string().nullable().optional(), title: z.string().optional(), phone: z.string().optional(), active: z.boolean().optional() });
 
-router.get('/worker-roles', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/worker-roles', asyncHandler(async (req, res) => {
   const roles = await prisma.workerRole.findMany({ where: { companyId: req.companyId }, orderBy: { name: 'asc' } });
   sendData(res, normalize(roles));
 }));
 
-router.post('/worker-roles', requireRole(...adminRoles), validate(workerRoleSchema), asyncHandler(async (req, res) => {
+router.post('/worker-roles', validate(workerRoleSchema), asyncHandler(async (req, res) => {
   const data = await prisma.workerRole.upsert({ where: { companyId_name: { companyId: req.companyId, name: req.body.name } }, update: { description: req.body.description, active: req.body.active ?? true }, create: { ...req.body, active: req.body.active ?? true, companyId: req.companyId } });
   await audit(req, 'CREATE', 'WorkerRole', data.id);
   sendData(res, normalize(data), 201);
 }));
 
-router.patch('/worker-roles/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(workerRoleSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/worker-roles/:id', validate(idParam, 'params'), validate(workerRoleSchema.partial()), asyncHandler(async (req, res) => {
   await requireWorkerRole(req, req.params.id);
   const data = await prisma.workerRole.update({ where: { id: req.params.id }, data: req.body });
   await audit(req, 'UPDATE', 'WorkerRole', data.id);
   sendData(res, normalize(data));
 }));
 
-router.get('/worker-roles/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/worker-roles/:id/availability', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const role = await requireWorkerRole(req, req.params.id);
   const data = await prisma.roleAvailability.findMany({ where: { companyId: req.companyId, roleId: role.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
   sendData(res, normalize(data));
 }));
 
-router.put('/worker-roles/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
+router.put('/worker-roles/:id/availability', validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
   const role = await requireWorkerRole(req, req.params.id);
   const data = await prisma.$transaction(async (tx) => {
     await tx.roleAvailability.deleteMany({ where: { companyId: req.companyId, roleId: role.id } });
@@ -5719,12 +6191,12 @@ router.put('/worker-roles/:id/availability', requireRole(...adminRoles), validat
   await audit(req, 'UPDATE', 'RoleAvailability', role.id);
   sendData(res, normalize(data));
 }));
-router.get('/workers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const result = await paged(prisma.workerProfile, req, { where: { companyId: req.companyId }, include: SAFE_WORKER_INCLUDE, orderBy: { createdAt: 'desc' } });
+router.get('/workers', asyncHandler(async (req, res) => {
+  const result = await paged(prisma.workerProfile, req, { where: { companyId: req.companyId, ...workerProfileScopeWhere(req) }, include: SAFE_WORKER_INCLUDE, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(result.data.map((w) => ({ ...w, user: publicUser(w.user) }))), 200, result.meta);
 }));
 
-router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema), asyncHandler(async (req, res) => {
+router.post('/workers', validate(workerCreateSchema), asyncHandler(async (req, res) => {
   await requirePlanLimit(req.companyId, 'maxUsers');
   await requirePlanLimit(req.companyId, 'maxWorkers');
   let role = req.body.roleId ? await requireWorkerRole(req, req.body.roleId) : null;
@@ -5744,7 +6216,7 @@ router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema)
   sendData(res, publicUser(user), 201);
 }));
 
-router.patch('/workers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(workerPatchSchema), asyncHandler(async (req, res) => {
+router.patch('/workers/:id', validate(idParam, 'params'), validate(workerPatchSchema), asyncHandler(async (req, res) => {
   await requireWorker(req, req.params.id);
   const body = { ...req.body };
   if (body.roleId) await requireWorkerRole(req, body.roleId);
@@ -6009,13 +6481,15 @@ router.get('/inventory/movements', requireRole(...adminRoles), asyncHandler(asyn
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
-router.get('/reports/inventory/valuation', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/inventory/valuation', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const stocks = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId }, include: { item: true, location: true } });
   const data = stocks.map((stock) => ({ itemId: stock.itemId, itemName: stock.item && stock.item.name, locationId: stock.locationId, locationName: stock.location && stock.location.name, branchId: stock.location && stock.location.branchId, quantityOnHand: decimalNumber(stock.quantityOnHand), unitCost: decimalNumber(stock.item && stock.item.unitCost), stockValue: decimalNumber(stock.quantityOnHand) * decimalNumber(stock.item && stock.item.unitCost) }));
   sendData(res, normalize({ totalValue: data.reduce((sum, row) => sum + row.stockValue, 0), rows: data }));
 }));
 
-router.get('/reports/inventory/low-stock', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/inventory/low-stock', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const items = await prisma.inventoryItem.findMany({ where: { companyId: req.companyId, active: true }, include: inventoryItemInclude });
   const data = items.map((item) => {
     const onHand = (item.stocks || []).reduce((sum, stock) => sum + decimalNumber(stock.quantityOnHand), 0);
@@ -6025,19 +6499,22 @@ router.get('/reports/inventory/low-stock', requireRole(...adminRoles), asyncHand
   sendData(res, normalize(data));
 }));
 
-router.get('/reports/inventory/stock-adjustments', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/inventory/stock-adjustments', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const data = await prisma.stockMovement.findMany({ where: { companyId: req.companyId, movementType: { in: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'] } }, include: { item: true, location: true, createdBy: { select: SAFE_USER_SELECT } }, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(data));
 }));
 
-router.get('/reports/inventory/parts-used', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/inventory/parts-used', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const where = { companyId: req.companyId };
   if (req.query.jobId) where.jobId = String(req.query.jobId);
   const data = await prisma.jobPartUsage.findMany({ where, include: jobPartInclude, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(data));
 }));
 
-router.get('/reports/suppliers/performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/reports/suppliers/performance', asyncHandler(async (req, res) => {
+  requireCompanyReportScope(req);
   const suppliers = await prisma.supplier.findMany({ where: { companyId: req.companyId } });
   const orders = await prisma.purchaseOrder.findMany({ where: { companyId: req.companyId }, include: purchaseOrderInclude });
   const data = suppliers.map((supplier) => {
@@ -6580,7 +7057,7 @@ router.patch('/jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'
   sendData(res, normalize(jobWithEvidenceStatus(data)));
 }));
 
-router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1), reason: optionalText(1000) })), asyncHandler(async (req, res) => {
+router.post('/jobs/:id/assign-worker', validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1), reason: optionalText(1000) })), asyncHandler(async (req, res) => {
   const existing = await requireJob(req, req.params.id, { assignedOnly: false });
   await requireWorker(req, req.body.workerId);
   if (existing.workerId && existing.workerId !== req.body.workerId && ['DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED'].includes(existing.status)) {
@@ -6864,17 +7341,17 @@ function fallbackQuoteLines(body) {
   return [];
 }
 
-router.get('/quotes', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/quotes', asyncHandler(async (req, res) => {
   await purgeExpiredDeletedQuotes(req.companyId);
   const [company, result] = await Promise.all([
     getCompanyWithBranding(req.companyId),
-    paged(prisma.quote, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req), ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
+    paged(prisma.quote, req, { where: { companyId: req.companyId, ...financeRecordScopeWhere(req), ...branchFilterFromQuery(req), ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
   ]);
   const finance = await getCompanyFinanceSettings(req.companyId);
   sendData(res, normalize(result.data.map((item) => attachLocalization({ ...item, branding: publicBranding(company) }, finance))), 200, result.meta);
 }));
 
-router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncHandler(async (req, res) => {
+router.post('/quotes', validate(quoteSchema), asyncHandler(async (req, res) => {
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateQuoteRelations(req, req.body);
   const finance = await getCompanyFinanceSettings(req.companyId);
@@ -6901,13 +7378,13 @@ router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncH
   sendData(res, normalize(attachLocalization(data, finance)), 201);
 }));
 
-router.get('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/quotes/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireQuote(req, req.params.id);
   const data = await prisma.quote.findFirst({ where: { id: req.params.id, companyId: req.companyId, deletedAt: null }, include: quoteInclude });
   sendData(res, normalize(attachLocalization(data, await getCompanyFinanceSettings(req.companyId))));
 }));
 
-router.patch('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(quoteSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/quotes/:id', validate(idParam, 'params'), validate(quoteSchema.partial()), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
   await validateQuoteRelations(req, req.body);
@@ -6938,7 +7415,7 @@ async function transitionQuote(req, status, stamp, note) {
   });
 }
 
-router.post('/quotes/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/send', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const before = await requireQuote(req, req.params.id);
   const data = await transitionQuote(req, 'SENT', 'sentAt', 'Quote sent');
   await audit(req, 'SEND', 'Quote', data.id);
@@ -6946,7 +7423,7 @@ router.post('/quotes/:id/send', requireRole(...adminRoles), validate(idParam, 'p
   sendData(res, normalize(data));
 }));
 
-router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/accept', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   const wasAccepted = quote.status === 'ACCEPTED';
   if (quote.status === 'REJECTED' || quote.status === 'EXPIRED') throw new AppError(409, 'Rejected or expired quotes cannot be accepted');
@@ -6967,7 +7444,7 @@ router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam, 
   sendData(res, normalize(data));
 }));
 
-router.post('/quotes/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/reject', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const before = await requireQuote(req, req.params.id);
   const data = await transitionQuote(req, 'REJECTED', 'rejectedAt', 'Quote rejected');
   await audit(req, 'REJECT', 'Quote', data.id);
@@ -6975,7 +7452,7 @@ router.post('/quotes/:id/reject', requireRole(...adminRoles), validate(idParam, 
   sendData(res, normalize(data));
 }));
 
-router.post('/quotes/:id/reverse-rejection', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/reverse-rejection', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   if (quote.status !== 'REJECTED') throw new AppError(409, 'Only rejected quotes can have rejection reversed');
   const data = await prisma.$transaction(async (tx) => {
@@ -6986,7 +7463,7 @@ router.post('/quotes/:id/reverse-rejection', requireRole(...adminRoles), validat
   sendData(res, normalize(data));
 }));
 
-router.delete('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.delete('/quotes/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   const deletedAt = new Date();
   const deleteExpiresAt = new Date(deletedAt.getTime() + quoteDeleteRetentionDays * 24 * 60 * 60 * 1000);
@@ -6995,7 +7472,7 @@ router.delete('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'para
   sendData(res, normalize(data));
 }));
 
-router.post('/quotes/:id/restore', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/restore', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id, { includeDeleted: true });
   if (!quote.deletedAt) return sendData(res, normalize(await prisma.quote.findFirst({ where: { id: quote.id, companyId: req.companyId }, include: quoteInclude })));
   const data = await prisma.quote.update({ where: { id: quote.id }, data: { deletedAt: null, deleteExpiresAt: null }, include: quoteInclude });
@@ -7003,13 +7480,13 @@ router.post('/quotes/:id/restore', requireRole(...adminRoles), validate(idParam,
   sendData(res, normalize(data));
 }));
 
-router.post('/quotes/:id/expire', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/expire', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const data = await transitionQuote(req, 'EXPIRED', 'expiredAt', 'Quote expired');
   await audit(req, 'EXPIRE', 'Quote', data.id);
   sendData(res, normalize(data));
 }));
 
-router.post('/quotes/:id/line-items', requireRole(...adminRoles), validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
+router.post('/quotes/:id/line-items', validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
   if (req.body.serviceId) await requireService(req, req.body.serviceId);
@@ -7021,7 +7498,7 @@ router.post('/quotes/:id/line-items', requireRole(...adminRoles), validate(idPar
   sendData(res, normalize(data), 201);
 }));
 
-router.patch('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/quotes/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
   await requireQuoteLineItem(req, quote.id, req.params.lineItemId);
@@ -7036,7 +7513,7 @@ router.patch('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), v
   sendData(res, normalize(data));
 }));
 
-router.delete('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
+router.delete('/quotes/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
   const quote = await requireQuote(req, req.params.id);
   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
   await requireQuoteLineItem(req, quote.id, req.params.lineItemId);
@@ -7070,16 +7547,16 @@ function fallbackInvoiceLines(body) {
   return [];
 }
 
-router.get('/invoices', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+router.get('/invoices', asyncHandler(async (req, res) => {
   const [company, result] = await Promise.all([
     getCompanyWithBranding(req.companyId),
-    paged(prisma.invoice, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
+    paged(prisma.invoice, req, { where: { companyId: req.companyId, ...financeRecordScopeWhere(req), ...branchFilterFromQuery(req) }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
   ]);
   const finance = await getCompanyFinanceSettings(req.companyId);
   sendData(res, normalize(result.data.map((item) => attachLocalization({ ...item, branding: publicBranding(company) }, finance))), 200, result.meta);
 }));
 
-router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), asyncHandler(async (req, res) => {
+router.post('/invoices', validate(invoiceSchema), asyncHandler(async (req, res) => {
   if (req.body.branchId) await requireBranch(req, req.body.branchId);
   await validateInvoiceRelations(req, req.body);
   if (req.body.quoteId) await requireQuote(req, req.body.quoteId);
@@ -7100,13 +7577,13 @@ router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), as
   sendData(res, normalize(attachLocalization(data, finance)), 201);
 }));
 
-router.get('/invoices/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/invoices/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireInvoice(req, req.params.id);
   const data = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: invoiceInclude });
   sendData(res, normalize(attachLocalization(data, await getCompanyFinanceSettings(req.companyId))));
 }));
 
-router.patch('/invoices/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(invoiceSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/invoices/:id', validate(idParam, 'params'), validate(invoiceSchema.partial()), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
   await validateInvoiceRelations(req, req.body);
@@ -7158,7 +7635,7 @@ async function transitionInvoice(req, status, stamp, note) {
   });
 }
 
-router.post('/invoices/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/send', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const before = await requireInvoice(req, req.params.id);
   const data = await transitionInvoice(req, 'SENT', 'sentAt', 'Invoice sent');
   await audit(req, 'SEND', 'Invoice', data.id);
@@ -7166,7 +7643,7 @@ router.post('/invoices/:id/send', requireRole(...adminRoles), validate(idParam, 
   sendData(res, normalize(data));
 }));
 
-router.post('/invoices/:id/void', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/void', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   const approval = await requireApprovalOrProceed(req, { eventType: 'INVOICE_VOID', actionKey: 'invoice.void', entityType: 'Invoice', entityId: invoice.id, branchId: invoice.branchId, amount: invoice.total || invoice.amount, reason: req.body && req.body.reason });
   if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
@@ -7175,7 +7652,7 @@ router.post('/invoices/:id/void', requireRole(...adminRoles), validate(idParam, 
   sendData(res, normalize(data));
 }));
 
-router.post('/invoices/:id/mark-paid', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/mark-paid', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID') return sendData(res, normalize(await prisma.invoice.findFirst({ where: { id: invoice.id, companyId: req.companyId }, include: invoiceInclude })));
   const amountDue = invoice.balanceDue || invoice.total || invoice.amount;
@@ -7187,7 +7664,7 @@ router.post('/invoices/:id/mark-paid', requireRole(...adminRoles), validate(idPa
   sendData(res, normalize(data));
 }));
 
-router.post('/invoices/:id/line-items', requireRole(...adminRoles), validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/line-items', validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
   if (req.body.serviceId) await requireService(req, req.body.serviceId);
@@ -7199,7 +7676,7 @@ router.post('/invoices/:id/line-items', requireRole(...adminRoles), validate(idP
   sendData(res, normalize(data), 201);
 }));
 
-router.patch('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/invoices/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
   await requireInvoiceLineItem(req, invoice.id, req.params.lineItemId);
@@ -7214,7 +7691,7 @@ router.patch('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles),
   sendData(res, normalize(data));
 }));
 
-router.delete('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
+router.delete('/invoices/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
   await requireInvoiceLineItem(req, invoice.id, req.params.lineItemId);
@@ -7228,13 +7705,13 @@ router.delete('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles)
 
 const paymentSchema = z.object({ amount: amount, method: z.enum(paymentMethodValues).default('OTHER'), status: z.enum(['PENDING', 'CONFIRMED']).optional(), reference: z.string().trim().max(200).optional(), receivedAt: optionalDate, notes: z.string().trim().max(1000).optional() });
 
-router.get('/invoices/:id/payments', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/invoices/:id/payments', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireInvoice(req, req.params.id);
   const data = await prisma.payment.findMany({ where: { companyId: req.companyId, invoiceId: req.params.id }, orderBy: { createdAt: 'desc' } });
   sendData(res, normalize(data));
 }));
 
-router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentSchema), asyncHandler(async (req, res) => {
+router.post('/invoices/:id/payments', validate(idParam, 'params'), validate(paymentSchema), asyncHandler(async (req, res) => {
   const invoice = await requireInvoice(req, req.params.id);
   if (invoice.status === 'PAID') throw new AppError(409, 'Invoice is already paid');
   await assertPaymentMethodAllowed(req.companyId, req.body.method);
@@ -7253,7 +7730,7 @@ router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idPar
   sendData(res, normalize(data), 201);
 }));
 
-router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/payments/:id/confirm', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const payment = await prisma.payment.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
   if (!payment) throw notFound('Payment not found');
   const invoice = await requireInvoice(req, payment.invoiceId);
@@ -7273,7 +7750,7 @@ router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idPara
   sendData(res, normalize(data));
 }));
 
-router.post('/payments/:id/refund', requireRole(...adminRoles), validate(idParam, 'params'), validate(refundSchema), asyncHandler(async (req, res) => {
+router.post('/payments/:id/refund', validate(idParam, 'params'), validate(refundSchema), asyncHandler(async (req, res) => {
   const payment = await prisma.payment.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
   if (!payment) throw notFound('Payment not found');
   if (payment.status === 'REFUNDED') throw new AppError(409, 'Payment is already refunded');
@@ -7310,7 +7787,7 @@ router.get('/receipts/:id', requireRole(...adminRoles), validate(idParam, 'param
   sendData(res, normalize({ ...receipt, company: profileResponse(company), branding: publicBranding(company) }));
 }));
 
-router.get('/invoices/:id/receipts', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/invoices/:id/receipts', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   await requireInvoice(req, req.params.id);
   const data = await prisma.receipt.findMany({ where: { companyId: req.companyId, invoiceId: req.params.id }, include: { payment: true }, orderBy: { issuedAt: 'desc' } });
   sendData(res, normalize(data));
@@ -7320,7 +7797,7 @@ function scheduleWhere(req, extra = {}) {
   return {
     companyId: req.companyId,
     status: { in: activeScheduleStatuses },
-    ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}),
+    ...scheduleScopeWhere(req),
     ...extra
   };
 }
@@ -7347,7 +7824,7 @@ router.patch('/company/scheduling-settings', requireRole(...adminRoles), validat
   sendData(res, normalize(data));
 }));
 
-router.post('/schedule/check-conflicts', requireRole(...adminRoles), validate(conflictCheckSchema), asyncHandler(async (req, res) => {
+router.post('/schedule/check-conflicts', validate(conflictCheckSchema), asyncHandler(async (req, res) => {
   const result = await checkScheduleConflicts(req, req.body);
   sendData(res, normalize({ hasConflict: result.hasConflict, conflicts: result.conflicts }));
 }));
@@ -7374,7 +7851,7 @@ router.get('/schedule', asyncHandler(async (req, res) => {
   sendData(res, normalize(result.data), 200, result.meta);
 }));
 
-router.post('/schedule', requireRole(...adminRoles), validate(scheduleWriteSchema), asyncHandler(async (req, res) => {
+router.post('/schedule', validate(scheduleWriteSchema), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.body.jobId, { assignedOnly: false });
   await requireWorker(req, req.body.workerId);
   const data = await scheduleJob(req, job, req.body);
@@ -7387,7 +7864,7 @@ router.get('/schedule/:id', validate(idParam, 'params'), asyncHandler(async (req
   sendData(res, normalize(await requireScheduleItem(req, req.params.id)));
 }));
 
-router.patch('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(schedulePatchSchema), asyncHandler(async (req, res) => {
+router.patch('/schedule/:id', validate(idParam, 'params'), validate(schedulePatchSchema), asyncHandler(async (req, res) => {
   const existing = await requireScheduleItem(req, req.params.id);
   const job = await requireJob(req, existing.jobId, { assignedOnly: false });
   if (req.body.status && ['CANCELLED', 'COMPLETED'].includes(req.body.status)) {
@@ -7402,7 +7879,7 @@ router.patch('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'par
   sendData(res, normalize(data.schedule));
 }));
 
-router.delete('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.delete('/schedule/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const existing = await requireScheduleItem(req, req.params.id);
   const data = await prisma.$transaction(async (tx) => {
     const schedule = await tx.scheduleItem.update({ where: { id: existing.id }, data: { status: 'CANCELLED', conflictStatus: 'CLEAR', updatedById: req.user.id }, include: scheduleInclude });
@@ -7414,7 +7891,7 @@ router.delete('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'pa
   sendData(res, normalize(data));
 }));
 
-router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
+router.post('/jobs/:id/schedule', validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.params.id, { assignedOnly: false });
   await ensureQuoteDepositBeforeScheduling(req, job);
   const data = await scheduleJob(req, job, req.body);
@@ -7423,7 +7900,7 @@ router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 
   sendData(res, normalize(data.schedule), 201);
 }));
 
-router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
+router.post('/jobs/:id/reschedule', validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.params.id, { assignedOnly: false });
   await ensureQuoteDepositBeforeScheduling(req, job);
   const existing = await prisma.scheduleItem.findFirst({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } }, orderBy: { startsAt: 'desc' } });
@@ -7434,7 +7911,7 @@ router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam
   sendData(res, normalize(data.schedule), 201);
 }));
 
-router.post('/jobs/:id/unschedule', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.post('/jobs/:id/unschedule', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const job = await requireJob(req, req.params.id, { assignedOnly: false });
   const active = await prisma.scheduleItem.findMany({ where: { companyId: req.companyId, jobId: job.id, status: { notIn: ['CANCELLED', 'COMPLETED'] } } });
   const data = await prisma.$transaction(async (tx) => {
@@ -7445,13 +7922,13 @@ router.post('/jobs/:id/unschedule', requireRole(...adminRoles), validate(idParam
   sendData(res, normalize(data));
 }));
 
-router.get('/workers/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/workers/:id/availability', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const worker = await requireWorker(req, req.params.id);
   const data = await prisma.workerAvailability.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
   sendData(res, normalize(data));
 }));
 
-router.put('/workers/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
+router.put('/workers/:id/availability', validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
   const worker = await requireWorker(req, req.params.id);
   const data = await prisma.$transaction(async (tx) => {
     await tx.workerAvailability.deleteMany({ where: { companyId: req.companyId, workerId: worker.id } });
@@ -7462,13 +7939,13 @@ router.put('/workers/:id/availability', requireRole(...adminRoles), validate(idP
   sendData(res, normalize(data));
 }));
 
-router.get('/workers/:id/time-off', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
+router.get('/workers/:id/time-off', validate(idParam, 'params'), asyncHandler(async (req, res) => {
   const worker = await requireWorker(req, req.params.id);
   const data = await prisma.workerTimeOff.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: { startsAt: 'asc' } });
   sendData(res, normalize(data));
 }));
 
-router.post('/workers/:id/time-off', requireRole(...adminRoles), validate(idParam, 'params'), validate(timeOffSchema), asyncHandler(async (req, res) => {
+router.post('/workers/:id/time-off', validate(idParam, 'params'), validate(timeOffSchema), asyncHandler(async (req, res) => {
   const worker = await requireWorker(req, req.params.id);
   if (req.body.endsAt <= req.body.startsAt) throw new AppError(400, 'Time off end must be after start');
   const data = await prisma.workerTimeOff.create({ data: { ...req.body, status: req.body.status || 'APPROVED', companyId: req.companyId, workerId: worker.id } });
@@ -7476,7 +7953,7 @@ router.post('/workers/:id/time-off', requireRole(...adminRoles), validate(idPara
   sendData(res, normalize(data), 201);
 }));
 
-router.patch('/workers/:id/time-off/:timeOffId', requireRole(...adminRoles), validate(z.object({ id: z.string().min(1), timeOffId: z.string().min(1) }), 'params'), validate(timeOffSchema.partial()), asyncHandler(async (req, res) => {
+router.patch('/workers/:id/time-off/:timeOffId', validate(z.object({ id: z.string().min(1), timeOffId: z.string().min(1) }), 'params'), validate(timeOffSchema.partial()), asyncHandler(async (req, res) => {
   const worker = await requireWorker(req, req.params.id);
   const existing = await prisma.workerTimeOff.findFirst({ where: { id: req.params.timeOffId, companyId: req.companyId, workerId: worker.id } });
   if (!existing) throw notFound('Time off not found');
@@ -7585,7 +8062,7 @@ router.post('/worker-location', requireRole('WORKER'), validate(workerLocationSc
 }));
 router.get('/worker-location/latest', asyncHandler(async (req, res) => {
   const pageInfo = pagination(req);
-  const where = { companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) };
+  const where = { companyId: req.companyId, ...workerLocationScopeWhere(req) };
   const locations = await prisma.workerLocation.findMany({
     where,
     orderBy: { recordedAt: 'desc' },

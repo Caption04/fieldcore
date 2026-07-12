@@ -1,26 +1,94 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Security Center · FieldCore</title><link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1"><script defer src="assets/layout.js"></script><script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script></head>
-  <body data-page="security-center" data-title="Security Center">
-    <section class="page">
-      <div class="hero-row"><div class="hero-copy"><p class="eyebrow">Owner / admin controls</p><h2>Security Center</h2><p>This is for the business owner or admin — not developers. Use it to control sign-in rules, check active sessions, and review security events.</p></div><span class="api-status" data-status>Loading...</span></div>
-      <section class="panel security-guide">
-        <div class="panel-head"><h3>What this page is for</h3><span class="badge blue">Admin</span></div>
-        <div class="compact-guide-grid">
-          <article class="mini-card"><strong>Sign-in policy</strong><span>Choose password length, session length, account lockout, and whether admins need 2FA.</span></article>
-          <article class="mini-card"><strong>Active sessions</strong><span>See which browsers/devices are signed in so stale access can be revoked later.</span></article>
-          <article class="mini-card"><strong>Audit trail</strong><span>Review important account/security events without exposing secrets.</span></article>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Account Security · FieldCore</title>
+    <link rel="stylesheet" href="assets/app.css?v=account-security-2">
+    <script defer src="assets/ui-feedback.js"></script>
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/enterprise-pages.js?v=account-security-2"></script>
+  </head>
+  <body data-page="security-center" data-title="Account Security">
+    <section class="page security-page">
+      <div class="hero-row security-hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Your account</p>
+          <h2>Account security</h2>
+          <p>Manage your password, two-step verification, and signed-in devices.</p>
+        </div>
+      </div>
+
+      <section class="grid two-column security-primary-grid">
+        <article class="panel security-simple-panel">
+          <div class="panel-head">
+            <div>
+              <h3>Password</h3>
+              <p class="muted security-panel-copy">Use a strong password that you do not use elsewhere.</p>
+            </div>
+            <button class="secondary-button compact" type="button" data-password-toggle>Change password</button>
+          </div>
+
+          <form class="security-password-form" data-password-form hidden>
+            <div class="field">
+              <label for="securityCurrentPassword">Current password</label>
+              <input id="securityCurrentPassword" name="currentPassword" type="password" autocomplete="current-password" required>
+            </div>
+            <div class="field">
+              <label for="securityNewPassword">New password</label>
+              <input id="securityNewPassword" name="newPassword" type="password" autocomplete="new-password" minlength="12" required>
+            </div>
+            <div class="field">
+              <label for="securityConfirmPassword">Confirm new password</label>
+              <input id="securityConfirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required>
+            </div>
+            <p class="muted security-password-note">Changing your password signs you out on all devices.</p>
+            <div class="form-actions">
+              <button class="primary-button compact" type="submit">Save new password</button>
+              <button class="secondary-button compact" type="button" data-password-cancel>Cancel</button>
+            </div>
+            <p class="fc-form-error" data-password-message hidden></p>
+          </form>
+        </article>
+
+        <article class="panel security-simple-panel">
+          <div class="panel-head">
+            <div>
+              <h3>Two-step verification</h3>
+              <p class="muted security-panel-copy">Add an extra sign-in step to protect your account.</p>
+            </div>
+            <button class="primary-button compact" type="button" data-enable-2fa>Set up 2FA</button>
+          </div>
+          <div data-2fa-output class="security-action-result" hidden></div>
+        </article>
+      </section>
+
+      <section class="panel security-simple-panel security-devices-panel">
+        <div class="panel-head">
+          <div>
+            <h3>Signed-in devices</h3>
+            <p class="muted security-panel-copy">Review the devices using your account.</p>
+          </div>
+          <button class="secondary-button compact" type="button" data-load-sessions>Refresh</button>
+        </div>
+        <div data-sessions class="security-session-list"></div>
+      </section>
+
+      <section class="panel security-activity-panel">
+        <div class="panel-head">
+          <div>
+            <h3>Recent security activity</h3>
+            <p class="muted security-panel-copy">Important sign-ins and account changes appear here.</p>
+          </div>
+          <button class="secondary-button compact" type="button" data-load-events>Refresh</button>
+        </div>
+        <div class="table-wrap security-activity-table-wrap">
+          <table class="data-table security-activity-table">
+            <thead><tr><th>Date</th><th>Activity</th></tr></thead>
+            <tbody data-events></tbody>
+          </table>
         </div>
       </section>
-      <section class="grid two-column">
-        <article class="panel"><div class="panel-head"><h3>Security settings</h3><span class="badge gray">Policy</span></div><p class="muted">Password, lockout, 2FA and retention policy defaults.</p><form data-security-form class="form-grid compact-form"><div class="field"><label>Session length hours</label><input name="sessionLengthHours" type="number" min="1" max="24" value="8"></div><div class="field"><label>Minimum password length</label><input name="passwordMinimum" type="number" min="8" max="128" value="8"></div><div class="field"><label>Lockout threshold</label><input name="failedLoginLockoutThreshold" type="number" min="3" max="20" value="5"></div><div class="field"><label>Lockout minutes</label><input name="lockoutDurationMinutes" type="number" min="5" max="1440" value="30"></div><label class="checkbox-field span-2"><input name="twoFactorRequired" type="checkbox"> Require 2FA for owner/admin users</label><div class="form-actions span-2"><button class="primary-button" type="submit">Save settings</button></div></form></article>
-        <article class="panel"><div class="panel-head"><h3>My sessions</h3><button class="secondary-button compact" type="button" data-load-sessions>Refresh sessions</button></div><p class="muted">Revoke stale devices immediately after a role or password change.</p><div data-sessions class="settings-list"></div></article>
-      </section>
-      <section class="grid two-column">
-        <article class="panel"><div class="panel-head"><h3>2FA setup</h3><button class="secondary-button compact" type="button" data-enable-2fa>Enable 2FA</button></div><p class="muted">For production this should show a QR code/recovery codes. During QA it confirms the backend 2FA setup route works.</p><pre data-2fa-output class="code-block"></pre></article>
-        <article class="panel"><div class="panel-head"><h3>System health</h3><button class="secondary-button compact" type="button" data-load-status>Refresh status</button></div><p class="muted">Admin-safe health summary. It should never display API keys, tokens, or private credentials.</p><pre data-status-output class="code-block"></pre></article>
-      </section>
-      <section class="panel"><div class="panel-head"><h3>Security events</h3><button class="secondary-button compact" type="button" data-load-events>Load events</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>Severity</th><th>Event</th><th>User</th></tr></thead><tbody data-events></tbody></table></div></section>
     </section>
   </body>
 </html>

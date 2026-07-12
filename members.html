@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Company Members | FieldCore</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/ui-feedback.js"></script>
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/api.js"></script>
+    <script defer src="assets/members.js"></script>
+  </head>
+  <body data-page="members" data-title="Company Members">
+    <section class="page members-page">
+      <div class="hero-row">
+        <div class="hero-copy">
+          <span class="eyebrow">Your team</span>
+          <h2>Company members</h2>
+          <p>Invite staff and choose what they can use.</p>
+        </div>
+        <button class="primary-button" type="button" data-open-invite>Invite member</button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" type="button" data-member-view="active">Members</button>
+        <button class="tab" type="button" data-member-view="invited">Invitations</button>
+        <button class="tab" type="button" data-member-view="roles">Roles</button>
+        <button class="tab" type="button" data-member-view="teams">Teams</button>
+      </div>
+
+      <section class="table-card members-table-card" data-member-panel="active">
+        <div class="panel-head card"><h3>Members</h3><span class="badge gray" data-member-count>0</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Job title</th><th>Role</th><th>Access</th><th>Status</th><th>Last activity</th><th>Actions</th></tr></thead><tbody data-members-body></tbody></table></div>
+      </section>
+
+      <section class="table-card members-table-card" data-member-panel="invited" hidden>
+        <div class="panel-head card"><h3>Pending invitations</h3><span class="badge gray" data-invite-count>0</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Email</th><th>Job title</th><th>Role</th><th>Access</th><th>Expires</th><th>Actions</th></tr></thead><tbody data-invites-body></tbody></table></div>
+      </section>
+
+      <section class="table-card" data-member-panel="roles" hidden>
+        <div class="panel-head card">
+          <div><h3>Saved roles</h3><p class="muted">Roles created by your company appear here.</p></div>
+          <button class="secondary-button compact" type="button" data-create-role>Create role</button>
+        </div>
+        <div class="role-template-grid" data-role-template-grid></div>
+      </section>
+
+      <section class="table-card" data-member-panel="teams" hidden>
+        <div class="panel-head card">
+          <div><h3>Teams</h3><p class="muted">Group workers who share jobs or a supervisor.</p></div>
+          <button class="secondary-button compact" type="button" data-create-team>Create team</button>
+        </div>
+        <div class="role-template-grid" data-team-grid></div>
+      </section>
+    </section>
+  </body>
+</html>

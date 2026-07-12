@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Choose your plan | FieldCore</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/ui-feedback.js"></script>
+    <script defer src="assets/billing.js"></script>
+  </head>
+  <body class="billing-page onboarding-billing-page">
+    <main class="billing-page-shell" data-billing-app="onboarding">
+      <a class="brand billing-brand" href="plan-selection.html"><span class="brand-mark">FC</span><span class="brand-name">FieldCore</span></a>
+      <header class="pricing-hero"><span class="eyebrow">Workspace created</span><h1>Choose the plan that fits your team</h1><p>Select a monthly or annual plan. This local QA flow records your choice without processing a real payment.</p></header>
+      <div class="billing-toggle" role="group" aria-label="Billing interval"><button class="active" type="button" data-billing-interval="MONTHLY">Monthly</button><button type="button" data-billing-interval="ANNUAL">Annual <span data-annual-saving>Save</span></button></div>
+      <section class="pricing-grid" data-plan-cards aria-live="polite"></section>
+    </main>
+  </body>
+</html>

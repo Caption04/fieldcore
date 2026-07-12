@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
+const { seedSystemRoleTemplates } = require('../src/services/accessControl.service');
 
 const prisma = new PrismaClient();
 
@@ -158,7 +159,10 @@ async function seedCompany(config, passwordHash, includeSampleData) {
       taxNumber: config.taxNumber,
       address: config.address,
       phone: config.phone,
-      email: config.supportEmail
+      email: config.supportEmail,
+      market: config.market,
+      verticalKey: 'generic',
+      onboardingState: 'COMPLETED'
     },
     create: {
       id: config.companyId,
@@ -169,7 +173,10 @@ async function seedCompany(config, passwordHash, includeSampleData) {
       taxNumber: config.taxNumber,
       address: config.address,
       phone: config.phone,
-      email: config.supportEmail
+      email: config.supportEmail,
+      market: config.market,
+      verticalKey: 'generic',
+      onboardingState: 'COMPLETED'
     }
   });
 
@@ -270,9 +277,15 @@ async function seedCompany(config, passwordHash, includeSampleData) {
     create: { companyId: company.id, name: config.branch.name, code: config.branch.code, country: config.branch.country, city: config.branch.city, timezone: config.branch.timezone, active: true }
   });
 
+  const ownerTemplate = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: null, key: 'owner', verticalKey: 'generic' } });
+  const adminTemplate = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: null, key: 'general-manager', verticalKey: 'generic' } });
+  const workerTemplate = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: null, key: 'field-worker', verticalKey: 'generic' } });
   const owner = await upsertUser({ email: config.users.owner, name: config.people.owner, role: 'OWNER', companyId: company.id, passwordHash });
-  await upsertUser({ email: config.users.admin, name: config.people.admin, role: 'ADMIN', companyId: company.id, passwordHash });
+  await prisma.user.update({ where: { id: owner.id }, data: { jobTitle: 'Company Owner', roleTemplateId: ownerTemplate && ownerTemplate.id, defaultScopeType: 'COMPANY' } });
+  const adminUser = await upsertUser({ email: config.users.admin, name: config.people.admin, role: 'ADMIN', companyId: company.id, passwordHash });
+  await prisma.user.update({ where: { id: adminUser.id }, data: { jobTitle: 'General Manager', roleTemplateId: adminTemplate && adminTemplate.id, defaultScopeType: 'COMPANY' } });
   const workerUser = await upsertUser({ email: config.users.worker, name: config.people.worker, role: 'WORKER', companyId: company.id, passwordHash });
+  await prisma.user.update({ where: { id: workerUser.id }, data: { jobTitle: 'Field Technician', roleTemplateId: workerTemplate && workerTemplate.id, defaultScopeType: 'SELF' } });
 
   const role = await prisma.workerRole.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Field Technician' } },
@@ -342,6 +355,7 @@ async function main() {
   const includeSampleData = boolEnv('FIELDCORE_SEED_SAMPLE_DATA', false);
 
   await seedPlans();
+  await seedSystemRoleTemplates(prisma);
   const seeded = [];
   for (const region of regions) seeded.push(await seedCompany(REGION_CONFIGS[region], hash, includeSampleData));
 

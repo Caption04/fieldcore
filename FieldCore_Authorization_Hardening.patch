@@ -1,0 +1,1982 @@
+diff --git a/assets/layout.js b/assets/layout.js
+index d37bdf6..e687e34 100644
+--- a/assets/layout.js
++++ b/assets/layout.js
+@@ -88,11 +88,15 @@
+   }
+ 
+   function nav(current, role, permissions) {
++    const permissionSet = new Set(permissions || []);
+     if (role === 'WORKER') {
+-      return normalizePages(workerPages).map((page) => navLink(page, current)).join('');
++      const combined = new Map([...normalizePages(workerPages), ...normalizePages(adminPages)].map((page) => [page[0], page]));
++      return Array.from(combined.values())
++        .filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]))
++        .map((page) => navLink(page, current))
++        .join('');
+     }
+ 
+-    const permissionSet = new Set(permissions || []);
+     const normalized = normalizePages(adminPages).filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]) || !role);
+     const byKey = new Map(normalized.map((page) => [page[0], page]));
+     return adminNavGroups.map(([title, keys]) => {
+@@ -177,7 +181,7 @@
+       </button>
+       <div class="account-dropdown" role="menu" data-account-dropdown hidden>
+         <a role="menuitem" href="settings.html">Settings</a>
+-        <a role="menuitem" href="subscription.html" data-owner-only hidden>FieldCore Subscription</a>
++        <a role="menuitem" href="subscription.html" data-required-permission="subscription.view" hidden>FieldCore Subscription</a>
+         <a role="menuitem" href="security-center.html" data-required-permission="security.view" hidden>Security</a>
+         <button role="menuitem" type="button" data-logout>Log out</button>
+       </div>
+diff --git a/assets/members.js b/assets/members.js
+index 3ce8ecb..8ca8b7d 100644
+--- a/assets/members.js
++++ b/assets/members.js
+@@ -1,13 +1,99 @@
+ (function () {
+   if (document.body.dataset.page !== 'members') return;
+-  let data = { members: [], invitations: [], templates: [], permissions: { groups: {} }, branches: [], teams: [] };
++
++  let data = { currentUser: null, members: [], invitations: [], templates: [], permissions: { keys: [], groups: {} }, branches: [], teams: [] };
+   const escapeHtml = (value) => String(value == null ? '' : value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+-  async function api(path, options) { const response = await fetch('/api' + path, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...options }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.error && payload.error.message || `HTTP ${response.status}`); return payload.data; }
+   const formatDate = (value) => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value)) : '—';
++
++  async function api(path, options = {}) {
++    const response = await fetch('/api' + path, { credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
++    const payload = await response.json().catch(() => ({}));
++    if (!response.ok) throw new Error(payload.error && payload.error.message || `HTTP ${response.status}`);
++    return payload.data;
++  }
++
++  function selectedPermissions(root) {
++    return Array.from(root.querySelectorAll('input[name="permissions"]:checked')).map((input) => input.value);
++  }
++
++  function permissionEditor(selected = []) {
++    const selectedSet = new Set(selected);
++    return Object.entries(data.permissions.groups || {}).map(([group, keys]) => `<fieldset class="permission-group"><legend>${escapeHtml(group)} <button type="button" data-select-category>Select all</button></legend>${keys.map((key) => `<label><input type="checkbox" name="permissions" value="${escapeHtml(key)}"${selectedSet.has(key) ? ' checked' : ''}> ${escapeHtml(key.split('.').slice(1).join(' ').replace(/\b\w/g, (c) => c.toUpperCase()))}</label>`).join('')}</fieldset>`).join('');
++  }
++
++  function bindCategoryButtons(root) {
++    root.querySelectorAll('[data-select-category]').forEach((button) => {
++      button.onclick = () => {
++        const boxes = Array.from(button.closest('fieldset').querySelectorAll('input[type="checkbox"]'));
++        const all = boxes.every((box) => box.checked);
++        boxes.forEach((box) => { box.checked = !all; });
++      };
++    });
++  }
++
++  function scopePickerHtml(type, selectedIds = []) {
++    const items = type === 'BRANCH' ? data.branches : type === 'TEAM' ? data.teams : [];
++    if (!items.length) return '<label>Scope selection</label><select disabled><option>No selection required</option></select>';
++    const selected = new Set(selectedIds);
++    return `<label>${type === 'BRANCH' ? 'Branches' : 'Teams'}</label><select name="scopeIds" multiple>${items.map((item) => `<option value="${escapeHtml(item.id)}"${selected.has(item.id) ? ' selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select>`;
++  }
++
++  function bindAccessForm(modal, form, initial = {}) {
++    const permissionWrap = modal.querySelector('[data-permission-editor]');
++    const fullAccess = form.querySelector('[name="fullAccess"]');
++    const scopeWrap = modal.querySelector('[data-scope-picker]');
++
++    function setPermissions(permissions) {
++      permissionWrap.innerHTML = permissionEditor(permissions);
++      bindCategoryButtons(permissionWrap);
++    }
++
++    function updateScope(selectedIds = []) {
++      scopeWrap.innerHTML = scopePickerHtml(form.scopeType.value, selectedIds);
++    }
++
++    form.roleTemplateId.onchange = () => {
++      const template = data.templates.find((item) => item.id === form.roleTemplateId.value);
++      if (!template) return;
++      form.scopeType.value = template.defaultScopeType;
++      fullAccess.checked = false;
++      setPermissions(template.defaultPermissions || []);
++      updateScope([]);
++    };
++    form.scopeType.onchange = () => updateScope([]);
++    fullAccess.onchange = () => {
++      const boxes = permissionWrap.querySelectorAll('input[name="permissions"]');
++      boxes.forEach((box) => { box.checked = fullAccess.checked || box.checked; box.disabled = fullAccess.checked; });
++    };
++
++    setPermissions(initial.permissions || []);
++    updateScope(initial.scopeIds || []);
++    if (initial.fullAccess) {
++      fullAccess.checked = true;
++      fullAccess.dispatchEvent(new Event('change'));
++    }
++  }
++
++  function can(permission) { return new Set(data.currentUser && data.currentUser.effectivePermissions || []).has(permission); }
++
+   function renderMembers() {
+     document.querySelector('[data-member-count]').textContent = data.members.length;
+-    document.querySelector('[data-members-body]').innerHTML = data.members.map((member) => `<tr><td><strong>${escapeHtml(member.name)}</strong></td><td>${escapeHtml(member.email)}</td><td>${escapeHtml(member.jobTitle || '—')}</td><td>${escapeHtml(member.roleTemplate && member.roleTemplate.name || 'Legacy access')}</td><td><span class="badge gray">${escapeHtml(member.systemRole || member.role)}</span></td><td>${escapeHtml(member.defaultScopeType || 'COMPANY')}</td><td><span class="badge ${member.disabledAt ? 'orange' : 'green'}">${member.disabledAt ? 'Disabled' : 'Active'}</span></td><td>${escapeHtml(formatDate(member.lastActivityAt))}</td></tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>';
++    document.querySelector('[data-members-body]').innerHTML = data.members.map((member) => `<tr>
++      <td><strong>${escapeHtml(member.name)}</strong></td>
++      <td>${escapeHtml(member.email)}</td>
++      <td>${escapeHtml(member.jobTitle || '—')}</td>
++      <td>${escapeHtml(member.roleTemplate && member.roleTemplate.name || 'Legacy access')}</td>
++      <td><span class="badge gray">${escapeHtml(member.systemRole || member.role)}</span></td>
++      <td>${escapeHtml(member.accessScope && member.accessScope.type || member.defaultScopeType || 'COMPANY')}</td>
++      <td><span class="badge ${member.disabledAt ? 'orange' : 'green'}">${member.disabledAt ? 'Disabled' : 'Active'}</span></td>
++      <td>${escapeHtml(formatDate(member.lastActivityAt))}</td>
++      <td><div class="row-actions">${member.role === 'OWNER' ? '<span class="muted">Owner protected</span>' : `${can('permissions.manage') ? `<button class="secondary-button compact" type="button" data-edit-member="${escapeHtml(member.id)}">Edit access</button>` : ''}${can('members.manage') ? `<button class="${member.disabledAt ? 'secondary-button' : 'danger-button'} compact" type="button" data-toggle-member="${escapeHtml(member.id)}">${member.disabledAt ? 'Reactivate' : 'Disable'}</button>` : ''}`}</div></td>
++    </tr>`).join('') || '<tr><td colspan="9">No members found.</td></tr>';
++
++    document.querySelectorAll('[data-edit-member]').forEach((button) => button.onclick = () => openMember(data.members.find((member) => member.id === button.dataset.editMember)));
++    document.querySelectorAll('[data-toggle-member]').forEach((button) => button.onclick = () => toggleMember(data.members.find((member) => member.id === button.dataset.toggleMember)));
+   }
++
+   function renderInvites() {
+     const pending = data.invitations.filter((item) => item.status === 'PENDING');
+     document.querySelector('[data-invite-count]').textContent = pending.length;
+@@ -15,26 +101,131 @@
+     document.querySelectorAll('[data-resend]').forEach((button) => button.onclick = () => act(`/member-invitations/${button.dataset.resend}/resend`, 'Invitation resent.'));
+     document.querySelectorAll('[data-revoke]').forEach((button) => button.onclick = () => act(`/member-invitations/${button.dataset.revoke}/revoke`, 'Invitation revoked.'));
+   }
++
+   function renderTemplates() {
+-    document.querySelector('[data-role-template-grid]').innerHTML = data.templates.map((template) => `<article class="mini-card role-template-card"><div><strong>${escapeHtml(template.name)}</strong><span>${escapeHtml(template.description || '')}</span></div><div><span class="badge ${template.isCustom ? 'blue' : 'gray'}">${template.isCustom ? 'Company' : 'FieldCore'}</span><small>${(template.defaultPermissions || []).length} permissions · ${escapeHtml(template.defaultScopeType)}</small></div></article>`).join('');
++    document.querySelector('[data-role-template-grid]').innerHTML = data.templates.map((template) => `<article class="mini-card role-template-card"><div><strong>${escapeHtml(template.name)}</strong><span>${escapeHtml(template.description || '')}</span></div><div><span class="badge ${template.isCustom ? 'blue' : 'gray'}">${template.isCustom ? 'Company' : 'FieldCore'}</span><small>${(template.defaultPermissions || []).length} permissions · ${escapeHtml(template.defaultScopeType)} · ${escapeHtml(template.systemRole)}</small></div></article>`).join('');
++  }
++
++  function renderTeams() {
++    const target = document.querySelector('[data-team-grid]');
++    if (!target) return;
++    target.innerHTML = data.teams.map((team) => `<article class="mini-card role-template-card"><div><strong>${escapeHtml(team.name)}</strong><span>${escapeHtml(team.description || 'No description')}</span></div><div><small>${team.memberships ? team.memberships.length : 0} members${team.branch ? ` · ${escapeHtml(team.branch.name)}` : ''}</small></div></article>`).join('') || '<p class="muted">No teams yet.</p>';
++  }
++
++  async function act(path, success) {
++    try { await api(path, { method: 'POST', body: '{}' }); await load(); window.alert(success); } catch (error) { window.alert(error.message); }
+   }
+-  async function act(path, success) { try { await api(path, { method: 'POST', body: '{}' }); await load(); window.alert(success); } catch (error) { window.alert(error.message); } }
+-  function permissionEditor(selected) {
+-    return Object.entries(data.permissions.groups || {}).map(([group, keys]) => `<fieldset class="permission-group"><legend>${escapeHtml(group)} <button type="button" data-select-category>Select all</button></legend>${keys.map((key) => `<label><input type="checkbox" name="permissions" value="${escapeHtml(key)}"${selected.includes(key) ? ' checked' : ''}> ${escapeHtml(key.split('.').slice(1).join(' ').replace(/\b\w/g, (c) => c.toUpperCase()))}</label>`).join('')}</fieldset>`).join('');
++
++  function modalShell(title, subtitle, body) {
++    const modal = document.createElement('div');
++    modal.className = 'fc-modal';
++    modal.innerHTML = `<div class="fc-dialog member-dialog"><div class="panel-head"><div><h2>${escapeHtml(title)}</h2><p class="muted">${escapeHtml(subtitle)}</p></div><button class="icon-button" type="button" data-close>×</button></div>${body}</div>`;
++    document.body.appendChild(modal);
++    const close = () => modal.remove();
++    modal.querySelectorAll('[data-close]').forEach((button) => button.onclick = close);
++    return { modal, close };
+   }
++
++  function accessFormHtml(submitLabel) {
++    return `<form data-access-form class="form-grid">
++      <div class="field"><label>Job title</label><input name="jobTitle" required></div>
++      <div class="field"><label>Role template</label><select name="roleTemplateId" required><option value="">Choose template</option>${data.templates.filter((item) => item.systemRole !== 'OWNER').map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></div>
++      <label class="checkbox-field span-2"><input name="fullAccess" type="checkbox"> Full access I am allowed to delegate (never grants ownership)</label>
++      <div class="permission-editor span-2" data-permission-editor></div>
++      <div class="field"><label>Access scope</label><select name="scopeType"><option value="COMPANY">Whole company</option><option value="BRANCH">Selected branches</option><option value="TEAM">Selected teams</option><option value="SELF">Self / assigned work</option></select></div>
++      <div class="field" data-scope-picker></div>
++      <p class="fc-form-error span-2" data-form-error hidden></p>
++      <div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">${escapeHtml(submitLabel)}</button></div>
++    </form>`;
++  }
++
++  function readAccessBody(form) {
++    const values = new FormData(form);
++    return {
++      jobTitle: values.get('jobTitle'),
++      roleTemplateId: values.get('roleTemplateId'),
++      fullAccess: values.get('fullAccess') === 'on',
++      permissions: selectedPermissions(form),
++      scopeType: values.get('scopeType'),
++      branchIds: values.get('scopeType') === 'BRANCH' ? values.getAll('scopeIds') : [],
++      teamIds: values.get('scopeType') === 'TEAM' ? values.getAll('scopeIds') : []
++    };
++  }
++
+   function openInvite() {
+-    const modal = document.createElement('div'); modal.className = 'fc-modal';
+-    modal.innerHTML = `<div class="fc-dialog member-dialog"><div class="panel-head"><div><h2>Invite company member</h2><p class="muted">They will receive a secure link and create their own password.</p></div><button class="icon-button" type="button" data-close>×</button></div><form data-invite-member-form class="form-grid"><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Job title</label><input name="jobTitle" required placeholder="e.g. Operations Manager"></div><div class="field span-2"><label>Role template</label><select name="roleTemplateId" required><option value="">Choose template</option>${data.templates.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></div><label class="checkbox-field span-2"><input name="fullAccess" type="checkbox"> Full delegatable access (does not grant ownership)</label><div class="permission-editor span-2" data-permission-editor>${permissionEditor([])}</div><div class="field"><label>Access scope</label><select name="scopeType"><option value="COMPANY">Whole company</option><option value="BRANCH">Selected branches</option><option value="TEAM">Selected teams</option><option value="SELF">Self / assigned work</option></select></div><div class="field" data-scope-picker><label>Scope selection</label><select disabled><option>Choose a scope first</option></select></div><p class="fc-form-error span-2" data-form-error hidden></p><div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Send invitation</button></div></form></div>`;
+-    document.body.appendChild(modal); const form = modal.querySelector('form'); const close = () => modal.remove(); modal.querySelectorAll('[data-close]').forEach((button) => button.onclick = close);
+-    form.roleTemplateId.onchange = () => { const template = data.templates.find((item) => item.id === form.roleTemplateId.value); if (template) { form.scopeType.value = template.defaultScopeType; modal.querySelector('[data-permission-editor]').innerHTML = permissionEditor(template.defaultPermissions || []); bindCategoryButtons(modal); updateScope(); } };
+-    const updateScope = () => { const type = form.scopeType.value; const wrap = modal.querySelector('[data-scope-picker]'); const items = type === 'BRANCH' ? data.branches : type === 'TEAM' ? data.teams : []; wrap.innerHTML = `<label>${type === 'BRANCH' ? 'Branches' : type === 'TEAM' ? 'Teams' : 'Scope'}</label>${items.length ? `<select name="scopeIds" multiple>${items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select>` : '<select disabled><option>No selection required</option></select>'}`; };
+-    form.scopeType.onchange = updateScope; updateScope(); bindCategoryButtons(modal);
+-    form.onsubmit = async (event) => { event.preventDefault(); const values = new FormData(form); const body = { email: values.get('email'), jobTitle: values.get('jobTitle'), roleTemplateId: values.get('roleTemplateId'), fullAccess: values.get('fullAccess') === 'on', permissions: values.getAll('permissions'), scopeType: values.get('scopeType'), branchIds: values.get('scopeType') === 'BRANCH' ? values.getAll('scopeIds') : [], teamIds: values.get('scopeType') === 'TEAM' ? values.getAll('scopeIds') : [] }; try { await api('/member-invitations', { method: 'POST', body: JSON.stringify(body) }); close(); await load(); } catch (error) { const node = modal.querySelector('[data-form-error]'); node.textContent = error.message; node.hidden = false; } };
+-  }
+-  function bindCategoryButtons(root) { root.querySelectorAll('[data-select-category]').forEach((button) => button.onclick = () => { const boxes = button.closest('fieldset').querySelectorAll('input[type="checkbox"]'); const all = Array.from(boxes).every((box) => box.checked); boxes.forEach((box) => { box.checked = !all; }); }); }
+-  function openRole() { const name = window.prompt('Custom role name'); if (!name) return; const description = window.prompt('Short description') || ''; api('/role-templates', { method: 'POST', body: JSON.stringify({ name, description, systemRole: 'ADMIN', permissions: [], defaultScopeType: 'COMPANY' }) }).then(load).catch((error) => window.alert(error.message)); }
+-  async function load() { [data.members, data.invitations, data.templates, data.permissions, data.branches, data.teams] = await Promise.all([api('/members'), api('/member-invitations'), api('/role-templates'), api('/permissions'), api('/branches').catch(() => []), api('/teams').catch(() => [])]); renderMembers(); renderInvites(); renderTemplates(); }
+-  document.querySelector('[data-open-invite]').onclick = openInvite; document.querySelector('[data-create-role]').onclick = openRole;
+-  document.querySelectorAll('[data-member-view]').forEach((tab) => tab.onclick = () => { document.querySelectorAll('[data-member-view]').forEach((item) => item.classList.toggle('active', item === tab)); document.querySelectorAll('[data-member-panel]').forEach((panel) => { panel.hidden = panel.dataset.memberPanel !== tab.dataset.memberView; }); });
+-  load().catch((error) => { document.querySelector('[data-members-body]').innerHTML = `<tr><td colspan="8">${escapeHtml(error.message)}</td></tr>`; });
++    const { modal, close } = modalShell('Invite company member', 'They will receive a secure link and create their own password.', `<form data-invite-member-form class="form-grid"><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Job title</label><input name="jobTitle" required placeholder="e.g. Operations Manager"></div><div class="field span-2"><label>Role template</label><select name="roleTemplateId" required><option value="">Choose template</option>${data.templates.filter((item) => item.systemRole !== 'OWNER').map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></div><label class="checkbox-field span-2"><input name="fullAccess" type="checkbox"> Full access I am allowed to delegate (never grants ownership)</label><div class="permission-editor span-2" data-permission-editor></div><div class="field"><label>Access scope</label><select name="scopeType"><option value="COMPANY">Whole company</option><option value="BRANCH">Selected branches</option><option value="TEAM">Selected teams</option><option value="SELF">Self / assigned work</option></select></div><div class="field" data-scope-picker></div><p class="fc-form-error span-2" data-form-error hidden></p><div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Send invitation</button></div></form>`);
++    const form = modal.querySelector('form');
++    bindAccessForm(modal, form, {});
++    form.onsubmit = async (event) => {
++      event.preventDefault();
++      const body = { email: form.email.value, ...readAccessBody(form) };
++      try { await api('/member-invitations', { method: 'POST', body: JSON.stringify(body) }); close(); await load(); } catch (error) { const node = modal.querySelector('[data-form-error]'); node.textContent = error.message; node.hidden = false; }
++    };
++  }
++
++  function openMember(member) {
++    if (!member || member.role === 'OWNER') return;
++    const { modal, close } = modalShell(`Edit ${member.name}`, 'Change the member’s role template, permissions, and access scope.', accessFormHtml('Save access'));
++    const form = modal.querySelector('form');
++    form.jobTitle.value = member.jobTitle || '';
++    form.roleTemplateId.value = member.roleTemplate && member.roleTemplate.id || '';
++    form.scopeType.value = member.accessScope && member.accessScope.type || member.defaultScopeType || 'COMPANY';
++    const scopeIds = form.scopeType.value === 'BRANCH' ? member.accessScope && member.accessScope.branchIds || [] : form.scopeType.value === 'TEAM' ? member.accessScope && member.accessScope.teamIds || [] : [];
++    bindAccessForm(modal, form, { permissions: member.effectivePermissions || [], scopeIds });
++    form.onsubmit = async (event) => {
++      event.preventDefault();
++      try { await api(`/members/${member.id}/access`, { method: 'PATCH', body: JSON.stringify(readAccessBody(form)) }); close(); await load(); } catch (error) { const node = modal.querySelector('[data-form-error]'); node.textContent = error.message; node.hidden = false; }
++    };
++  }
++
++  async function toggleMember(member) {
++    if (!member || member.role === 'OWNER') return;
++    const disabled = !member.disabledAt;
++    if (!window.confirm(`${disabled ? 'Disable' : 'Reactivate'} ${member.name}?`)) return;
++    try { await api(`/members/${member.id}/status`, { method: 'PATCH', body: JSON.stringify({ disabled }) }); await load(); } catch (error) { window.alert(error.message); }
++  }
++
++  function openRole() {
++    const { modal, close } = modalShell('Create custom role', 'Build a reusable company role from permissions and a default scope.', `<form class="form-grid" data-role-form><div class="field"><label>Role name</label><input name="name" required placeholder="e.g. Night Shift Supervisor"></div><div class="field"><label>System classification</label><select name="systemRole"><option value="ADMIN">Office / management app</option><option value="WORKER">Field-worker app</option></select></div><div class="field span-2"><label>Description</label><input name="description" placeholder="What this role is responsible for"></div><div class="field"><label>Default scope</label><select name="defaultScopeType"><option value="COMPANY">Whole company</option><option value="BRANCH">Branch</option><option value="TEAM">Team</option><option value="SELF">Self</option></select></div><div class="span-2 permission-editor" data-permission-editor>${permissionEditor([])}</div><p class="fc-form-error span-2" data-form-error hidden></p><div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Create role</button></div></form>`);
++    bindCategoryButtons(modal);
++    const form = modal.querySelector('form');
++    form.onsubmit = async (event) => {
++      event.preventDefault();
++      const body = { name: form.name.value, description: form.description.value, systemRole: form.systemRole.value, defaultScopeType: form.defaultScopeType.value, permissions: selectedPermissions(form) };
++      try { await api('/role-templates', { method: 'POST', body: JSON.stringify(body) }); close(); await load(); } catch (error) { const node = modal.querySelector('[data-form-error]'); node.textContent = error.message; node.hidden = false; }
++    };
++  }
++
++  function openTeam() {
++    const { modal, close } = modalShell('Create team', 'Create a company team that can be used for scoped supervisor access.', `<form class="form-grid" data-team-form><div class="field"><label>Team name</label><input name="name" required placeholder="e.g. Harare Service Team A"></div><div class="field"><label>Branch</label><select name="branchId"><option value="">No branch</option>${data.branches.map((branch) => `<option value="${escapeHtml(branch.id)}">${escapeHtml(branch.name)}</option>`).join('')}</select></div><div class="field span-2"><label>Description</label><input name="description"></div><p class="fc-form-error span-2" data-form-error hidden></p><div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Create team</button></div></form>`);
++    const form = modal.querySelector('form');
++    form.onsubmit = async (event) => {
++      event.preventDefault();
++      const body = { name: form.name.value, description: form.description.value || undefined, branchId: form.branchId.value || undefined };
++      try { await api('/teams', { method: 'POST', body: JSON.stringify(body) }); close(); await load(); } catch (error) { const node = modal.querySelector('[data-form-error]'); node.textContent = error.message; node.hidden = false; }
++    };
++  }
++
++  async function load() {
++    [data.currentUser, data.members, data.invitations, data.templates, data.permissions, data.branches, data.teams] = await Promise.all([
++      api('/auth/session'), api('/members'), api('/member-invitations'), api('/role-templates'), api('/permissions'), api('/branches').catch(() => []), api('/teams').catch(() => [])
++    ]);
++    renderMembers(); renderInvites(); renderTemplates(); renderTeams();
++    const inviteButton = document.querySelector('[data-open-invite]');
++    const roleButton = document.querySelector('[data-create-role]');
++    const teamButton = document.querySelector('[data-create-team]');
++    if (inviteButton) inviteButton.hidden = !can('members.invite');
++    if (roleButton) roleButton.hidden = !can('roles.manage');
++    if (teamButton) teamButton.hidden = !can('team.manage');
++  }
++
++  document.querySelector('[data-open-invite]').onclick = openInvite;
++  document.querySelector('[data-create-role]').onclick = openRole;
++  const createTeamButton = document.querySelector('[data-create-team]');
++  if (createTeamButton) createTeamButton.onclick = openTeam;
++  document.querySelectorAll('[data-member-view]').forEach((tab) => tab.onclick = () => {
++    document.querySelectorAll('[data-member-view]').forEach((item) => item.classList.toggle('active', item === tab));
++    document.querySelectorAll('[data-member-panel]').forEach((panel) => { panel.hidden = panel.dataset.memberPanel !== tab.dataset.memberView; });
++  });
++  load().catch((error) => { document.querySelector('[data-members-body]').innerHTML = `<tr><td colspan="9">${escapeHtml(error.message)}</td></tr>`; });
+ })();
+diff --git a/members.html b/members.html
+index a5f01fa..65584c7 100644
+--- a/members.html
++++ b/members.html
+@@ -4,10 +4,11 @@
+   <body data-page="members" data-title="Company Members">
+     <section class="page members-page">
+       <div class="hero-row"><div class="hero-copy"><span class="eyebrow">People &amp; access</span><h2>Company Members</h2><p>Invite office staff and field workers, then control what they can do and where they can work.</p></div><button class="primary-button" type="button" data-open-invite>Invite member</button></div>
+-      <div class="tabs"><button class="tab active" type="button" data-member-view="active">Active members</button><button class="tab" type="button" data-member-view="invited">Pending invitations</button><button class="tab" type="button" data-member-view="roles">Role templates</button></div>
+-      <section class="table-card" data-member-panel="active"><div class="panel-head card"><h3>Workspace members</h3><span class="badge gray" data-member-count>0</span></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Job title</th><th>Role template</th><th>Classification</th><th>Scope</th><th>Status</th><th>Last activity</th></tr></thead><tbody data-members-body></tbody></table></div></section>
++      <div class="tabs"><button class="tab active" type="button" data-member-view="active">Active members</button><button class="tab" type="button" data-member-view="invited">Pending invitations</button><button class="tab" type="button" data-member-view="roles">Role templates</button><button class="tab" type="button" data-member-view="teams">Teams</button></div>
++      <section class="table-card" data-member-panel="active"><div class="panel-head card"><h3>Workspace members</h3><span class="badge gray" data-member-count>0</span></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Job title</th><th>Role template</th><th>Classification</th><th>Scope</th><th>Status</th><th>Last activity</th><th>Actions</th></tr></thead><tbody data-members-body></tbody></table></div></section>
+       <section class="table-card" data-member-panel="invited" hidden><div class="panel-head card"><h3>Pending invitations</h3><span class="badge gray" data-invite-count>0</span></div><div class="table-wrap"><table><thead><tr><th>Email</th><th>Job title</th><th>Template</th><th>Scope</th><th>Expires</th><th>Actions</th></tr></thead><tbody data-invites-body></tbody></table></div></section>
+       <section class="table-card" data-member-panel="roles" hidden><div class="panel-head card"><div><h3>Role templates</h3><p class="muted">Generic FieldCore templates and company-specific roles.</p></div><button class="secondary-button compact" type="button" data-create-role>Create custom role</button></div><div class="role-template-grid" data-role-template-grid></div></section>
++      <section class="table-card" data-member-panel="teams" hidden><div class="panel-head card"><div><h3>Teams</h3><p class="muted">Create groups for team-scoped supervisors and workers.</p></div><button class="secondary-button compact" type="button" data-create-team>Create team</button></div><div class="role-template-grid" data-team-grid></div></section>
+     </section>
+   </body>
+ </html>
+diff --git a/package.json b/package.json
+index e084cc1..f3443b0 100755
+--- a/package.json
++++ b/package.json
+@@ -17,7 +17,8 @@
+         "db:reset:zw": "node scripts/full-system-reset.js ZW --yes",
+         "db:reset:sa": "node scripts/full-system-reset.js SA --yes",
+         "dev:zw": "node scripts/run-region-server.js ZW",
+-        "dev:sa": "node scripts/run-region-server.js SA"
++        "dev:sa": "node scripts/run-region-server.js SA",
++        "db:baseline:migrations": "node scripts/baseline-prisma-migrations.js"
+     },
+     "dependencies": {
+         "@prisma/client": "^5.22.0",
+diff --git a/scripts/baseline-prisma-migrations.js b/scripts/baseline-prisma-migrations.js
+new file mode 100755
+index 0000000..1af41c0
+--- /dev/null
++++ b/scripts/baseline-prisma-migrations.js
+@@ -0,0 +1,78 @@
++#!/usr/bin/env node
++'use strict';
++
++const fs = require('fs');
++const path = require('path');
++const { spawnSync } = require('child_process');
++const { PrismaClient } = require('@prisma/client');
++
++const root = path.resolve(__dirname, '..');
++const migrationsDir = path.join(root, 'prisma', 'migrations');
++const confirmed = process.argv.includes('--yes') || process.env.FIELDCORE_BASELINE_CONFIRM === 'YES';
++
++function fail(message) {
++  console.error(`\nBaseline aborted: ${message}`);
++  process.exit(1);
++}
++
++function runPrisma(args, options = {}) {
++  const result = spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['prisma', ...args], {
++    cwd: root,
++    env: process.env,
++    encoding: 'utf8',
++    stdio: options.capture ? 'pipe' : 'inherit'
++  });
++  return result;
++}
++
++async function main() {
++  if (!process.env.DATABASE_URL) fail('DATABASE_URL is not set. Load exactly one regional env file first.');
++  if (!confirmed) {
++    fail('This command records existing migrations as already applied. Re-run with --yes only after backing up the database.');
++  }
++
++  const migrationNames = fs.readdirSync(migrationsDir, { withFileTypes: true })
++    .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(migrationsDir, entry.name, 'migration.sql')))
++    .map((entry) => entry.name)
++    .sort();
++  if (!migrationNames.length) fail('No Prisma migrations were found.');
++
++  console.log('Checking that the live database schema matches prisma/schema.prisma...');
++  const diff = runPrisma(['migrate', 'diff', '--from-url', process.env.DATABASE_URL, '--to-schema-datamodel', 'prisma/schema.prisma', '--exit-code'], { capture: true });
++  if (diff.status !== 0) {
++    process.stdout.write(diff.stdout || '');
++    process.stderr.write(diff.stderr || '');
++    fail('The database schema does not exactly match the current Prisma schema. Do not baseline a drifting database.');
++  }
++
++  const prisma = new PrismaClient();
++  let recorded = new Set();
++  try {
++    const tableExists = await prisma.$queryRawUnsafe(`SELECT to_regclass('public._prisma_migrations') AS name`);
++    if (tableExists && tableExists[0] && tableExists[0].name) {
++      const rows = await prisma.$queryRawUnsafe('SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL');
++      recorded = new Set(rows.map((row) => row.migration_name));
++    }
++  } finally {
++    await prisma.$disconnect();
++  }
++
++  const missing = migrationNames.filter((name) => !recorded.has(name));
++  if (!missing.length) {
++    console.log('Migration history is already complete. Nothing to baseline.');
++    return;
++  }
++
++  console.log(`Recording ${missing.length} existing migration(s) as applied. No migration SQL will be executed.`);
++  for (const name of missing) {
++    console.log(`- ${name}`);
++    const result = runPrisma(['migrate', 'resolve', '--applied', name]);
++    if (result.status !== 0) fail(`Could not record ${name} as applied.`);
++  }
++
++  console.log('\nBaseline complete. Verifying migration status...');
++  const status = runPrisma(['migrate', 'status']);
++  if (status.status !== 0) fail('Prisma still reports an unhealthy migration state.');
++}
++
++main().catch((error) => fail(error && error.message ? error.message : String(error)));
+diff --git a/src/app.js b/src/app.js
+index 60975be..418aa3d 100755
+--- a/src/app.js
++++ b/src/app.js
+@@ -71,28 +71,28 @@ const staffHtmlPages = new Map([
+   ['index.html', ['OWNER', 'ADMIN', 'WORKER']],
+   ['jobs.html', ['OWNER', 'ADMIN', 'WORKER']],
+   ['schedule.html', ['OWNER', 'ADMIN', 'WORKER']],
+-  ['map.html', ['OWNER', 'ADMIN']],
+-  ['customers.html', ['OWNER', 'ADMIN']],
+-  ['members.html', ['OWNER', 'ADMIN']],
+-  ['booking-requests.html', ['OWNER', 'ADMIN']],
+-  ['quotes.html', ['OWNER', 'ADMIN']],
+-  ['invoices.html', ['OWNER', 'ADMIN']],
+-  ['reports.html', ['OWNER', 'ADMIN']],
+-  ['settings.html', ['OWNER', 'ADMIN']],
+-  ['branches.html', ['OWNER', 'ADMIN']],
+-  ['approvals.html', ['OWNER', 'ADMIN']],
++  ['map.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['customers.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['members.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['booking-requests.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['quotes.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['invoices.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['reports.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['settings.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['branches.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['approvals.html', ['OWNER', 'ADMIN', 'WORKER']],
+   ['assets.html', ['OWNER', 'ADMIN']],
+   ['service-contracts.html', ['OWNER', 'ADMIN']],
+   ['contract-automation.html', ['OWNER', 'ADMIN']],
+-  ['inventory.html', ['OWNER', 'ADMIN']],
+-  ['purchase-requests.html', ['OWNER', 'ADMIN']],
+-  ['purchase-orders.html', ['OWNER', 'ADMIN']],
++  ['inventory.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['purchase-requests.html', ['OWNER', 'ADMIN', 'WORKER']],
++  ['purchase-orders.html', ['OWNER', 'ADMIN', 'WORKER']],
+   ['procurement-costing.html', ['OWNER', 'ADMIN']],
+-  ['collections.html', ['OWNER', 'ADMIN']],
++  ['collections.html', ['OWNER', 'ADMIN', 'WORKER']],
+   ['mobile-sync.html', ['OWNER', 'ADMIN']],
+-  ['executive-dashboard.html', ['OWNER', 'ADMIN']],
++  ['executive-dashboard.html', ['OWNER', 'ADMIN', 'WORKER']],
+   ['onboarding.html', ['OWNER', 'ADMIN']],
+-  ['security-center.html', ['OWNER', 'ADMIN']]
++  ['security-center.html', ['OWNER', 'ADMIN', 'WORKER']]
+   ,['plan-selection.html', ['OWNER']]
+   ,['subscription.html', ['OWNER']]
+ ]);
+diff --git a/src/routes/api.js b/src/routes/api.js
+index 2eb7558..a3d22c8 100644
+--- a/src/routes/api.js
++++ b/src/routes/api.js
+@@ -15,7 +15,7 @@ const { billingSummary, cancelSubscription, changePlan, createCheckout, selectMo
+ const { reportCsv, reportData } = require('../services/reporting.service');
+ const { analyticsCsv, buildExecutiveAnalytics } = require('../services/executiveAnalytics.service');
+ const { billingCatalog, canUseFeature, getUsage, listPlans, requireFeature, requirePlanLimit } = require('../services/subscription.service');
+-const { PERMISSION_GROUPS, defaultPermissionBundles, delegatablePermissionKeys, effectiveAccessForUser, permissionKeys, uniquePermissions } = require('../services/accessControl.service');
++const { PERMISSION_GROUPS, defaultPermissionBundles, delegatablePermissionKeys, effectiveAccessForUser, isSubset, permissionKeys, scopeContains, uniquePermissions } = require('../services/accessControl.service');
+ const { getStorageObjectForCompany, readStorageObject, storeUploadedFile } = require('../services/integrations/storage.service');
+ const {
+   disableIntegrationConnection,
+@@ -180,16 +180,15 @@ async function paged(model, req, args) {
+ }
+ 
+ function workerJobScope(req) {
+-  const access = req.effectiveAccess;
+-  if (access && access.scopeType === 'TEAM') return { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } };
+-  if (access && access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+-  if (req.user.role !== 'WORKER' && (!access || access.scopeType !== 'SELF')) return {};
+-  return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
++  return accessScopeWhere(req);
+ }
+ 
+ function branchFilterFromQuery(req) {
+   const branchId = req.query && req.query.branchId ? String(req.query.branchId).trim() : '';
+-  return branchId ? { branchId } : {};
++  if (!branchId) return {};
++  const access = req.effectiveAccess;
++  if (access && access.scopeType === 'BRANCH' && !access.branchIds.includes(branchId)) throw new AppError(403, 'Branch is outside your access scope.');
++  return { branchId };
+ }
+ 
+ async function requireBranch(req, id) {
+@@ -271,6 +270,104 @@ async function requirePermission(req, permissionKey, options = {}) {
+   if (!(await hasPermission(req, permissionKey, options))) throw new AppError(403, 'Missing permission: ' + permissionKey);
+ }
+ 
++function requestedAccessBody(body = {}) {
++  return {
++    scopeType: body.scopeType || 'COMPANY',
++    branchIds: Array.isArray(body.branchIds) ? body.branchIds : [],
++    teamIds: Array.isArray(body.teamIds) ? body.teamIds : []
++  };
++}
++
++async function resolveDelegatedPermissions(req, body = {}) {
++  const actorAccess = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId: req.companyId });
++  const requested = body.fullAccess
++    ? (req.user.role === 'OWNER' ? delegatablePermissionKeys : delegatablePermissionKeys.filter((key) => actorAccess.permissions.includes(key)))
++    : uniquePermissions(body.permissions);
++  if (req.user.role !== 'OWNER' && !isSubset(requested, actorAccess.permissions)) {
++    throw new AppError(403, 'You cannot grant permissions that you do not have.');
++  }
++  if (req.user.role !== 'OWNER' && !scopeContains(actorAccess, requestedAccessBody(body))) {
++    throw new AppError(403, 'You cannot grant access outside your own scope.');
++  }
++  return requested;
++}
++
++function accessScopeWhere(req, fields = {}) {
++  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
++  const branchField = fields.branchField || 'branchId';
++  const teamField = fields.teamField || 'teamId';
++  const workerField = fields.workerField || 'workerId';
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { [branchField]: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
++  if (access.scopeType === 'TEAM') return { [teamField]: { in: access.teamIds.length ? access.teamIds : ['__none__'] } };
++  return { [workerField]: req.user.worker ? req.user.worker.id : '__none__' };
++}
++
++function scheduleScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { job: { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } };
++  if (access.scopeType === 'TEAM') return { job: { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } };
++  return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
++}
++
++function financeRecordScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
++  if (access.scopeType === 'TEAM') return { job: { is: { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } };
++  return { job: { is: { workerId: req.user.worker ? req.user.worker.id : '__none__' } } };
++}
++
++function customerScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
++  if (access.scopeType === 'TEAM') return { jobs: { some: { teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } };
++  return { jobs: { some: { workerId: req.user.worker ? req.user.worker.id : '__none__' } } };
++}
++
++function workerProfileScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
++  if (access.scopeType === 'TEAM') return { user: { teamMemberships: { some: { companyId: req.companyId, active: true, teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } } };
++  return { userId: req.user.id };
++}
++
++function workerLocationScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: req.user.role === 'WORKER' ? 'SELF' : 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { worker: { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } };
++  if (access.scopeType === 'TEAM') return { worker: { user: { teamMemberships: { some: { companyId: req.companyId, active: true, teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } } } };
++  return { workerId: req.user.worker ? req.user.worker.id : '__none__' };
++}
++
++function teamScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'BRANCH') return { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
++  if (access.scopeType === 'TEAM') return { id: { in: access.teamIds.length ? access.teamIds : ['__none__'] } };
++  return { id: '__none__' };
++}
++
++function userScopeWhere(req) {
++  const access = req.effectiveAccess || { scopeType: 'COMPANY', branchIds: [], teamIds: [] };
++  if (access.scopeType === 'COMPANY') return {};
++  if (access.scopeType === 'TEAM') return { teamMemberships: { some: { companyId: req.companyId, active: true, teamId: { in: access.teamIds.length ? access.teamIds : ['__none__'] } } } };
++  if (access.scopeType === 'BRANCH') return { OR: [
++    { worker: { is: { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } } },
++    { branchAccesses: { some: { companyId: req.companyId, active: true, branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } } } }
++  ] };
++  return { id: req.user.id };
++}
++
++async function requireScopedJob(req, id) {
++  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...workerJobScope(req) } });
++  if (!record) throw notFound('Job not found');
++  return record;
++}
++
+ function roleRank(role) {
+   return { CLIENT: 0, WORKER: 1, ADMIN: 2, OWNER: 3 }[role] || 0;
+ }
+@@ -341,7 +438,7 @@ async function requireApprovalOrProceed(req, config) {
+ }
+ 
+ async function requireCustomer(req, id) {
+-  const record = await prisma.customer.findFirst({ where: { id, companyId: req.companyId } });
++  const record = await prisma.customer.findFirst({ where: { id, companyId: req.companyId, ...customerScopeWhere(req) } });
+   if (!record) throw notFound('Customer not found');
+   return record;
+ }
+@@ -534,7 +631,7 @@ async function requireContractServiceLine(req, contractId, lineId) {
+ 
+ async function requireWorker(req, id) {
+   if (!id) return null;
+-  const record = await prisma.workerProfile.findFirst({ where: { id, companyId: req.companyId }, include: SAFE_WORKER_INCLUDE });
++  const record = await prisma.workerProfile.findFirst({ where: { id, companyId: req.companyId, ...workerProfileScopeWhere(req) }, include: SAFE_WORKER_INCLUDE });
+   if (!record) throw notFound('Worker not found');
+   return record;
+ }
+@@ -553,21 +650,21 @@ async function ensureWorkerRole(req, name, tx = prisma) {
+ }
+ 
+ async function requireJob(req, id, options = {}) {
+-  const assignedOnly = options.assignedOnly !== false;
+-  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...(assignedOnly ? workerJobScope(req) : {}) } });
++  const scopeWhere = options.ignoreAccessScope === true ? {} : workerJobScope(req);
++  const record = await prisma.job.findFirst({ where: { id, companyId: req.companyId, ...scopeWhere } });
+   if (!record) throw notFound('Job not found');
+   return record;
+ }
+ 
+ async function requireQuote(req, id, options = {}) {
+   const includeDeleted = options.includeDeleted === true;
+-  const record = await prisma.quote.findFirst({ where: { id, companyId: req.companyId, ...(includeDeleted ? {} : { deletedAt: null }) } });
++  const record = await prisma.quote.findFirst({ where: { id, companyId: req.companyId, ...financeRecordScopeWhere(req), ...(includeDeleted ? {} : { deletedAt: null }) } });
+   if (!record) throw notFound('Quote not found');
+   return record;
+ }
+ 
+ async function requireInvoice(req, id) {
+-  const record = await prisma.invoice.findFirst({ where: { id, companyId: req.companyId } });
++  const record = await prisma.invoice.findFirst({ where: { id, companyId: req.companyId, ...financeRecordScopeWhere(req) } });
+   if (!record) throw notFound('Invoice not found');
+   return record;
+ }
+@@ -1962,7 +2059,7 @@ async function getSchedulingSettings(companyId) {
+ }
+ 
+ async function requireScheduleItem(req, id) {
+-  const where = { id, companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) };
++  const where = { id, companyId: req.companyId, ...scheduleScopeWhere(req) };
+   const record = await prisma.scheduleItem.findFirst({ where, include: scheduleInclude });
+   if (!record) throw notFound('Schedule item not found');
+   return record;
+@@ -2249,7 +2346,7 @@ router.post('/auth/register', validate(registerSchema), asyncHandler(async (req,
+     const isSa = req.body.market === 'SA';
+     const company = await tx.company.create({ data: { name: req.body.companyName, market: req.body.market, verticalKey: req.body.verticalKey || 'generic', teamSizeBand: req.body.teamSizeBand, onboardingState: 'PLAN_SELECTION_REQUIRED' } });
+     const trialStartedAt = new Date();
+-    const trialEndsAt = new Date(trialStartedAt.getTime() + 14 * 24 * 60 * 60 * 1000);
++    const trialEndsAt = new Date(trialStartedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+     if (tx.companySubscription) {
+       await tx.companySubscription.create({ data: { companyId: company.id, status: 'TRIALING', billingInterval: 'MONTHLY', trialStartedAt, trialEndsAt, currentPeriodStart: trialStartedAt, currentPeriodEnd: trialEndsAt, provider: 'MOCK_INTERNAL' } });
+     }
+@@ -2403,7 +2500,10 @@ router.post('/auth/sessions/:id/revoke', requireAuth, validate(idParam, 'params'
+   sendData(res, normalize({ revoked: true, session: updated }));
+ }));
+ 
+-router.get('/security/events', requireAuth, requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/security/events', requireAuth, asyncHandler(async (req, res) => {
++  await requirePermission(req, 'security.view');
++  const access = await effectiveAccessForUser(req.user, { companyId: req.companyId });
++  if (access.scopeType !== 'COMPANY' && req.user.role !== 'OWNER') throw new AppError(403, 'Security events require company-wide scope.');
+   const result = await paged(prisma.securityEvent, req, { where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } });
+   sendData(res, normalize(result.data.map((event) => ({ id: event.id, eventType: event.eventType, severity: event.severity, userId: event.userId || null, metadata: safeAuditMetadata(event.metadata || {}), createdAt: event.createdAt }))), 200, result.meta);
+ }));
+@@ -2434,7 +2534,8 @@ router.patch('/users/:id/role', requireAuth, requireRole(...ownerRoles), validat
+   sendData(res, publicUser(data));
+ }));
+ 
+-router.get('/admin/data-export/:type', requireAuth, requireRole(...adminRoles), validate(dataExportParamSchema, 'params'), asyncHandler(async (req, res) => {
++router.get('/admin/data-export/:type', requireAuth, validate(dataExportParamSchema, 'params'), asyncHandler(async (req, res) => {
++  await requirePermission(req, 'finance.exports.manage');
+   const modelByType = {
+     customers: prisma.customer,
+     jobs: prisma.job,
+@@ -2444,7 +2545,14 @@ router.get('/admin/data-export/:type', requireAuth, requireRole(...adminRoles),
+     contracts: prisma.serviceContract
+   };
+   const model = modelByType[req.params.type];
+-  const rows = await model.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' }, take: Math.min(Number(req.query.limit || 1000), 5000) });
++  const access = await effectiveAccessForUser(req.user, { companyId: req.companyId });
++  let scopeWhere = {};
++  if (access.scopeType === 'BRANCH') scopeWhere = { branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
++  else if (access.scopeType === 'TEAM' || access.scopeType === 'SELF') {
++    if (req.params.type !== 'jobs') throw new AppError(403, 'This export is not available for team/self-scoped access.');
++    scopeWhere = workerJobScope({ ...req, effectiveAccess: access });
++  }
++  const rows = await model.findMany({ where: { companyId: req.companyId, ...scopeWhere }, orderBy: { createdAt: 'desc' }, take: Math.min(Number(req.query.limit || 1000), 5000) });
+   await audit(req, 'DATA_EXPORT', req.params.type, req.companyId, { recordCount: rows.length, format: req.query.format || 'json' });
+   await recordSecurityEvent(req.companyId, 'DATA_EXPORT_CREATED', { userId: req.user.id, severity: 'WARN', req, metadata: { type: req.params.type, recordCount: rows.length } });
+   const data = normalize(rows.map((row) => safeAuditMetadata(row)));
+@@ -3255,7 +3363,7 @@ router.post('/public/member-invitations/accept', validate(invitationAcceptSchema
+   if (new Date(invitation.expiresAt) <= new Date()) throw new AppError(410, 'Invitation has expired.');
+   const existing = await prisma.user.findUnique({ where: { email: invitation.email } });
+   if (existing) throw new AppError(409, 'This email already belongs to a FieldCore account. Contact support to join another workspace safely.');
+-  const selected = invitation.fullAccess ? delegatablePermissionKeys : uniquePermissions(invitation.permissions);
++  const selected = uniquePermissions(invitation.permissions);
+   const scope = invitation.scopeConfig || {};
+   const user = await prisma.$transaction(async (tx) => {
+     const created = await tx.user.create({ data: { companyId: invitation.companyId, email: invitation.email, name: req.body.name, passwordHash: await hashPassword(req.body.password), role: invitation.systemRole, jobTitle: invitation.jobTitle, roleTemplateId: invitation.roleTemplateId, defaultScopeType: invitation.scopeType }, select: SAFE_LOGIN_USER_SELECT });
+@@ -3284,10 +3392,38 @@ router.use(asyncHandler(async (req, res, next) => {
+ }));
+ 
+ const resourcePermissionRules = [
++  // Put action-specific rules before broad resource rules.
++  { method: 'POST', pattern: /^\/jobs\/[^/]+\/assign-worker$/, permission: 'jobs.assign' },
++  { method: 'POST', pattern: /^\/jobs\/[^/]+\/(?:schedule|reschedule|unschedule)$/, permission: 'schedule.manage' },
++  { method: 'POST', pattern: /^\/quotes\/[^/]+\/send$/, permission: 'quotes.send' },
++  { method: 'POST', pattern: /^\/quotes\/[^/]+\/(?:accept|reject)$/, permission: 'quotes.edit' },
++  { method: 'DELETE', pattern: /^\/quotes\/[^/]+$/, permission: 'quotes.edit' },
++  { method: 'POST', pattern: /^\/invoices\/[^/]+\/send$/, permission: 'invoices.send' },
++  { method: 'POST', pattern: /^\/invoices\/[^/]+\/(?:mark-paid|payments)$/, permission: 'payments.manage' },
++  { method: 'POST', pattern: /^\/invoices\/[^/]+\/void$/, permission: 'invoice.void' },
++  { method: 'POST', pattern: /^\/payments\/[^/]+\/confirm$/, permission: 'payments.manage' },
++  { method: 'POST', pattern: /^\/payments\/[^/]+\/refund$/, permission: 'payment.refund' },
++  { method: 'PATCH', pattern: /^\/schedule\/[^/]+$/, permission: 'schedule.manage' },
++  { method: 'DELETE', pattern: /^\/schedule\/[^/]+$/, permission: 'schedule.manage' },
++  { method: 'POST', pattern: /^\/schedule\/check-conflicts$/, permission: 'schedule.manage' },
++  { method: 'GET', pattern: /^\/reports(?:\/|$)/, permission: 'finance.reports.view' },
++  { method: 'GET', pattern: /^\/security(?:\/|$)/, permission: 'security.view' },
++  { method: 'GET', pattern: /^\/audit-logs(?:\/|$)/, permission: 'audit.view' },
++  { method: 'GET', pattern: /^\/admin\/data-export(?:\/|$)/, permission: 'finance.exports.manage' },
++  { method: 'GET', pattern: /^\/billing\/(?:catalog|plans|subscription|usage)$/, permission: 'subscription.view' },
++  { method: 'POST', pattern: /^\/billing\/(?:mock-select|checkout|change-plan|cancel)$/, permission: 'subscription.manage' },
++
+   { method: 'GET', pattern: /^\/customers(?:\/|$)/, permission: 'customers.view' },
+   { method: 'POST', pattern: /^\/customers$/, permission: 'customers.create' },
+   { method: 'PATCH', pattern: /^\/customers\//, permission: 'customers.edit' },
+   { method: 'DELETE', pattern: /^\/customers\//, permission: 'customers.delete' },
++  { method: 'GET', pattern: /^\/worker-location\/latest$/, permission: 'workers.location.view' },
++  { method: 'GET', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.view' },
++  { method: 'POST', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.manage' },
++  { method: 'PATCH', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.manage' },
++  { method: 'PUT', pattern: /^\/worker-roles(?:\/|$)/, permission: 'workers.manage' },
++  { method: 'POST', pattern: /^\/workers\/[^/]+\/time-off$/, permission: 'workers.manage' },
++  { method: 'PATCH', pattern: /^\/workers\/[^/]+\/time-off\/[^/]+$/, permission: 'workers.manage' },
+   { method: 'GET', pattern: /^\/workers(?:\/|$)/, permission: 'workers.view' },
+   { method: 'POST', pattern: /^\/workers$/, permission: 'workers.manage' },
+   { method: 'PATCH', pattern: /^\/workers\//, permission: 'workers.manage' },
+@@ -3305,12 +3441,12 @@ const resourcePermissionRules = [
+   { method: 'GET', pattern: /^\/payments(?:\/|$)/, permission: 'payments.view' },
+   { method: 'POST', pattern: /^\/payments$/, permission: 'payments.manage' },
+   { method: 'GET', pattern: /^\/booking-requests(?:\/|$)/, permission: 'bookings.view' },
+-  { method: 'GET', pattern: /^\/branches(?:\/|$)/, permission: 'branch.view' }
+-  ,{ method: 'PATCH', pattern: /^\/company\/(?:profile|scheduling-settings)/, permission: 'company.settings.manage' }
+-  ,{ method: 'PATCH', pattern: /^\/company\/branding/, permission: 'company.branding.manage' }
+-  ,{ method: 'PATCH', pattern: /^\/company\/finance-settings/, permission: 'settings.finance.manage' }
+-  ,{ method: 'GET', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.view' }
+-  ,{ method: 'POST', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.manage' }
++  { method: 'GET', pattern: /^\/branches(?:\/|$)/, permission: 'branch.view' },
++  { method: 'PATCH', pattern: /^\/company\/(?:profile|scheduling-settings)/, permission: 'company.settings.manage' },
++  { method: 'PATCH', pattern: /^\/company\/branding/, permission: 'company.branding.manage' },
++  { method: 'PATCH', pattern: /^\/company\/finance-settings/, permission: 'settings.finance.manage' },
++  { method: 'GET', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.view' },
++  { method: 'POST', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.manage' }
+ ];
+ 
+ router.use(asyncHandler(async (req, res, next) => {
+@@ -3674,7 +3810,7 @@ router.get('/payment-links', requireRole(...adminRoles), asyncHandler(async (req
+   sendData(res, normalize(result.data.map(safePaymentLink)), 200, result.meta);
+ }));
+ 
+-router.post('/invoices/:id/payment-links', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentLinkSchema), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/payment-links', validate(idParam, 'params'), validate(paymentLinkSchema), asyncHandler(async (req, res) => {
+   const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { quote: true, customer: true } });
+   if (!invoice) throw notFound('Invoice not found');
+   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Payment links can only be generated for open invoices');
+@@ -3691,7 +3827,7 @@ router.post('/invoices/:id/payment-links', requireRole(...adminRoles), validate(
+   sendData(res, normalize(safePaymentLink(data)), 201);
+ }));
+ 
+-router.post('/invoices/:id/payment-promise', requireRole(...adminRoles), validate(idParam, 'params'), validate(promisePaymentSchema), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/payment-promise', validate(idParam, 'params'), validate(promisePaymentSchema), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   const data = await prisma.invoice.update({ where: { id: invoice.id }, data: { promisedPaymentDate: req.body.promisedPaymentDate, paymentPlanNotes: req.body.paymentPlanNotes } });
+   await audit(req, 'UPDATE_PAYMENT_PROMISE', 'Invoice', invoice.id, { promisedPaymentDate: req.body.promisedPaymentDate });
+@@ -3985,25 +4121,26 @@ router.post('/approvals/:id/execute', requireRole(...adminRoles), validate(idPar
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/permissions', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/permissions', asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.view');
+   sendData(res, { keys: permissionKeys, groups: PERMISSION_GROUPS, bundles: defaultPermissionBundles });
+ }));
+ 
+-router.get('/role-templates', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/role-templates', asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.view');
+   const verticalKey = req.user.company && req.user.company.verticalKey || 'generic';
+   const rows = await prisma.permissionRoleTemplate.findMany({ where: { active: true, OR: [{ companyId: req.companyId }, { companyId: null, verticalKey: { in: ['generic', verticalKey] } }] }, orderBy: [{ isSystemTemplate: 'desc' }, { name: 'asc' }] });
+   sendData(res, normalize(rows));
+ }));
+ 
+-router.post('/role-templates', requireRole(...adminRoles), validate(roleTemplateSchema), asyncHandler(async (req, res) => {
++router.post('/role-templates', validate(roleTemplateSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'roles.manage');
+   const key = req.body.key || req.body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+   const existing = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: req.companyId, key, verticalKey: req.user.company && req.user.company.verticalKey || 'generic' } });
+   if (existing) throw new AppError(409, 'A role template with this name already exists.');
+-  const data = await prisma.permissionRoleTemplate.create({ data: { companyId: req.companyId, key, name: req.body.name, description: req.body.description, verticalKey: req.user.company && req.user.company.verticalKey || 'generic', systemRole: req.body.systemRole, isSystemTemplate: false, isCustom: true, defaultPermissions: uniquePermissions(req.body.permissions), defaultScopeType: req.body.defaultScopeType, active: true } });
+-  await addEnterpriseAudit(req, 'ROLE_TEMPLATE_CREATED', 'PermissionRoleTemplate', data.id, { key, permissions: uniquePermissions(req.body.permissions), defaultScopeType: req.body.defaultScopeType });
++  const permissions = await resolveDelegatedPermissions(req, { permissions: req.body.permissions, scopeType: req.body.defaultScopeType, branchIds: [], teamIds: [] });
++  const data = await prisma.permissionRoleTemplate.create({ data: { companyId: req.companyId, key, name: req.body.name, description: req.body.description, verticalKey: req.user.company && req.user.company.verticalKey || 'generic', systemRole: req.body.systemRole, isSystemTemplate: false, isCustom: true, defaultPermissions: permissions, defaultScopeType: req.body.defaultScopeType, active: true } });
++  await addEnterpriseAudit(req, 'ROLE_TEMPLATE_CREATED', 'PermissionRoleTemplate', data.id, { key, permissions, defaultScopeType: req.body.defaultScopeType });
+   sendData(res, normalize(data), 201);
+ }));
+ 
+@@ -4023,36 +4160,50 @@ async function validateInvitationScope(req, body) {
+   if (body.scopeType === 'TEAM' && !body.teamIds.length) throw new AppError(400, 'Select at least one team for team scope.');
+ }
+ 
+-router.get('/members', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/members', asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.view');
+-  const rows = await prisma.user.findMany({ where: { companyId: req.companyId }, select: { ...SAFE_USER_SELECT, jobTitle: true, defaultScopeType: true, roleTemplate: { select: { id: true, key: true, name: true } }, sessions: { select: { lastSeenAt: true }, orderBy: { lastSeenAt: 'desc' }, take: 1 } }, orderBy: { name: 'asc' } });
+-  sendData(res, normalize(rows.map((user) => ({ ...user, lastActivityAt: user.sessions && user.sessions[0] && user.sessions[0].lastSeenAt, sessions: undefined }))));
++  const rows = await prisma.user.findMany({ where: { companyId: req.companyId, ...userScopeWhere(req) }, select: { ...SAFE_USER_SELECT, jobTitle: true, defaultScopeType: true, roleTemplate: { select: { id: true, key: true, name: true } }, sessions: { select: { lastSeenAt: true }, orderBy: { lastSeenAt: 'desc' }, take: 1 } }, orderBy: { name: 'asc' } });
++  const enriched = await Promise.all(rows.map(async (user) => {
++    const access = await effectiveAccessForUser(user, { companyId: req.companyId });
++    return { ...user, effectivePermissions: access.permissions, accessScope: { type: access.scopeType, branchIds: access.branchIds, teamIds: access.teamIds }, lastActivityAt: user.sessions && user.sessions[0] && user.sessions[0].lastSeenAt, sessions: undefined };
++  }));
++  sendData(res, normalize(enriched));
+ }));
+ 
+-router.patch('/members/:id/access', requireRole(...adminRoles), validate(idParam, 'params'), validate(memberAccessSchema), asyncHandler(async (req, res) => {
++router.patch('/members/:id/access', validate(idParam, 'params'), validate(memberAccessSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'permissions.manage');
+   if (req.params.id === req.user.id) throw new AppError(403, 'You cannot change your own role or permissions.');
+   const member = await requireCompanyUser(req, req.params.id);
+-  if (member.role === 'OWNER' && req.user.role !== 'OWNER') throw new AppError(403, 'Only an owner can manage another owner.');
++  if (member.role === 'OWNER') throw new AppError(403, 'Owner access cannot be changed through role templates. Use dedicated ownership controls.');
+   await validateInvitationScope(req, req.body);
+   const template = await prisma.permissionRoleTemplate.findFirst({ where: { id: req.body.roleTemplateId, active: true, OR: [{ companyId: req.companyId }, { companyId: null }] } });
+   if (!template) throw notFound('Role template not found');
+-  const permissions = req.body.fullAccess ? delegatablePermissionKeys : uniquePermissions(req.body.permissions);
++  if (template.systemRole === 'OWNER') throw new AppError(403, 'Ownership cannot be granted through a role template.');
++  const permissions = await resolveDelegatedPermissions(req, req.body);
+   const updated = await prisma.$transaction(async (tx) => {
+-    const user = await tx.user.update({ where: { id: member.id }, data: { jobTitle: req.body.jobTitle, roleTemplateId: template.id, defaultScopeType: req.body.scopeType } });
++    const user = await tx.user.update({ where: { id: member.id }, data: { role: template.systemRole, jobTitle: req.body.jobTitle, roleTemplateId: template.id, defaultScopeType: req.body.scopeType } });
+     await tx.userPermissionOverride.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+     for (const permissionKey of permissionKeys) await tx.userPermissionOverride.create({ data: { companyId: req.companyId, userId: member.id, permissionKey, allowed: permissions.includes(permissionKey) } });
+     await tx.userBranchAccess.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+     await tx.userAccessGrant.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
++    await tx.teamMembership.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
+     for (const branchId of req.body.branchIds) await tx.userBranchAccess.create({ data: { companyId: req.companyId, userId: member.id, branchId, permissions, active: true } });
+-    for (const teamId of req.body.teamIds) await tx.userAccessGrant.create({ data: { companyId: req.companyId, userId: member.id, scopeType: 'TEAM', teamId, permissions, active: true } });
++    for (const teamId of req.body.teamIds) {
++      await tx.userAccessGrant.create({ data: { companyId: req.companyId, userId: member.id, scopeType: 'TEAM', teamId, permissions, active: true } });
++      await tx.teamMembership.create({ data: { companyId: req.companyId, userId: member.id, teamId, isLead: template.systemRole === 'ADMIN', active: true } });
++    }
++    if (template.systemRole === 'WORKER') {
++      await tx.workerProfile.upsert({ where: { userId: member.id }, update: { title: req.body.jobTitle, active: true }, create: { companyId: req.companyId, userId: member.id, title: req.body.jobTitle, active: true } });
++    } else {
++      await tx.workerProfile.updateMany({ where: { companyId: req.companyId, userId: member.id }, data: { active: false } });
++    }
+     return user;
+   });
+   await addEnterpriseAudit(req, 'MEMBER_ACCESS_CHANGED', 'User', member.id, { roleTemplateId: template.id, jobTitle: req.body.jobTitle, fullAccess: req.body.fullAccess, permissions, scopeType: req.body.scopeType, branchIds: req.body.branchIds, teamIds: req.body.teamIds });
+   sendData(res, normalize(updated));
+ }));
+ 
+-router.patch('/members/:id/status', requireRole(...adminRoles), validate(idParam, 'params'), validate(memberStatusSchema), asyncHandler(async (req, res) => {
++router.patch('/members/:id/status', validate(idParam, 'params'), validate(memberStatusSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.manage');
+   if (req.params.id === req.user.id) throw new AppError(409, 'You cannot disable your own account.');
+   const member = await requireCompanyUser(req, req.params.id);
+@@ -4067,23 +4218,24 @@ router.patch('/members/:id/status', requireRole(...adminRoles), validate(idParam
+   sendData(res, normalize(updated));
+ }));
+ 
+-router.get('/member-invitations', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/member-invitations', asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.view');
+   const rows = await prisma.memberInvitation.findMany({ where: { companyId: req.companyId }, include: { roleTemplate: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true, email: true } } }, orderBy: { createdAt: 'desc' } });
+   sendData(res, normalize(rows.map(({ tokenHash, ...row }) => row)));
+ }));
+ 
+-router.post('/member-invitations', requireRole(...adminRoles), validate(invitationSchema), asyncHandler(async (req, res) => {
++router.post('/member-invitations', validate(invitationSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.invite');
+   await validateInvitationScope(req, req.body);
+   const template = await prisma.permissionRoleTemplate.findFirst({ where: { id: req.body.roleTemplateId, active: true, OR: [{ companyId: req.companyId }, { companyId: null }] } });
+   if (!template) throw notFound('Role template not found');
++  if (template.systemRole === 'OWNER') throw new AppError(403, 'Ownership cannot be granted through an invitation.');
+   if (await prisma.user.findUnique({ where: { email: req.body.email } })) throw new AppError(409, 'This email already belongs to a FieldCore account.');
+   const pending = await prisma.memberInvitation.findFirst({ where: { companyId: req.companyId, email: req.body.email, status: 'PENDING' } });
+   if (pending) throw new AppError(409, 'A pending invitation already exists for this email.');
+   const token = crypto.randomBytes(32).toString('base64url');
+   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+-  const permissions = req.body.fullAccess ? delegatablePermissionKeys : uniquePermissions(req.body.permissions);
++  const permissions = await resolveDelegatedPermissions(req, req.body);
+   const created = await prisma.memberInvitation.create({ data: { companyId: req.companyId, email: req.body.email, invitedByUserId: req.user.id, roleTemplateId: template.id, systemRole: template.systemRole, jobTitle: req.body.jobTitle, permissions, fullAccess: req.body.fullAccess, scopeType: req.body.scopeType, scopeConfig: { branchIds: req.body.branchIds, teamIds: req.body.teamIds }, tokenHash: invitationTokenHash(token), status: 'PENDING', expiresAt }, include: { company: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true } }, roleTemplate: { select: { id: true, name: true } } } });
+   const delivery = await sendMemberInvitationEmail(created, token);
+   await addEnterpriseAudit(req, 'INVITATION_CREATED', 'MemberInvitation', created.id, { email: created.email, roleTemplateId: created.roleTemplateId, fullAccess: created.fullAccess, scopeType: created.scopeType, deliveryStatus: delivery.status });
+@@ -4091,7 +4243,7 @@ router.post('/member-invitations', requireRole(...adminRoles), validate(invitati
+   sendData(res, normalize({ ...safe, delivery: { status: delivery.status, error: delivery.error || null } }), 201);
+ }));
+ 
+-router.post('/member-invitations/:id/resend', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/member-invitations/:id/resend', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.invite');
+   const existing = await prisma.memberInvitation.findFirst({ where: { id: req.params.id, companyId: req.companyId, status: 'PENDING' }, include: { company: { select: { id: true, name: true } }, invitedBy: { select: { id: true, name: true } }, roleTemplate: { select: { id: true, name: true } } } });
+   if (!existing || existing.revokedAt || existing.acceptedAt) throw notFound('Pending invitation not found');
+@@ -4103,7 +4255,7 @@ router.post('/member-invitations/:id/resend', requireRole(...adminRoles), valida
+   sendData(res, { resent: true, expiresAt, delivery: { status: delivery.status, error: delivery.error || null } });
+ }));
+ 
+-router.post('/member-invitations/:id/revoke', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/member-invitations/:id/revoke', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'members.manage');
+   const existing = await prisma.memberInvitation.findFirst({ where: { id: req.params.id, companyId: req.companyId, status: 'PENDING' } });
+   if (!existing) throw notFound('Pending invitation not found');
+@@ -4112,12 +4264,12 @@ router.post('/member-invitations/:id/revoke', requireRole(...adminRoles), valida
+   sendData(res, { revoked: true });
+ }));
+ 
+-router.get('/teams', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/teams', asyncHandler(async (req, res) => {
+   await requirePermission(req, 'team.view');
+-  sendData(res, normalize(await prisma.team.findMany({ where: { companyId: req.companyId }, include: { branch: true, memberships: { where: { active: true }, include: { user: { select: SAFE_USER_SELECT } } } }, orderBy: { name: 'asc' } })));
++  sendData(res, normalize(await prisma.team.findMany({ where: { companyId: req.companyId, ...teamScopeWhere(req) }, include: { branch: true, memberships: { where: { active: true }, include: { user: { select: SAFE_USER_SELECT } } } }, orderBy: { name: 'asc' } })));
+ }));
+ 
+-router.post('/teams', requireRole(...adminRoles), validate(teamSchema), asyncHandler(async (req, res) => {
++router.post('/teams', validate(teamSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'team.manage');
+   if (req.body.branchId) await requireBranch(req, req.body.branchId);
+   const data = await prisma.team.create({ data: { companyId: req.companyId, name: req.body.name, description: req.body.description, branchId: req.body.branchId, active: req.body.active !== false } });
+@@ -4125,7 +4277,17 @@ router.post('/teams', requireRole(...adminRoles), validate(teamSchema), asyncHan
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.get('/users/:id/permissions', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.patch('/teams/:id', validate(idParam, 'params'), validate(teamSchema.partial()), asyncHandler(async (req, res) => {
++  await requirePermission(req, 'team.manage');
++  const existing = await prisma.team.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
++  if (!existing) throw notFound('Team not found');
++  if (req.body.branchId) await requireBranch(req, req.body.branchId);
++  const data = await prisma.team.update({ where: { id: existing.id }, data: req.body });
++  await addEnterpriseAudit(req, 'TEAM_UPDATED', 'Team', data.id, { branchId: data.branchId, active: data.active });
++  sendData(res, normalize(data));
++}));
++
++router.get('/users/:id/permissions', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'permissions.manage');
+   await requireCompanyUser(req, req.params.id);
+   const [overrides, branchAccess] = await Promise.all([
+@@ -4135,11 +4297,13 @@ router.get('/users/:id/permissions', requireRole(...adminRoles), validate(idPara
+   sendData(res, normalize({ overrides, branchAccess }));
+ }));
+ 
+-router.post('/users/:id/permissions', requireRole(...adminRoles), validate(idParam, 'params'), validate(permissionOverrideSchema), asyncHandler(async (req, res) => {
++router.post('/users/:id/permissions', validate(idParam, 'params'), validate(permissionOverrideSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'permissions.manage');
+   if (req.params.id === req.user.id) throw new AppError(403, 'You cannot change your own permissions.');
+-  await requireCompanyUser(req, req.params.id);
++  const target = await requireCompanyUser(req, req.params.id);
++  if (target.role === 'OWNER') throw new AppError(403, 'Owner permissions cannot be changed through delegated access controls.');
+   if (req.body.branchId) await requireBranch(req, req.body.branchId);
++  await resolveDelegatedPermissions(req, { permissions: [req.body.permissionKey], scopeType: req.body.branchId ? 'BRANCH' : 'COMPANY', branchIds: req.body.branchId ? [req.body.branchId] : [], teamIds: [] });
+   const data = await prisma.userPermissionOverride.upsert({
+     where: { companyId_userId_permissionKey_branchId: { companyId: req.companyId, userId: req.params.id, permissionKey: req.body.permissionKey, branchId: req.body.branchId || null } },
+     update: { allowed: req.body.allowed, branchId: req.body.branchId || null },
+@@ -4149,15 +4313,17 @@ router.post('/users/:id/permissions', requireRole(...adminRoles), validate(idPar
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.post('/users/:id/branch-access', requireRole(...adminRoles), validate(idParam, 'params'), validate(branchAccessSchema), asyncHandler(async (req, res) => {
++router.post('/users/:id/branch-access', validate(idParam, 'params'), validate(branchAccessSchema), asyncHandler(async (req, res) => {
+   await requirePermission(req, 'permissions.manage');
+   if (req.params.id === req.user.id) throw new AppError(403, 'You cannot change your own access scope.');
+-  await requireCompanyUser(req, req.params.id);
++  const target = await requireCompanyUser(req, req.params.id);
++  if (target.role === 'OWNER') throw new AppError(403, 'Owner scope cannot be changed through delegated access controls.');
+   await requireBranch(req, req.body.branchId);
++  const delegated = await resolveDelegatedPermissions(req, { permissions: req.body.permissions || [], scopeType: 'BRANCH', branchIds: [req.body.branchId], teamIds: [] });
+   const data = await prisma.userBranchAccess.upsert({
+     where: { companyId_userId_branchId: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId } },
+-    update: { permissions: req.body.permissions || [], active: req.body.active !== false },
+-    create: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId, permissions: req.body.permissions || [], active: req.body.active !== false }
++    update: { permissions: delegated, active: req.body.active !== false },
++    create: { companyId: req.companyId, userId: req.params.id, branchId: req.body.branchId, permissions: delegated, active: req.body.active !== false }
+   });
+   await addEnterpriseAudit(req, 'UPSERT_BRANCH_ACCESS', 'User', req.params.id, { branchId: req.body.branchId, active: req.body.active !== false });
+   sendData(res, normalize(data), 201);
+@@ -4216,16 +4382,27 @@ async function executeApprovedAction(req, approval, decisionNote) {
+ 
+ router.get('/dashboard', asyncHandler(async (req, res) => {
+   const companyId = req.companyId;
+-  if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
++  const access = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId });
++  const canOperational = access.permissions.includes('dashboard.operational.view');
++  const canFinancial = access.permissions.includes('dashboard.financial.view');
++  const canExecutive = access.permissions.includes('dashboard.executive.view');
++  if (!canOperational && !canFinancial && !canExecutive) throw new AppError(403, 'Missing dashboard permission.');
++
++  if (req.query.branchId) {
++    await requireBranch(req, String(req.query.branchId));
++    if (access.scopeType === 'BRANCH' && !access.branchIds.includes(String(req.query.branchId))) throw new AppError(403, 'Branch is outside your access scope.');
++  }
+   const branchWhere = branchFilterFromQuery(req);
+-  const jobWhere = { companyId, ...branchWhere, ...workerJobScope(req) };
++  const jobWhere = { companyId, ...workerJobScope(req), ...branchWhere };
+   const now = new Date();
+   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+   const end = new Date(start);
+   end.setDate(end.getDate() + 1);
+ 
+-  if (req.user.role === 'WORKER') {
+-    const workerId = req.user.worker ? req.user.worker.id : '__none__';
++  // SELF-scoped workforce users receive the worker dashboard even if their coarse
++  // classification changes later. TEAM/BRANCH supervisors receive a scoped manager view.
++  if (access.scopeType === 'SELF' && req.user.worker) {
++    const workerId = req.user.worker.id;
+     const workerWhere = { companyId, workerId };
+     const [company, activeJob, jobsToday, upcomingJobs, completedJobs, assignedJobs] = await Promise.all([
+       getCompanyWithBranding(companyId),
+@@ -4240,22 +4417,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
+     const recentActivity = assignedJobIds.length
+       ? await prisma.jobActivity.findMany({ where: { companyId, jobId: { in: assignedJobIds }, type: { in: ['ARRIVED', 'STARTED', 'PAUSED', 'RESUMED', 'COMPLETED'] } }, include: { ...jobActivityInclude, job: { include: { customer: true } } }, orderBy: { createdAt: 'desc' }, take: 8 })
+       : [];
+-    const workerJobSummary = (job) => job && ({
+-      id: job.id,
+-      title: job.title,
+-      status: job.status,
+-      scheduledStart: job.scheduledStart,
+-      scheduledEnd: job.scheduledEnd,
+-      customer: job.customer ? { id: job.customer.id, name: job.customer.name, address: job.customer.address } : null
+-    });
+-    const workerActivitySummary = (item) => ({
+-      id: item.id,
+-      jobId: item.jobId,
+-      type: item.type,
+-      note: item.note,
+-      createdAt: item.createdAt,
+-      job: workerJobSummary(item.job)
+-    });
++    const workerJobSummary = (job) => job && ({ id: job.id, title: job.title, status: job.status, scheduledStart: job.scheduledStart, scheduledEnd: job.scheduledEnd, customer: job.customer ? { id: job.customer.id, name: job.customer.name, address: job.customer.address } : null });
++    const workerActivitySummary = (item) => ({ id: item.id, jobId: item.jobId, type: item.type, note: item.note, createdAt: item.createdAt, job: workerJobSummary(item.job) });
+     const requiredActions = [];
+     if (activeJob && activeJob.status === 'IN_PROGRESS') requiredActions.push({ type: 'COMPLETE_ACTIVE_JOB', label: 'Complete active job', jobId: activeJob.id });
+     if (activeJob && activeJob.status === 'PAUSED') requiredActions.push({ type: 'RESUME_PAUSED_JOB', label: 'Resume paused job', jobId: activeJob.id });
+@@ -4269,12 +4432,8 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
+       role: 'WORKER',
+       branding: publicBranding(company),
+       company: profileResponse(company),
+-      today: {
+-        totalJobs: jobsToday.length,
+-        completedJobs,
+-        remainingJobs: Math.max(jobsToday.length - completedJobs, 0),
+-        activeJob: workerJobSummary(activeJob)
+-      },
++      capabilities: { operational: true, financial: canFinancial, executive: canExecutive },
++      today: { totalJobs: jobsToday.length, completedJobs, remainingJobs: Math.max(jobsToday.length - completedJobs, 0), activeJob: workerJobSummary(activeJob) },
+       jobsToday: jobsToday.map(workerJobSummary),
+       upcomingJobs: upcomingJobs.map(workerJobSummary),
+       recentActivity: recentActivity.map(workerActivitySummary),
+@@ -4282,26 +4441,43 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
+     }));
+   }
+ 
+-  const [company, jobsToday, activeWorkers, recentJobs, schedule, workers, pipeline, unpaid] = await Promise.all([
++  const financeWhere = { companyId, ...financeRecordScopeWhere(req), ...branchWhere };
++  const [company, jobsToday, activeWorkers, recentJobs, schedule, workers] = await Promise.all([
+     getCompanyWithBranding(companyId),
+     prisma.job.count({ where: { ...jobWhere, scheduledStart: { gte: start, lt: end } } }),
+-    req.user.role === 'WORKER' ? Promise.resolve(req.user.worker && req.user.worker.active ? 1 : 0) : prisma.workerProfile.count({ where: { companyId, active: true } }),
++    prisma.workerProfile.count({ where: { companyId, active: true, ...workerProfileScopeWhere(req) } }),
+     prisma.job.findMany({ where: jobWhere, include: { customer: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { createdAt: 'desc' }, take: 5 }),
+-    prisma.scheduleItem.findMany({ where: { companyId, startsAt: { gte: start, lt: end }, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) }, include: { job: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { startsAt: 'asc' }, take: 5 }),
+-    req.user.role === 'WORKER' ? Promise.resolve(req.user.worker ? [req.user.worker] : []) : prisma.workerProfile.findMany({ where: { companyId }, include: SAFE_WORKER_INCLUDE, take: 5 }),
+-    req.user.role === 'WORKER' ? Promise.resolve([]) : prisma.quote.groupBy({ by: ['status'], where: { companyId, deletedAt: null }, _count: true }),
+-    req.user.role === 'WORKER' ? Promise.resolve([]) : prisma.invoice.findMany({ where: { companyId, status: { in: ['SENT', 'OVERDUE'] } }, select: { amount: true } })
++    prisma.scheduleItem.findMany({ where: { companyId, startsAt: { gte: start, lt: end }, ...scheduleScopeWhere(req) }, include: { job: true, worker: { include: SAFE_WORKER_INCLUDE } }, orderBy: { startsAt: 'asc' }, take: 5 }),
++    prisma.workerProfile.findMany({ where: { companyId, ...workerProfileScopeWhere(req) }, include: SAFE_WORKER_INCLUDE, take: 5 })
+   ]);
+ 
+-  const unpaidInvoices = unpaid.reduce((sum, invoice) => sum + Number(invoice.amount), 0);
+-  const totals = { jobsToday, revenueMonthToDate: 0, unpaidInvoices, activeWorkers };
+-  const pipe = { leads: 0, quoted: 0, won: 0 };
+-  for (const item of pipeline) {
+-    if (item.status === 'DRAFT') pipe.leads += item._count;
+-    if (item.status === 'SENT') pipe.quoted += item._count;
+-    if (item.status === 'ACCEPTED') pipe.won += item._count;
++  const totals = { jobsToday, activeWorkers };
++  let pipeline;
++  if (canFinancial) {
++    const [pipelineRows, unpaid] = await Promise.all([
++      prisma.quote.groupBy({ by: ['status'], where: { ...financeWhere, deletedAt: null }, _count: true }),
++      prisma.invoice.findMany({ where: { ...financeWhere, status: { in: ['SENT', 'OVERDUE'] } }, select: { amount: true } })
++    ]);
++    totals.revenueMonthToDate = 0;
++    totals.unpaidInvoices = unpaid.reduce((sum, invoice) => sum + Number(invoice.amount), 0);
++    pipeline = { leads: 0, quoted: 0, won: 0 };
++    for (const item of pipelineRows) {
++      if (item.status === 'DRAFT') pipeline.leads += item._count;
++      if (item.status === 'SENT') pipeline.quoted += item._count;
++      if (item.status === 'ACCEPTED') pipeline.won += item._count;
++    }
+   }
+-  sendData(res, normalize({ branding: publicBranding(company), company: profileResponse(company), totals, schedule, workers, recentJobs, pipeline: pipe }));
++
++  sendData(res, normalize({
++    branding: publicBranding(company),
++    company: profileResponse(company),
++    capabilities: { operational: canOperational, financial: canFinancial, executive: canExecutive },
++    totals,
++    schedule,
++    workers,
++    recentJobs,
++    ...(pipeline ? { pipeline } : {})
++  }));
+ }));
+ 
+ router.get('/notification-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+@@ -4376,7 +4552,8 @@ router.post('/admin/integrations/:id/disable', requireRole(...adminRoles), valid
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/audit-logs', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/audit-logs', asyncHandler(async (req, res) => {
++  if (req.effectiveAccess.scopeType !== 'COMPANY' && req.user.role !== 'OWNER') throw new AppError(403, 'Audit logs require company-wide scope.');
+   const result = await paged(prisma.auditLog, req, { where: { companyId: req.companyId }, include: { user: { select: SAFE_USER_SELECT } }, orderBy: { createdAt: 'desc' } });
+   const data = result.data.map((item) => ({
+     id: item.id,
+@@ -4397,47 +4574,54 @@ router.get('/system/status', requireRole(...adminRoles), asyncHandler(async (req
+ const billingPlanSchema = z.object({ planId: z.string().min(1) });
+ const mockPlanSelectionSchema = z.object({ planId: z.string().min(1), billingInterval: z.enum(['MONTHLY', 'ANNUAL']) });
+ 
+-router.get('/billing/catalog', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
++router.get('/billing/catalog', asyncHandler(async (req, res) => {
+   sendData(res, await billingCatalog(req.companyId));
+ }));
+ 
+-router.post('/billing/mock-select', requireRole(...ownerRoles), validate(mockPlanSelectionSchema), asyncHandler(async (req, res) => {
++router.post('/billing/mock-select', validate(mockPlanSelectionSchema), asyncHandler(async (req, res) => {
+   const data = await selectMockPlan(req.companyId, req.body.planId, req.body.billingInterval, req.user.id);
+   await audit(req, data.pricing.custom ? 'ENTERPRISE_CONTACT_REQUESTED' : 'MOCK_PLAN_SELECTED', 'CompanySubscription', req.companyId, { planId: req.body.planId, billingInterval: req.body.billingInterval, provider: 'MOCK_INTERNAL', externalPaymentProcessed: false });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/billing/plans', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
++router.get('/billing/plans', asyncHandler(async (req, res) => {
+   sendData(res, await listPlans());
+ }));
+ 
+-router.get('/billing/subscription', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
++router.get('/billing/subscription', asyncHandler(async (req, res) => {
+   sendData(res, normalize(await billingSummary(req.companyId)));
+ }));
+ 
+-router.get('/billing/usage', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
++router.get('/billing/usage', asyncHandler(async (req, res) => {
+   sendData(res, normalize(await getUsage(req.companyId)));
+ }));
+ 
+-router.post('/billing/checkout', requireRole(...ownerRoles), validate(billingPlanSchema), asyncHandler(async (req, res) => {
++router.post('/billing/checkout', validate(billingPlanSchema), asyncHandler(async (req, res) => {
+   const data = await createCheckout(req.companyId, req.body.planId, req.user.id);
+   await audit(req, 'CHECKOUT_STARTED', 'CompanySubscription', req.companyId, { planId: req.body.planId, provider: data.provider, mode: data.mode });
+   sendData(res, normalize(data), 202);
+ }));
+ 
+-router.post('/billing/change-plan', requireRole(...ownerRoles), validate(billingPlanSchema), asyncHandler(async (req, res) => {
++router.post('/billing/change-plan', validate(billingPlanSchema), asyncHandler(async (req, res) => {
+   const data = await changePlan(req.companyId, req.body.planId, req.user.id);
+   await audit(req, 'CHANGE_PLAN', 'CompanySubscription', req.companyId, { planId: req.body.planId });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/billing/cancel', requireRole(...ownerRoles), asyncHandler(async (req, res) => {
++router.post('/billing/cancel', asyncHandler(async (req, res) => {
+   const data = await cancelSubscription(req.companyId, req.user.id);
+   await audit(req, 'CANCEL_SUBSCRIPTION', 'CompanySubscription', req.companyId);
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/reports', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++function requireCompanyReportScope(req) {
++  if (!req.effectiveAccess || req.effectiveAccess.scopeType !== 'COMPANY') {
++    throw new AppError(403, 'This report requires company-wide reporting scope.');
++  }
++}
++
++router.get('/reports', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   sendData(res, normalize(await reportData(req.companyId, req.query)));
+ }));
+ 
+@@ -4453,11 +4637,14 @@ function dateRangeWhere(query, field = 'createdAt') {
+ }
+ 
+ async function reportBranchWhere(req) {
++  const access = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId: req.companyId });
++  if (access.scopeType === 'TEAM' || access.scopeType === 'SELF') throw new AppError(403, 'Financial reports require company or branch scope.');
+   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
++  if (access.scopeType === 'BRANCH' && !req.query.branchId) return { companyId: req.companyId, branchId: { in: access.branchIds.length ? access.branchIds : ['__none__'] } };
+   return { companyId: req.companyId, ...branchFilterFromQuery(req) };
+ }
+ 
+-router.get('/reports/branch-performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/branch-performance', asyncHandler(async (req, res) => {
+   const where = await reportBranchWhere(req);
+   const [branches, jobs, invoices, payments] = await Promise.all([
+     prisma.branch.findMany({ where: { companyId: req.companyId }, orderBy: { createdAt: 'desc' } }),
+@@ -4473,7 +4660,7 @@ router.get('/reports/branch-performance', requireRole(...adminRoles), asyncHandl
+   sendData(res, normalize(Array.from(byBranch.values()).filter((row) => req.query.branchId ? row.branch && row.branch.id === req.query.branchId : true)));
+ }));
+ 
+-router.get('/reports/service-profitability', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/service-profitability', asyncHandler(async (req, res) => {
+   const where = await reportBranchWhere(req);
+   const [jobs, parts] = await Promise.all([
+     prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) }, include: { service: true } }),
+@@ -4490,7 +4677,7 @@ router.get('/reports/service-profitability', requireRole(...adminRoles), asyncHa
+   sendData(res, normalize(Array.from(rows.values())));
+ }));
+ 
+-router.get('/reports/technician-productivity', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/technician-productivity', asyncHandler(async (req, res) => {
+   const where = await reportBranchWhere(req);
+   const jobs = await prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) }, include: { worker: { include: SAFE_WORKER_INCLUDE } } });
+   const rows = new Map();
+@@ -4502,7 +4689,7 @@ router.get('/reports/technician-productivity', requireRole(...adminRoles), async
+   sendData(res, normalize(Array.from(rows.values())));
+ }));
+ 
+-router.get('/reports/sla-performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/sla-performance', asyncHandler(async (req, res) => {
+   const where = await reportBranchWhere(req);
+   const jobs = await prisma.job.findMany({ where: { ...where, ...dateRangeWhere(req.query) } });
+   const rows = Object.fromEntries(slaStatusValues.map((status) => [status, 0]));
+@@ -4510,7 +4697,7 @@ router.get('/reports/sla-performance', requireRole(...adminRoles), asyncHandler(
+   sendData(res, { total: jobs.length, byStatus: rows, breached: rows.BREACHED || 0, waived: rows.WAIVED || 0 });
+ }));
+ 
+-router.get('/reports/contract-profitability', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/contract-profitability', asyncHandler(async (req, res) => {
+   const where = await reportBranchWhere(req);
+   const contracts = await prisma.serviceContract.findMany({ where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: contractInclude });
+   const jobs = await prisma.job.findMany({ where: { ...where, contractId: { not: null }, ...dateRangeWhere(req.query) }, include: { contract: true } });
+@@ -4529,7 +4716,8 @@ router.get('/reports/contract-profitability', requireRole(...adminRoles), asyncH
+   sendData(res, normalize({ rows, totalRevenue: rows.reduce((sum, row) => sum + row.revenue, 0), totalPartsCost: rows.reduce((sum, row) => sum + row.partsCost, 0), totalGrossMarginEstimate: rows.reduce((sum, row) => sum + row.grossMarginEstimate, 0) }));
+ }));
+ 
+-router.get('/reports/inventory-value', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/inventory-value', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const locationWhere = { companyId: req.companyId, ...branchFilterFromQuery(req) };
+   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+   const locations = await prisma.stockLocation.findMany({ where: locationWhere });
+@@ -4538,7 +4726,8 @@ router.get('/reports/inventory-value', requireRole(...adminRoles), asyncHandler(
+   sendData(res, normalize({ totalValue: rows.reduce((sum, row) => sum + row.value, 0), rows }));
+ }));
+ 
+-router.get('/reports/purchase-spend', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/purchase-spend', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const where = { companyId: req.companyId, ...branchFilterFromQuery(req), ...dateRangeWhere(req.query) };
+   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+   const orders = await prisma.purchaseOrder.findMany({ where, include: { supplier: true, lines: { include: { item: true } } } });
+@@ -4546,7 +4735,8 @@ router.get('/reports/purchase-spend', requireRole(...adminRoles), asyncHandler(a
+   sendData(res, normalize({ totalSpend: rows.reduce((sum, row) => sum + row.total, 0), rows }));
+ }));
+ 
+-router.get('/reports/accounts-receivable-aging', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/accounts-receivable-aging', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const where = { companyId: req.companyId, ...branchFilterFromQuery(req), status: { in: ['SENT', 'PARTIALLY_PAID', 'OVERDUE'] } };
+   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+   const invoices = await prisma.invoice.findMany({ where, include: { customer: true } });
+@@ -4583,7 +4773,8 @@ async function analyticsPayload(req) {
+   return buildExecutiveAnalytics(req.companyId, req.query, { branchIds });
+ }
+ 
+-router.get('/reports/export', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/export', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const section = String(req.query.section || 'revenue');
+   if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'Unsupported report export section.');
+   const data = await reportData(req.companyId, req.query);
+@@ -5130,24 +5321,24 @@ const customerSchema = z.object({
+   notes: z.string().optional()
+ });
+ 
+-router.get('/customers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/customers', asyncHandler(async (req, res) => {
+   if (req.query.branchId) await requireBranch(req, String(req.query.branchId));
+-  const result = await paged(prisma.customer, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, orderBy: { createdAt: 'desc' }, include: { jobs: true, invoices: true } });
++  const result = await paged(prisma.customer, req, { where: { companyId: req.companyId, ...customerScopeWhere(req), ...branchFilterFromQuery(req) }, orderBy: { createdAt: 'desc' }, include: { jobs: true, invoices: true } });
+   sendData(res, normalize(result.data), 200, result.meta);
+ }));
+ 
+-router.post('/customers', requireRole(...adminRoles), validate(customerSchema), asyncHandler(async (req, res) => {
++router.post('/customers', validate(customerSchema), asyncHandler(async (req, res) => {
+   if (req.body.branchId) await requireBranch(req, req.body.branchId);
+   const data = await prisma.customer.create({ data: { ...req.body, companyId: req.companyId } });
+   await audit(req, 'CREATE', 'Customer', data.id);
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.get('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/customers/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   sendData(res, normalize(await requireCustomer(req, req.params.id)));
+ }));
+ 
+-router.patch('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(customerSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/customers/:id', validate(idParam, 'params'), validate(customerSchema.partial()), asyncHandler(async (req, res) => {
+   await requireCustomer(req, req.params.id);
+   if (req.body.branchId) await requireBranch(req, req.body.branchId);
+   const data = await prisma.customer.update({ where: { id: req.params.id }, data: req.body });
+@@ -5155,7 +5346,7 @@ router.patch('/customers/:id', requireRole(...adminRoles), validate(idParam, 'pa
+   sendData(res, normalize(data));
+ }));
+ 
+-router.delete('/customers/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.delete('/customers/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requireCustomer(req, req.params.id);
+   await prisma.customer.delete({ where: { id: req.params.id } });
+   await audit(req, 'DELETE', 'Customer', req.params.id);
+@@ -5907,31 +6098,31 @@ const workerCreateSchema = z.object({
+ });
+ const workerPatchSchema = z.object({ branchId: z.string().min(1).nullable().optional(), roleId: z.string().nullable().optional(), title: z.string().optional(), phone: z.string().optional(), active: z.boolean().optional() });
+ 
+-router.get('/worker-roles', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/worker-roles', asyncHandler(async (req, res) => {
+   const roles = await prisma.workerRole.findMany({ where: { companyId: req.companyId }, orderBy: { name: 'asc' } });
+   sendData(res, normalize(roles));
+ }));
+ 
+-router.post('/worker-roles', requireRole(...adminRoles), validate(workerRoleSchema), asyncHandler(async (req, res) => {
++router.post('/worker-roles', validate(workerRoleSchema), asyncHandler(async (req, res) => {
+   const data = await prisma.workerRole.upsert({ where: { companyId_name: { companyId: req.companyId, name: req.body.name } }, update: { description: req.body.description, active: req.body.active ?? true }, create: { ...req.body, active: req.body.active ?? true, companyId: req.companyId } });
+   await audit(req, 'CREATE', 'WorkerRole', data.id);
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.patch('/worker-roles/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(workerRoleSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/worker-roles/:id', validate(idParam, 'params'), validate(workerRoleSchema.partial()), asyncHandler(async (req, res) => {
+   await requireWorkerRole(req, req.params.id);
+   const data = await prisma.workerRole.update({ where: { id: req.params.id }, data: req.body });
+   await audit(req, 'UPDATE', 'WorkerRole', data.id);
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/worker-roles/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/worker-roles/:id/availability', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const role = await requireWorkerRole(req, req.params.id);
+   const data = await prisma.roleAvailability.findMany({ where: { companyId: req.companyId, roleId: role.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.put('/worker-roles/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
++router.put('/worker-roles/:id/availability', validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
+   const role = await requireWorkerRole(req, req.params.id);
+   const data = await prisma.$transaction(async (tx) => {
+     await tx.roleAvailability.deleteMany({ where: { companyId: req.companyId, roleId: role.id } });
+@@ -5941,12 +6132,12 @@ router.put('/worker-roles/:id/availability', requireRole(...adminRoles), validat
+   await audit(req, 'UPDATE', 'RoleAvailability', role.id);
+   sendData(res, normalize(data));
+ }));
+-router.get('/workers', requireRole(...adminRoles), asyncHandler(async (req, res) => {
+-  const result = await paged(prisma.workerProfile, req, { where: { companyId: req.companyId }, include: SAFE_WORKER_INCLUDE, orderBy: { createdAt: 'desc' } });
++router.get('/workers', asyncHandler(async (req, res) => {
++  const result = await paged(prisma.workerProfile, req, { where: { companyId: req.companyId, ...workerProfileScopeWhere(req) }, include: SAFE_WORKER_INCLUDE, orderBy: { createdAt: 'desc' } });
+   sendData(res, normalize(result.data.map((w) => ({ ...w, user: publicUser(w.user) }))), 200, result.meta);
+ }));
+ 
+-router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema), asyncHandler(async (req, res) => {
++router.post('/workers', validate(workerCreateSchema), asyncHandler(async (req, res) => {
+   await requirePlanLimit(req.companyId, 'maxUsers');
+   await requirePlanLimit(req.companyId, 'maxWorkers');
+   let role = req.body.roleId ? await requireWorkerRole(req, req.body.roleId) : null;
+@@ -5966,7 +6157,7 @@ router.post('/workers', requireRole(...adminRoles), validate(workerCreateSchema)
+   sendData(res, publicUser(user), 201);
+ }));
+ 
+-router.patch('/workers/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(workerPatchSchema), asyncHandler(async (req, res) => {
++router.patch('/workers/:id', validate(idParam, 'params'), validate(workerPatchSchema), asyncHandler(async (req, res) => {
+   await requireWorker(req, req.params.id);
+   const body = { ...req.body };
+   if (body.roleId) await requireWorkerRole(req, body.roleId);
+@@ -6231,13 +6422,15 @@ router.get('/inventory/movements', requireRole(...adminRoles), asyncHandler(asyn
+   sendData(res, normalize(result.data), 200, result.meta);
+ }));
+ 
+-router.get('/reports/inventory/valuation', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/inventory/valuation', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const stocks = await prisma.inventoryStock.findMany({ where: { companyId: req.companyId }, include: { item: true, location: true } });
+   const data = stocks.map((stock) => ({ itemId: stock.itemId, itemName: stock.item && stock.item.name, locationId: stock.locationId, locationName: stock.location && stock.location.name, branchId: stock.location && stock.location.branchId, quantityOnHand: decimalNumber(stock.quantityOnHand), unitCost: decimalNumber(stock.item && stock.item.unitCost), stockValue: decimalNumber(stock.quantityOnHand) * decimalNumber(stock.item && stock.item.unitCost) }));
+   sendData(res, normalize({ totalValue: data.reduce((sum, row) => sum + row.stockValue, 0), rows: data }));
+ }));
+ 
+-router.get('/reports/inventory/low-stock', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/inventory/low-stock', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const items = await prisma.inventoryItem.findMany({ where: { companyId: req.companyId, active: true }, include: inventoryItemInclude });
+   const data = items.map((item) => {
+     const onHand = (item.stocks || []).reduce((sum, stock) => sum + decimalNumber(stock.quantityOnHand), 0);
+@@ -6247,19 +6440,22 @@ router.get('/reports/inventory/low-stock', requireRole(...adminRoles), asyncHand
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/reports/inventory/stock-adjustments', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/inventory/stock-adjustments', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const data = await prisma.stockMovement.findMany({ where: { companyId: req.companyId, movementType: { in: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'] } }, include: { item: true, location: true, createdBy: { select: SAFE_USER_SELECT } }, orderBy: { createdAt: 'desc' } });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/reports/inventory/parts-used', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/inventory/parts-used', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const where = { companyId: req.companyId };
+   if (req.query.jobId) where.jobId = String(req.query.jobId);
+   const data = await prisma.jobPartUsage.findMany({ where, include: jobPartInclude, orderBy: { createdAt: 'desc' } });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/reports/suppliers/performance', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/reports/suppliers/performance', asyncHandler(async (req, res) => {
++  requireCompanyReportScope(req);
+   const suppliers = await prisma.supplier.findMany({ where: { companyId: req.companyId } });
+   const orders = await prisma.purchaseOrder.findMany({ where: { companyId: req.companyId }, include: purchaseOrderInclude });
+   const data = suppliers.map((supplier) => {
+@@ -6802,7 +6998,7 @@ router.patch('/jobs/:id', requireRole(...adminRoles), validate(idParam, 'params'
+   sendData(res, normalize(jobWithEvidenceStatus(data)));
+ }));
+ 
+-router.post('/jobs/:id/assign-worker', requireRole(...adminRoles), validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1), reason: optionalText(1000) })), asyncHandler(async (req, res) => {
++router.post('/jobs/:id/assign-worker', validate(idParam, 'params'), validate(z.object({ workerId: z.string().min(1), reason: optionalText(1000) })), asyncHandler(async (req, res) => {
+   const existing = await requireJob(req, req.params.id, { assignedOnly: false });
+   await requireWorker(req, req.body.workerId);
+   if (existing.workerId && existing.workerId !== req.body.workerId && ['DISPATCHED', 'ARRIVED', 'IN_PROGRESS', 'PAUSED'].includes(existing.status)) {
+@@ -7086,17 +7282,17 @@ function fallbackQuoteLines(body) {
+   return [];
+ }
+ 
+-router.get('/quotes', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/quotes', asyncHandler(async (req, res) => {
+   await purgeExpiredDeletedQuotes(req.companyId);
+   const [company, result] = await Promise.all([
+     getCompanyWithBranding(req.companyId),
+-    paged(prisma.quote, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req), ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
++    paged(prisma.quote, req, { where: { companyId: req.companyId, ...financeRecordScopeWhere(req), ...branchFilterFromQuery(req), ...quoteDeletedFilter(req) }, include: quoteInclude, orderBy: { createdAt: 'desc' } })
+   ]);
+   const finance = await getCompanyFinanceSettings(req.companyId);
+   sendData(res, normalize(result.data.map((item) => attachLocalization({ ...item, branding: publicBranding(company) }, finance))), 200, result.meta);
+ }));
+ 
+-router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncHandler(async (req, res) => {
++router.post('/quotes', validate(quoteSchema), asyncHandler(async (req, res) => {
+   if (req.body.branchId) await requireBranch(req, req.body.branchId);
+   await validateQuoteRelations(req, req.body);
+   const finance = await getCompanyFinanceSettings(req.companyId);
+@@ -7123,13 +7319,13 @@ router.post('/quotes', requireRole(...adminRoles), validate(quoteSchema), asyncH
+   sendData(res, normalize(attachLocalization(data, finance)), 201);
+ }));
+ 
+-router.get('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/quotes/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requireQuote(req, req.params.id);
+   const data = await prisma.quote.findFirst({ where: { id: req.params.id, companyId: req.companyId, deletedAt: null }, include: quoteInclude });
+   sendData(res, normalize(attachLocalization(data, await getCompanyFinanceSettings(req.companyId))));
+ }));
+ 
+-router.patch('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(quoteSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/quotes/:id', validate(idParam, 'params'), validate(quoteSchema.partial()), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
+   await validateQuoteRelations(req, req.body);
+@@ -7160,7 +7356,7 @@ async function transitionQuote(req, status, stamp, note) {
+   });
+ }
+ 
+-router.post('/quotes/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/send', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const before = await requireQuote(req, req.params.id);
+   const data = await transitionQuote(req, 'SENT', 'sentAt', 'Quote sent');
+   await audit(req, 'SEND', 'Quote', data.id);
+@@ -7168,7 +7364,7 @@ router.post('/quotes/:id/send', requireRole(...adminRoles), validate(idParam, 'p
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/accept', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   const wasAccepted = quote.status === 'ACCEPTED';
+   if (quote.status === 'REJECTED' || quote.status === 'EXPIRED') throw new AppError(409, 'Rejected or expired quotes cannot be accepted');
+@@ -7189,7 +7385,7 @@ router.post('/quotes/:id/accept', requireRole(...adminRoles), validate(idParam,
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/quotes/:id/reject', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/reject', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const before = await requireQuote(req, req.params.id);
+   const data = await transitionQuote(req, 'REJECTED', 'rejectedAt', 'Quote rejected');
+   await audit(req, 'REJECT', 'Quote', data.id);
+@@ -7197,7 +7393,7 @@ router.post('/quotes/:id/reject', requireRole(...adminRoles), validate(idParam,
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/quotes/:id/reverse-rejection', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/reverse-rejection', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   if (quote.status !== 'REJECTED') throw new AppError(409, 'Only rejected quotes can have rejection reversed');
+   const data = await prisma.$transaction(async (tx) => {
+@@ -7208,7 +7404,7 @@ router.post('/quotes/:id/reverse-rejection', requireRole(...adminRoles), validat
+   sendData(res, normalize(data));
+ }));
+ 
+-router.delete('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.delete('/quotes/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   const deletedAt = new Date();
+   const deleteExpiresAt = new Date(deletedAt.getTime() + quoteDeleteRetentionDays * 24 * 60 * 60 * 1000);
+@@ -7217,7 +7413,7 @@ router.delete('/quotes/:id', requireRole(...adminRoles), validate(idParam, 'para
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/quotes/:id/restore', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/restore', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id, { includeDeleted: true });
+   if (!quote.deletedAt) return sendData(res, normalize(await prisma.quote.findFirst({ where: { id: quote.id, companyId: req.companyId }, include: quoteInclude })));
+   const data = await prisma.quote.update({ where: { id: quote.id }, data: { deletedAt: null, deleteExpiresAt: null }, include: quoteInclude });
+@@ -7225,13 +7421,13 @@ router.post('/quotes/:id/restore', requireRole(...adminRoles), validate(idParam,
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/quotes/:id/expire', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/expire', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const data = await transitionQuote(req, 'EXPIRED', 'expiredAt', 'Quote expired');
+   await audit(req, 'EXPIRE', 'Quote', data.id);
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/quotes/:id/line-items', requireRole(...adminRoles), validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
++router.post('/quotes/:id/line-items', validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
+   if (req.body.serviceId) await requireService(req, req.body.serviceId);
+@@ -7243,7 +7439,7 @@ router.post('/quotes/:id/line-items', requireRole(...adminRoles), validate(idPar
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.patch('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/quotes/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
+   await requireQuoteLineItem(req, quote.id, req.params.lineItemId);
+@@ -7258,7 +7454,7 @@ router.patch('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), v
+   sendData(res, normalize(data));
+ }));
+ 
+-router.delete('/quotes/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
++router.delete('/quotes/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
+   const quote = await requireQuote(req, req.params.id);
+   if (quote.status !== 'DRAFT') throw new AppError(409, 'Only draft quotes can be edited');
+   await requireQuoteLineItem(req, quote.id, req.params.lineItemId);
+@@ -7292,16 +7488,16 @@ function fallbackInvoiceLines(body) {
+   return [];
+ }
+ 
+-router.get('/invoices', requireRole(...adminRoles), asyncHandler(async (req, res) => {
++router.get('/invoices', asyncHandler(async (req, res) => {
+   const [company, result] = await Promise.all([
+     getCompanyWithBranding(req.companyId),
+-    paged(prisma.invoice, req, { where: { companyId: req.companyId, ...branchFilterFromQuery(req) }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
++    paged(prisma.invoice, req, { where: { companyId: req.companyId, ...financeRecordScopeWhere(req), ...branchFilterFromQuery(req) }, include: invoiceInclude, orderBy: { createdAt: 'desc' } })
+   ]);
+   const finance = await getCompanyFinanceSettings(req.companyId);
+   sendData(res, normalize(result.data.map((item) => attachLocalization({ ...item, branding: publicBranding(company) }, finance))), 200, result.meta);
+ }));
+ 
+-router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), asyncHandler(async (req, res) => {
++router.post('/invoices', validate(invoiceSchema), asyncHandler(async (req, res) => {
+   if (req.body.branchId) await requireBranch(req, req.body.branchId);
+   await validateInvoiceRelations(req, req.body);
+   if (req.body.quoteId) await requireQuote(req, req.body.quoteId);
+@@ -7322,13 +7518,13 @@ router.post('/invoices', requireRole(...adminRoles), validate(invoiceSchema), as
+   sendData(res, normalize(attachLocalization(data, finance)), 201);
+ }));
+ 
+-router.get('/invoices/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/invoices/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requireInvoice(req, req.params.id);
+   const data = await prisma.invoice.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: invoiceInclude });
+   sendData(res, normalize(attachLocalization(data, await getCompanyFinanceSettings(req.companyId))));
+ }));
+ 
+-router.patch('/invoices/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(invoiceSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/invoices/:id', validate(idParam, 'params'), validate(invoiceSchema.partial()), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
+   await validateInvoiceRelations(req, req.body);
+@@ -7380,7 +7576,7 @@ async function transitionInvoice(req, status, stamp, note) {
+   });
+ }
+ 
+-router.post('/invoices/:id/send', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/send', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const before = await requireInvoice(req, req.params.id);
+   const data = await transitionInvoice(req, 'SENT', 'sentAt', 'Invoice sent');
+   await audit(req, 'SEND', 'Invoice', data.id);
+@@ -7388,7 +7584,7 @@ router.post('/invoices/:id/send', requireRole(...adminRoles), validate(idParam,
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/invoices/:id/void', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/void', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   const approval = await requireApprovalOrProceed(req, { eventType: 'INVOICE_VOID', actionKey: 'invoice.void', entityType: 'Invoice', entityId: invoice.id, branchId: invoice.branchId, amount: invoice.total || invoice.amount, reason: req.body && req.body.reason });
+   if (approval) return sendData(res, approvalRequiredPayload(approval), 202);
+@@ -7397,7 +7593,7 @@ router.post('/invoices/:id/void', requireRole(...adminRoles), validate(idParam,
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/invoices/:id/mark-paid', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/mark-paid', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   if (invoice.status === 'PAID') return sendData(res, normalize(await prisma.invoice.findFirst({ where: { id: invoice.id, companyId: req.companyId }, include: invoiceInclude })));
+   const amountDue = invoice.balanceDue || invoice.total || invoice.amount;
+@@ -7409,7 +7605,7 @@ router.post('/invoices/:id/mark-paid', requireRole(...adminRoles), validate(idPa
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/invoices/:id/line-items', requireRole(...adminRoles), validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/line-items', validate(idParam, 'params'), validate(lineItemSchema), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
+   if (req.body.serviceId) await requireService(req, req.body.serviceId);
+@@ -7421,7 +7617,7 @@ router.post('/invoices/:id/line-items', requireRole(...adminRoles), validate(idP
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.patch('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/invoices/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), validate(lineItemSchema.partial()), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
+   await requireInvoiceLineItem(req, invoice.id, req.params.lineItemId);
+@@ -7436,7 +7632,7 @@ router.patch('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles),
+   sendData(res, normalize(data));
+ }));
+ 
+-router.delete('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles), validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
++router.delete('/invoices/:id/line-items/:lineItemId', validate(lineItemParam, 'params'), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   if (invoice.status === 'PAID' || invoice.status === 'VOID') throw new AppError(409, 'Paid or void invoices cannot be edited');
+   await requireInvoiceLineItem(req, invoice.id, req.params.lineItemId);
+@@ -7450,13 +7646,13 @@ router.delete('/invoices/:id/line-items/:lineItemId', requireRole(...adminRoles)
+ 
+ const paymentSchema = z.object({ amount: amount, method: z.enum(paymentMethodValues).default('OTHER'), status: z.enum(['PENDING', 'CONFIRMED']).optional(), reference: z.string().trim().max(200).optional(), receivedAt: optionalDate, notes: z.string().trim().max(1000).optional() });
+ 
+-router.get('/invoices/:id/payments', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/invoices/:id/payments', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requireInvoice(req, req.params.id);
+   const data = await prisma.payment.findMany({ where: { companyId: req.companyId, invoiceId: req.params.id }, orderBy: { createdAt: 'desc' } });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idParam, 'params'), validate(paymentSchema), asyncHandler(async (req, res) => {
++router.post('/invoices/:id/payments', validate(idParam, 'params'), validate(paymentSchema), asyncHandler(async (req, res) => {
+   const invoice = await requireInvoice(req, req.params.id);
+   if (invoice.status === 'PAID') throw new AppError(409, 'Invoice is already paid');
+   await assertPaymentMethodAllowed(req.companyId, req.body.method);
+@@ -7475,7 +7671,7 @@ router.post('/invoices/:id/payments', requireRole(...adminRoles), validate(idPar
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/payments/:id/confirm', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const payment = await prisma.payment.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+   if (!payment) throw notFound('Payment not found');
+   const invoice = await requireInvoice(req, payment.invoiceId);
+@@ -7495,7 +7691,7 @@ router.post('/payments/:id/confirm', requireRole(...adminRoles), validate(idPara
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/payments/:id/refund', requireRole(...adminRoles), validate(idParam, 'params'), validate(refundSchema), asyncHandler(async (req, res) => {
++router.post('/payments/:id/refund', validate(idParam, 'params'), validate(refundSchema), asyncHandler(async (req, res) => {
+   const payment = await prisma.payment.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+   if (!payment) throw notFound('Payment not found');
+   if (payment.status === 'REFUNDED') throw new AppError(409, 'Payment is already refunded');
+@@ -7532,7 +7728,7 @@ router.get('/receipts/:id', requireRole(...adminRoles), validate(idParam, 'param
+   sendData(res, normalize({ ...receipt, company: profileResponse(company), branding: publicBranding(company) }));
+ }));
+ 
+-router.get('/invoices/:id/receipts', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/invoices/:id/receipts', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   await requireInvoice(req, req.params.id);
+   const data = await prisma.receipt.findMany({ where: { companyId: req.companyId, invoiceId: req.params.id }, include: { payment: true }, orderBy: { issuedAt: 'desc' } });
+   sendData(res, normalize(data));
+@@ -7542,7 +7738,7 @@ function scheduleWhere(req, extra = {}) {
+   return {
+     companyId: req.companyId,
+     status: { in: activeScheduleStatuses },
+-    ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}),
++    ...scheduleScopeWhere(req),
+     ...extra
+   };
+ }
+@@ -7569,7 +7765,7 @@ router.patch('/company/scheduling-settings', requireRole(...adminRoles), validat
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/schedule/check-conflicts', requireRole(...adminRoles), validate(conflictCheckSchema), asyncHandler(async (req, res) => {
++router.post('/schedule/check-conflicts', validate(conflictCheckSchema), asyncHandler(async (req, res) => {
+   const result = await checkScheduleConflicts(req, req.body);
+   sendData(res, normalize({ hasConflict: result.hasConflict, conflicts: result.conflicts }));
+ }));
+@@ -7596,7 +7792,7 @@ router.get('/schedule', asyncHandler(async (req, res) => {
+   sendData(res, normalize(result.data), 200, result.meta);
+ }));
+ 
+-router.post('/schedule', requireRole(...adminRoles), validate(scheduleWriteSchema), asyncHandler(async (req, res) => {
++router.post('/schedule', validate(scheduleWriteSchema), asyncHandler(async (req, res) => {
+   const job = await requireJob(req, req.body.jobId, { assignedOnly: false });
+   await requireWorker(req, req.body.workerId);
+   const data = await scheduleJob(req, job, req.body);
+@@ -7609,7 +7805,7 @@ router.get('/schedule/:id', validate(idParam, 'params'), asyncHandler(async (req
+   sendData(res, normalize(await requireScheduleItem(req, req.params.id)));
+ }));
+ 
+-router.patch('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'params'), validate(schedulePatchSchema), asyncHandler(async (req, res) => {
++router.patch('/schedule/:id', validate(idParam, 'params'), validate(schedulePatchSchema), asyncHandler(async (req, res) => {
+   const existing = await requireScheduleItem(req, req.params.id);
+   const job = await requireJob(req, existing.jobId, { assignedOnly: false });
+   if (req.body.status && ['CANCELLED', 'COMPLETED'].includes(req.body.status)) {
+@@ -7624,7 +7820,7 @@ router.patch('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'par
+   sendData(res, normalize(data.schedule));
+ }));
+ 
+-router.delete('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.delete('/schedule/:id', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const existing = await requireScheduleItem(req, req.params.id);
+   const data = await prisma.$transaction(async (tx) => {
+     const schedule = await tx.scheduleItem.update({ where: { id: existing.id }, data: { status: 'CANCELLED', conflictStatus: 'CLEAR', updatedById: req.user.id }, include: scheduleInclude });
+@@ -7636,7 +7832,7 @@ router.delete('/schedule/:id', requireRole(...adminRoles), validate(idParam, 'pa
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
++router.post('/jobs/:id/schedule', validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
+   const job = await requireJob(req, req.params.id, { assignedOnly: false });
+   await ensureQuoteDepositBeforeScheduling(req, job);
+   const data = await scheduleJob(req, job, req.body);
+@@ -7645,7 +7841,7 @@ router.post('/jobs/:id/schedule', requireRole(...adminRoles), validate(idParam,
+   sendData(res, normalize(data.schedule), 201);
+ }));
+ 
+-router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
++router.post('/jobs/:id/reschedule', validate(idParam, 'params'), validate(scheduleWriteSchema.omit({ jobId: true })), asyncHandler(async (req, res) => {
+   const job = await requireJob(req, req.params.id, { assignedOnly: false });
+   await ensureQuoteDepositBeforeScheduling(req, job);
+   const existing = await prisma.scheduleItem.findFirst({ where: { companyId: req.companyId, jobId: job.id, status: { in: activeScheduleStatuses } }, orderBy: { startsAt: 'desc' } });
+@@ -7656,7 +7852,7 @@ router.post('/jobs/:id/reschedule', requireRole(...adminRoles), validate(idParam
+   sendData(res, normalize(data.schedule), 201);
+ }));
+ 
+-router.post('/jobs/:id/unschedule', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.post('/jobs/:id/unschedule', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const job = await requireJob(req, req.params.id, { assignedOnly: false });
+   const active = await prisma.scheduleItem.findMany({ where: { companyId: req.companyId, jobId: job.id, status: { notIn: ['CANCELLED', 'COMPLETED'] } } });
+   const data = await prisma.$transaction(async (tx) => {
+@@ -7667,13 +7863,13 @@ router.post('/jobs/:id/unschedule', requireRole(...adminRoles), validate(idParam
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/workers/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/workers/:id/availability', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const worker = await requireWorker(req, req.params.id);
+   const data = await prisma.workerAvailability.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.put('/workers/:id/availability', requireRole(...adminRoles), validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
++router.put('/workers/:id/availability', validate(idParam, 'params'), validate(availabilitySchema), asyncHandler(async (req, res) => {
+   const worker = await requireWorker(req, req.params.id);
+   const data = await prisma.$transaction(async (tx) => {
+     await tx.workerAvailability.deleteMany({ where: { companyId: req.companyId, workerId: worker.id } });
+@@ -7684,13 +7880,13 @@ router.put('/workers/:id/availability', requireRole(...adminRoles), validate(idP
+   sendData(res, normalize(data));
+ }));
+ 
+-router.get('/workers/:id/time-off', requireRole(...adminRoles), validate(idParam, 'params'), asyncHandler(async (req, res) => {
++router.get('/workers/:id/time-off', validate(idParam, 'params'), asyncHandler(async (req, res) => {
+   const worker = await requireWorker(req, req.params.id);
+   const data = await prisma.workerTimeOff.findMany({ where: { companyId: req.companyId, workerId: worker.id }, orderBy: { startsAt: 'asc' } });
+   sendData(res, normalize(data));
+ }));
+ 
+-router.post('/workers/:id/time-off', requireRole(...adminRoles), validate(idParam, 'params'), validate(timeOffSchema), asyncHandler(async (req, res) => {
++router.post('/workers/:id/time-off', validate(idParam, 'params'), validate(timeOffSchema), asyncHandler(async (req, res) => {
+   const worker = await requireWorker(req, req.params.id);
+   if (req.body.endsAt <= req.body.startsAt) throw new AppError(400, 'Time off end must be after start');
+   const data = await prisma.workerTimeOff.create({ data: { ...req.body, status: req.body.status || 'APPROVED', companyId: req.companyId, workerId: worker.id } });
+@@ -7698,7 +7894,7 @@ router.post('/workers/:id/time-off', requireRole(...adminRoles), validate(idPara
+   sendData(res, normalize(data), 201);
+ }));
+ 
+-router.patch('/workers/:id/time-off/:timeOffId', requireRole(...adminRoles), validate(z.object({ id: z.string().min(1), timeOffId: z.string().min(1) }), 'params'), validate(timeOffSchema.partial()), asyncHandler(async (req, res) => {
++router.patch('/workers/:id/time-off/:timeOffId', validate(z.object({ id: z.string().min(1), timeOffId: z.string().min(1) }), 'params'), validate(timeOffSchema.partial()), asyncHandler(async (req, res) => {
+   const worker = await requireWorker(req, req.params.id);
+   const existing = await prisma.workerTimeOff.findFirst({ where: { id: req.params.timeOffId, companyId: req.companyId, workerId: worker.id } });
+   if (!existing) throw notFound('Time off not found');
+@@ -7807,7 +8003,7 @@ router.post('/worker-location', requireRole('WORKER'), validate(workerLocationSc
+ }));
+ router.get('/worker-location/latest', asyncHandler(async (req, res) => {
+   const pageInfo = pagination(req);
+-  const where = { companyId: req.companyId, ...(req.user.role === 'WORKER' ? { workerId: req.user.worker ? req.user.worker.id : '__none__' } : {}) };
++  const where = { companyId: req.companyId, ...workerLocationScopeWhere(req) };
+   const locations = await prisma.workerLocation.findMany({
+     where,
+     orderBy: { recordedAt: 'desc' },
+diff --git a/src/services/accessControl.service.js b/src/services/accessControl.service.js
+index 8023657..25016e9 100644
+--- a/src/services/accessControl.service.js
++++ b/src/services/accessControl.service.js
+@@ -21,7 +21,11 @@ const PERMISSION_GROUPS = {
+ };
+ 
+ const permissionKeys = [...new Set(Object.values(PERMISSION_GROUPS).flat())];
+-const delegatablePermissionKeys = permissionKeys.filter((key) => !key.startsWith('subscription.'));
++
++// Ownership itself is not represented by a permission key. Therefore every permission
++// key may be delegated when the actor is allowed to delegate it. OWNER-only powers
++// (transfer ownership, delete company, remove final owner) remain protected separately.
++const delegatablePermissionKeys = [...permissionKeys];
+ 
+ const operationsPermissions = permissionKeys.filter((key) => !key.startsWith('subscription.') && !key.startsWith('security.') && !['dashboard.financial.view', 'dashboard.executive.view', 'finance.reports.view', 'settings.finance.manage', 'finance.exports.manage', 'finance.integrations.manage', 'integration.manage', 'permissions.manage', 'roles.manage'].includes(key));
+ const financePermissions = permissionKeys.filter((key) => key.startsWith('invoices.') || key.startsWith('payments.') || key.startsWith('finance.') || key === 'settings.finance.manage' || key === 'dashboard.financial.view' || key === 'invoice.void' || key === 'invoice.discount.approve' || key === 'payment.refund');
+@@ -35,9 +39,9 @@ const defaultPermissionBundles = {
+ };
+ 
+ const SYSTEM_ROLE_TEMPLATES = [
+-  { key: 'owner', name: 'Owner', description: 'Legal company owner with full delegatable access.', systemRole: 'OWNER', permissions: delegatablePermissionKeys, scope: 'COMPANY' },
+-  { key: 'executive', name: 'Executive / COO', description: 'Senior executive access across the company.', systemRole: 'ADMIN', permissions: delegatablePermissionKeys.filter((key) => !key.startsWith('subscription.')), scope: 'COMPANY' },
+-  { key: 'general-manager', name: 'General Manager', description: 'Broad company management excluding ownership and subscription controls.', systemRole: 'ADMIN', permissions: defaultPermissionBundles.ADMIN, scope: 'COMPANY' },
++  { key: 'owner', name: 'Owner', description: 'Legal company owner with full access.', systemRole: 'OWNER', permissions: permissionKeys, scope: 'COMPANY' },
++  { key: 'executive', name: 'Executive / COO', description: 'Senior executive access across the company without ownership powers.', systemRole: 'ADMIN', permissions: delegatablePermissionKeys, scope: 'COMPANY' },
++  { key: 'general-manager', name: 'General Manager', description: 'Broad company management excluding ownership powers.', systemRole: 'ADMIN', permissions: defaultPermissionBundles.ADMIN, scope: 'COMPANY' },
+   { key: 'operations-manager', name: 'Operations Manager', description: 'Jobs, scheduling, workforce, customers, and operational reporting.', systemRole: 'ADMIN', permissions: operationsPermissions, scope: 'COMPANY' },
+   { key: 'finance-manager', name: 'Finance Manager', description: 'Finance leadership, reporting, invoices, payments, and exports.', systemRole: 'ADMIN', permissions: financePermissions.concat(['members.view']), scope: 'COMPANY' },
+   { key: 'accountant', name: 'Accountant', description: 'Invoices, payments, finance reports, exports, and accounting integrations.', systemRole: 'ADMIN', permissions: financePermissions.filter((key) => !['payment.refund', 'invoice.void', 'invoice.discount.approve'].includes(key)), scope: 'COMPANY' },
+@@ -45,7 +49,10 @@ const SYSTEM_ROLE_TEMPLATES = [
+   { key: 'dispatcher', name: 'Dispatcher / Scheduler', description: 'Scheduling, assignments, workers, and active jobs.', systemRole: 'ADMIN', permissions: ['dashboard.operational.view', 'jobs.view', 'jobs.edit', 'jobs.assign', 'schedule.view', 'schedule.manage', 'workers.view', 'workers.location.view', 'customers.view'], scope: 'COMPANY' },
+   { key: 'customer-service', name: 'Customer Service', description: 'Customers, bookings, quotes, and job status visibility.', systemRole: 'ADMIN', permissions: ['dashboard.operational.view', 'customers.view', 'customers.create', 'customers.edit', 'bookings.view', 'bookings.manage', 'quotes.view', 'quotes.create', 'jobs.view'], scope: 'COMPANY' },
+   { key: 'department-manager', name: 'Department Manager', description: 'Operational management within an assigned branch or team.', systemRole: 'ADMIN', permissions: operationsPermissions, scope: 'BRANCH' },
+-  { key: 'team-supervisor', name: 'Team Supervisor', description: 'Supervises workers and jobs in an assigned team.', systemRole: 'WORKER', permissions: ['dashboard.operational.view', 'jobs.view', 'jobs.review', 'schedule.view', 'workers.view', 'team.view'], scope: 'TEAM' },
++  // Supervisors use ADMIN as the coarse web-app classification. Their real access is
++  // restricted by permissions + TEAM scope, so they can supervise without being treated
++  // as a field-only WORKER by legacy routes and navigation.
++  { key: 'team-supervisor', name: 'Team Supervisor', description: 'Supervises workers and jobs in an assigned team.', systemRole: 'ADMIN', permissions: ['dashboard.operational.view', 'jobs.view', 'jobs.review', 'schedule.view', 'workers.view', 'team.view'], scope: 'TEAM' },
+   { key: 'senior-field-worker', name: 'Senior Field Worker / Senior Technician', description: 'Field work plus limited team review.', systemRole: 'WORKER', permissions: workerPermissions.concat(['jobs.review', 'team.view']), scope: 'TEAM' },
+   { key: 'field-worker', name: 'Field Worker / Technician', description: 'Own assigned jobs and schedule.', systemRole: 'WORKER', permissions: workerPermissions, scope: 'SELF' },
+   { key: 'apprentice', name: 'Apprentice / Junior Field Worker', description: 'Own assigned work with restricted operational actions.', systemRole: 'WORKER', permissions: workerPermissions, scope: 'SELF' }
+@@ -55,6 +62,29 @@ function uniquePermissions(values) {
+   return [...new Set((Array.isArray(values) ? values : []).filter((key) => permissionKeys.includes(key)))];
+ }
+ 
++function isSubset(requested, allowed) {
++  const allowedSet = new Set(allowed || []);
++  return uniquePermissions(requested).every((key) => allowedSet.has(key));
++}
++
++function scopeContains(actorAccess, requested = {}) {
++  if (!actorAccess) return false;
++  if (actorAccess.scopeType === 'COMPANY') return true;
++  if (requested.scopeType === 'SELF') return true;
++  if (actorAccess.scopeType === 'SELF') return false;
++  if (actorAccess.scopeType === 'BRANCH') {
++    if (requested.scopeType !== 'BRANCH') return false;
++    const allowed = new Set(actorAccess.branchIds || []);
++    return (requested.branchIds || []).every((id) => allowed.has(id));
++  }
++  if (actorAccess.scopeType === 'TEAM') {
++    if (requested.scopeType !== 'TEAM') return false;
++    const allowed = new Set(actorAccess.teamIds || []);
++    return (requested.teamIds || []).every((id) => allowed.has(id));
++  }
++  return false;
++}
++
+ async function effectiveAccessForUser(user, options = {}) {
+   if (!user) return { permissions: [], scopeType: 'SELF', branchIds: [], teamIds: [] };
+   const companyId = options.companyId || user.companyId;
+@@ -81,6 +111,8 @@ async function effectiveAccessForUser(user, options = {}) {
+   const grants = prisma.userAccessGrant ? await prisma.userAccessGrant.findMany({ where: { companyId, userId: user.id, active: true } }) : [];
+   const branchIds = [...new Set(branchAccesses.map((item) => item.branchId).concat(grants.filter((item) => item.scopeType === 'BRANCH' && item.branchId).map((item) => item.branchId)))];
+   const teamIds = [...new Set(grants.filter((item) => item.scopeType === 'TEAM' && item.teamId).map((item) => item.teamId))];
++
++  // Grants may add capabilities, but they never widen the data scope by themselves.
+   for (const grant of grants) uniquePermissions(grant.permissions).forEach((key) => permissions.add(key));
+   if (grants.some((item) => item.scopeType === 'COMPANY')) scopeType = 'COMPANY';
+   else if (teamIds.length) scopeType = 'TEAM';
+@@ -105,4 +137,15 @@ async function seedSystemRoleTemplates(client = prisma) {
+   return rows;
+ }
+ 
+-module.exports = { PERMISSION_GROUPS, SYSTEM_ROLE_TEMPLATES, defaultPermissionBundles, delegatablePermissionKeys, effectiveAccessForUser, permissionKeys, seedSystemRoleTemplates, uniquePermissions };
++module.exports = {
++  PERMISSION_GROUPS,
++  SYSTEM_ROLE_TEMPLATES,
++  defaultPermissionBundles,
++  delegatablePermissionKeys,
++  effectiveAccessForUser,
++  isSubset,
++  permissionKeys,
++  scopeContains,
++  seedSystemRoleTemplates,
++  uniquePermissions
++};
+diff --git a/src/services/saasBilling.service.js b/src/services/saasBilling.service.js
+index be3ca62..f1cb372 100644
+--- a/src/services/saasBilling.service.js
++++ b/src/services/saasBilling.service.js
+@@ -75,16 +75,41 @@ async function selectMockPlan(companyId, planId, billingInterval, actorId) {
+   const custom = Boolean(commercial.custom);
+   const amount = interval === 'ANNUAL' ? commercial.annualTotal : commercial.monthlyPrice;
+   const now = new Date();
+-  const periodEnd = new Date(now);
+-  if (interval === 'ANNUAL') periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+-  else periodEnd.setMonth(periodEnd.getMonth() + 1);
++  const hasActiveTrial = subscription.status === 'TRIALING' && subscription.trialEndsAt && new Date(subscription.trialEndsAt) > now;
++
+   const updated = await prisma.$transaction(async (tx) => {
+-    const next = await tx.companySubscription.update({ where: { companyId }, data: { planId: plan.id, billingInterval: interval, status: 'ACTIVE', provider: 'MOCK_INTERNAL', currentPeriodStart: now, currentPeriodEnd: periodEnd, cancelAtPeriodEnd: false } });
++    if (custom) {
++      // Contacting sales is not the same as activating Enterprise. Preserve the
++      // existing usable plan/trial and record the request separately.
++      const next = await tx.companySubscription.update({
++        where: { companyId },
++        data: { billingInterval: interval, provider: 'MOCK_INTERNAL' }
++      });
++      await tx.company.update({ where: { id: companyId }, data: { onboardingState: 'COMPLETED' } });
++      await tx.saaSBillingEvent.create({ data: { companyId, subscriptionId: subscription.id, provider: 'MOCK_INTERNAL', eventType: 'ENTERPRISE_CONTACT_REQUESTED', status: 'CONTACT_REQUESTED', amount: null, currency: commercial.currency, message: `${interval} ${plan.name} contact request created by ${actorId || 'owner'}; Enterprise was not activated and no external payment was processed.` } });
++      return next;
++    }
++
++    const periodEnd = new Date(now);
++    if (interval === 'ANNUAL') periodEnd.setFullYear(periodEnd.getFullYear() + 1);
++    else periodEnd.setMonth(periodEnd.getMonth() + 1);
++    const next = await tx.companySubscription.update({
++      where: { companyId },
++      data: {
++        planId: plan.id,
++        billingInterval: interval,
++        status: hasActiveTrial ? 'TRIALING' : 'ACTIVE',
++        provider: 'MOCK_INTERNAL',
++        currentPeriodStart: hasActiveTrial ? subscription.currentPeriodStart || subscription.trialStartedAt || now : now,
++        currentPeriodEnd: hasActiveTrial ? subscription.trialEndsAt : periodEnd,
++        cancelAtPeriodEnd: false
++      }
++    });
+     await tx.company.update({ where: { id: companyId }, data: { onboardingState: 'COMPLETED' } });
+-    await tx.saaSBillingEvent.create({ data: { companyId, subscriptionId: subscription.id, provider: 'MOCK_INTERNAL', eventType: custom ? 'ENTERPRISE_CONTACT_REQUESTED' : 'MOCK_PLAN_SELECTED', status: custom ? 'CONTACT_REQUESTED' : 'CONFIRMED', amount: amount == null ? null : amount, currency: commercial.currency, message: `${interval} ${plan.name} selected by ${actorId || 'owner'}; no external payment processed.` } });
++    await tx.saaSBillingEvent.create({ data: { companyId, subscriptionId: subscription.id, provider: 'MOCK_INTERNAL', eventType: 'MOCK_PLAN_SELECTED', status: 'CONFIRMED', amount: amount == null ? null : amount, currency: commercial.currency, message: `${interval} ${plan.name} selected by ${actorId || 'owner'}; no external payment processed.${hasActiveTrial ? ' Existing free trial preserved.' : ''}` } });
+     return next;
+   });
+-  return { subscription: publicSubscription({ ...updated, effectiveStatus: updated.status }), plan: { id: plan.id, name: plan.name }, pricing: commercial, mock: true, externalPaymentProcessed: false };
++  return { subscription: publicSubscription({ ...updated, effectiveStatus: updated.status }), plan: { id: plan.id, name: plan.name, requested: custom }, pricing: commercial, mock: true, externalPaymentProcessed: false, enterpriseActivated: !custom };
+ }
+ 
+ module.exports = { billingSummary, cancelSubscription, changePlan, createCheckout, selectMockPlan };
+diff --git a/src/services/subscription.service.js b/src/services/subscription.service.js
+index 77147e8..aedff43 100644
+--- a/src/services/subscription.service.js
++++ b/src/services/subscription.service.js
+@@ -139,7 +139,7 @@ function fallbackPlan(id) {
+   return DEFAULT_PLANS.concat(FREE_INTERNAL_PLAN).find((plan) => plan.id === id) || DEFAULT_PLANS[0];
+ }
+ 
+-async function defaultTrialSubscription(companyId, planId = 'starter', days = 14) {
++async function defaultTrialSubscription(companyId, planId = 'starter', days = 30) {
+   const now = new Date();
+   const trialEndsAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+   if (!prisma.companySubscription) {

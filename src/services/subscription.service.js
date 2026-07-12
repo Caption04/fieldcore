@@ -3,6 +3,7 @@ const { AppError } = require('../errors');
 
 const ACTIVE_STATUSES = new Set(['TRIALING', 'ACTIVE', 'FREE_INTERNAL', 'PAST_DUE']);
 const RESTRICTED_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'SUSPENDED']);
+const ANNUAL_DISCOUNT_PERCENT = 10;
 
 const DEFAULT_PLANS = [
   {
@@ -108,6 +109,20 @@ function commercialPlanPrice(plan, market = 'ZW') {
   return { price: decimalToNumber(plan && plan.price), currency: plan && plan.currency || 'USD', label: null, custom: false };
 }
 
+function commercialPlanPricing(plan, market = 'ZW') {
+  const monthly = commercialPlanPrice(plan, market);
+  if (monthly.custom || monthly.price == null) return { ...monthly, monthlyPrice: null, annualTotal: null, annualEquivalentMonthly: null, annualSavings: null, annualDiscountPercent: ANNUAL_DISCOUNT_PERCENT };
+  const monthlyPrice = Number(monthly.price);
+  const fullAnnual = monthlyPrice * 12;
+  const annualTotal = Math.round((fullAnnual * (1 - ANNUAL_DISCOUNT_PERCENT / 100)) * 100) / 100;
+  return { ...monthly, monthlyPrice, annualTotal, annualEquivalentMonthly: Math.round((annualTotal / 12) * 100) / 100, annualSavings: Math.round((fullAnnual - annualTotal) * 100) / 100, annualDiscountPercent: ANNUAL_DISCOUNT_PERCENT };
+}
+
+async function billingCatalog(companyId) {
+  const [plans, market] = await Promise.all([listPlans(), companyBillingMarket(companyId)]);
+  return { market, annualDiscountPercent: ANNUAL_DISCOUNT_PERCENT, plans: plans.map((plan) => ({ ...plan, pricing: commercialPlanPricing(plan, market) })) };
+}
+
 async function ensureDefaultPlans() {
   if (!prisma.saaSPlan) return;
   const plans = DEFAULT_PLANS.concat(FREE_INTERNAL_PLAN);
@@ -124,7 +139,7 @@ function fallbackPlan(id) {
   return DEFAULT_PLANS.concat(FREE_INTERNAL_PLAN).find((plan) => plan.id === id) || DEFAULT_PLANS[0];
 }
 
-async function defaultTrialSubscription(companyId, planId = 'starter', days = 14) {
+async function defaultTrialSubscription(companyId, planId = 'starter', days = 30) {
   const now = new Date();
   const trialEndsAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
   if (!prisma.companySubscription) {
@@ -244,6 +259,7 @@ function publicSubscription(subscription) {
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
     provider: subscription.provider || null,
+    billingInterval: subscription.billingInterval || 'MONTHLY',
     providerConfigured: providerStatus().configured
   };
 }
@@ -301,12 +317,15 @@ async function logBillingEvent(companyId, data) {
 
 module.exports = {
   ACTIVE_STATUSES,
+  ANNUAL_DISCOUNT_PERCENT,
   DEFAULT_PLANS,
   FREE_INTERNAL_PLAN,
   billingSummary,
+  billingCatalog,
   canUseFeature,
   checkPlanLimit,
   commercialPlanPrice,
+  commercialPlanPricing,
   companyBillingMarket,
   defaultTrialSubscription,
   ensureDefaultPlans,

@@ -56,11 +56,14 @@
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       message('');
+      if (window.FieldCoreFormUX && !window.FieldCoreFormUX.validateForm(form)) return;
       try {
         await api('/auth/login', { method: 'POST', body: JSON.stringify(formData(form)) });
         window.location.href = returnUrl();
       } catch (error) {
-        message(error.message || 'Invalid email or password.');
+        const text = error.message || 'Invalid email or password.';
+        message(text);
+        if (window.FieldCoreUI) window.FieldCoreUI.notify(text, { type: 'error' });
       }
     });
   }
@@ -68,19 +71,46 @@
   function bindRegister() {
     const form = document.querySelector('[data-register-form]');
     if (!form) return;
+    const steps = Array.from(form.querySelectorAll('[data-signup-step]'));
+    const showStep = (number) => {
+      steps.forEach((step) => { step.hidden = step.dataset.signupStep !== String(number); });
+      form.querySelectorAll('[data-signup-dot]').forEach((dot) => dot.classList.toggle('active', Number(dot.dataset.signupDot) <= number));
+    };
+    const firstFields = Array.from(form.querySelector('[data-signup-step="1"]').querySelectorAll('input, select'));
+    const next = form.querySelector('[data-signup-next]');
+    const back = form.querySelector('[data-signup-back]');
+    if (next) next.addEventListener('click', () => {
+      message('');
+      const firstStep = form.querySelector('[data-signup-step="1"]');
+      if (window.FieldCoreFormUX && !window.FieldCoreFormUX.validateForm(firstStep)) return;
+      const invalid = firstFields.find((field) => !field.checkValidity());
+      if (invalid) return invalid.focus();
+      if (form.password.value !== form.confirmPassword.value) return message('Passwords do not match.');
+      showStep(2);
+    });
+    if (back) back.addEventListener('click', () => showStep(1));
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       message('');
+      if (form.password.value !== form.confirmPassword.value) { showStep(1); return message('Passwords do not match.'); }
+      if (window.FieldCoreFormUX && !window.FieldCoreFormUX.validateForm(form.querySelector('[data-signup-step="2"]'))) return;
       try {
         await api('/auth/register', { method: 'POST', body: JSON.stringify(formData(form)) });
-        window.location.href = 'index.html';
+        window.location.href = 'plan-selection.html';
       } catch (error) {
-        message(error.message || 'Could not create account.');
+        const text = error.message || 'Could not create account.';
+        message(text);
+        if (window.FieldCoreUI) window.FieldCoreUI.notify(text, { type: 'error' });
       }
     });
   }
 
   redirectIfSignedIn();
-  if (page === 'login') bindLogin();
+  if (page === 'login') {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('passwordChanged') === '1') message('Password changed. Sign in again.', true);
+    else if (params.get('loggedOut') === '1') message('You have been signed out.', true);
+    bindLogin();
+  }
   if (page === 'register') bindRegister();
 })();

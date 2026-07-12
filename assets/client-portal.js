@@ -23,6 +23,14 @@ function message(el, text, ok) {
   el.classList.toggle("is-success", Boolean(ok));
 }
 
+function notify(text, ok) {
+  if (window.FieldCoreUI) {
+    window.FieldCoreUI.notify(text, { type: ok === false ? "error" : "success" });
+    return;
+  }
+  console[ok === false ? "error" : "info"](text);
+}
+
 function money(value) {
   const settings = state.localization || {};
   const currency = settings.defaultCurrency || "USD";
@@ -434,9 +442,10 @@ async function loadPortal() {
       await api("/client/booking-requests", { method: "POST", body: JSON.stringify(clean(data(event.currentTarget))) });
       event.currentTarget.reset();
       message(msg, "Request submitted.", true);
+      notify("Request submitted.", true);
       await refresh();
       activateTab("dashboard");
-    } catch (error) { message(msg, error.message); }
+    } catch (error) { message(msg, error.message); notify(error.message, false); }
   });
 
   document.querySelector("[data-client-profile-form]").addEventListener("submit", async function(event) {
@@ -446,8 +455,9 @@ async function loadPortal() {
     try {
       await api("/client/profile", { method: "PATCH", body: JSON.stringify(clean(data(event.currentTarget))) });
       message(msg, "Profile saved.", true);
+      notify("Profile saved.", true);
       await refresh();
-    } catch (error) { message(msg, error.message); }
+    } catch (error) { message(msg, error.message); notify(error.message, false); }
   });
 
   document.querySelector("[data-client-property-form]").addEventListener("submit", async function(event) {
@@ -462,8 +472,9 @@ async function loadPortal() {
       await api(id ? "/client/properties/" + id : "/client/properties", { method: id ? "PATCH" : "POST", body: JSON.stringify(formData) });
       resetPropertyForm();
       message(msg, "Property saved.", true);
+      notify("Property saved.", true);
       await refresh();
-    } catch (error) { message(msg, error.message); }
+    } catch (error) { message(msg, error.message); notify(error.message, false); }
   });
 
   document.querySelector("[data-property-reset]").addEventListener("click", resetPropertyForm);
@@ -484,72 +495,111 @@ document.addEventListener("click", async function(event) {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const id = button.dataset.id;
-  if (button.dataset.action === "quote-detail") {
-    const item = await api("/client/quotes/" + id);
-    openDetail(item.title || "Quote", quoteDetail(item));
-  }
-  if (button.dataset.action === "invoice-detail") {
-    const item = await api("/client/invoices/" + id);
-    openDetail(item.invoiceNumber || "Invoice", invoiceDetail(item));
-  }
-  if (button.dataset.action === "job-detail") {
-    const item = await api("/client/jobs/" + id);
-    openDetail(item.title || "Job", jobDetail(item));
-  }
-  if (button.dataset.action === "asset-detail") {
-    const item = await api("/client/assets/" + id);
-    openDetail(item.name || "Asset", assetDetail(item));
-  }
-  if (button.dataset.action === "contract-detail") {
-    const item = await api("/client/service-contracts/" + id);
-    openDetail(item.name || "Contract", contractDetail(item));
-  }
-  if (button.dataset.action === "receipt-detail") {
-    const item = await api("/client/receipts/" + id);
-    openDetail(item.receiptNumber || "Receipt", receiptDetail(item));
-  }
-  if (button.dataset.action === "invoice-pay-online") {
-    const msg = document.querySelector("[data-client-payment-message]");
-    message(msg, "Preparing secure payment...");
-    button.disabled = true;
-    try {
-      const result = await api("/client/invoices/" + id + "/pay-online", { method: "POST", body: JSON.stringify({}) });
-      if (!result.checkoutUrl) throw new Error("Payment link was not returned.");
-      window.location.href = result.checkoutUrl;
-    } catch (error) {
-      button.disabled = false;
-      message(msg, error.message);
+  const action = button.dataset.action;
+
+  try {
+    if (action === "quote-detail") {
+      const item = await api("/client/quotes/" + id);
+      openDetail(item.title || "Quote", quoteDetail(item));
+      return;
     }
-  }
-  if (button.dataset.action === "quote-accept") {
-    if (!window.confirm("Accept this quote?")) return;
-    await api("/client/quotes/" + id + "/accept", { method: "POST", body: JSON.stringify({}) });
-    closeDetail();
-    await refresh();
-    activateTab("quotes");
-  }
-  if (button.dataset.action === "quote-reject") {
-    const reason = window.prompt("Reason for rejecting this quote?") || "";
-    await api("/client/quotes/" + id + "/reject", { method: "POST", body: JSON.stringify({ reason }) });
-    closeDetail();
-    await refresh();
-    activateTab("quotes");
-  }
-  if (button.dataset.action === "property-edit") {
-    const item = state.properties.find(function(property) { return property.id === id; });
-    const form = document.querySelector("[data-client-property-form]");
-    form.id.value = item.id;
-    form.label.value = item.label || "";
-    form.address.value = item.address || "";
-    form.city.value = item.city || "";
-    form.notes.value = item.notes || "";
-    form.elements.isDefault.checked = Boolean(item.isDefault);
-    document.querySelector("[data-property-form-title]").textContent = "Edit Property";
-  }
-  if (button.dataset.action === "property-delete") {
-    if (!window.confirm("Delete this property?")) return;
-    await api("/client/properties/" + id, { method: "DELETE" });
-    await refresh();
+    if (action === "invoice-detail") {
+      const item = await api("/client/invoices/" + id);
+      openDetail(item.invoiceNumber || "Invoice", invoiceDetail(item));
+      return;
+    }
+    if (action === "job-detail") {
+      const item = await api("/client/jobs/" + id);
+      openDetail(item.title || "Job", jobDetail(item));
+      return;
+    }
+    if (action === "asset-detail") {
+      const item = await api("/client/assets/" + id);
+      openDetail(item.name || "Asset", assetDetail(item));
+      return;
+    }
+    if (action === "contract-detail") {
+      const item = await api("/client/service-contracts/" + id);
+      openDetail(item.name || "Contract", contractDetail(item));
+      return;
+    }
+    if (action === "receipt-detail") {
+      const item = await api("/client/receipts/" + id);
+      openDetail(item.receiptNumber || "Receipt", receiptDetail(item));
+      return;
+    }
+    if (action === "invoice-pay-online") {
+      const msg = document.querySelector("[data-client-payment-message]");
+      message(msg, "Preparing secure payment...");
+      button.disabled = true;
+      try {
+        const result = await api("/client/invoices/" + id + "/pay-online", { method: "POST", body: JSON.stringify({}) });
+        if (!result.checkoutUrl) throw new Error("Payment link was not returned.");
+        window.location.href = result.checkoutUrl;
+      } catch (error) {
+        button.disabled = false;
+        message(msg, error.message);
+        notify(error.message, false);
+      }
+      return;
+    }
+    if (action === "quote-accept") {
+      const confirmed = await window.FieldCoreUI.confirm({
+        title: "Accept this quote?",
+        message: "The company will be told that you accepted it.",
+        confirmLabel: "Accept quote"
+      });
+      if (!confirmed) return;
+      await api("/client/quotes/" + id + "/accept", { method: "POST", body: JSON.stringify({}) });
+      closeDetail();
+      await refresh();
+      activateTab("quotes");
+      notify("Quote accepted.", true);
+      return;
+    }
+    if (action === "quote-reject") {
+      const reason = await window.FieldCoreUI.requestText({
+        title: "Reject this quote?",
+        message: "You can add a short reason so the company knows what to change.",
+        fieldLabel: "Reason (optional)",
+        placeholder: "Tell the company why you are rejecting the quote",
+        confirmLabel: "Reject quote",
+        danger: true
+      });
+      if (reason === null) return;
+      await api("/client/quotes/" + id + "/reject", { method: "POST", body: JSON.stringify({ reason }) });
+      closeDetail();
+      await refresh();
+      activateTab("quotes");
+      notify("Quote rejected.", true);
+      return;
+    }
+    if (action === "property-edit") {
+      const item = state.properties.find(function(property) { return property.id === id; });
+      const form = document.querySelector("[data-client-property-form]");
+      form.id.value = item.id;
+      form.label.value = item.label || "";
+      form.address.value = item.address || "";
+      form.city.value = item.city || "";
+      form.notes.value = item.notes || "";
+      form.elements.isDefault.checked = Boolean(item.isDefault);
+      document.querySelector("[data-property-form-title]").textContent = "Edit Property";
+      return;
+    }
+    if (action === "property-delete") {
+      const confirmed = await window.FieldCoreUI.confirm({
+        title: "Delete this property?",
+        message: "This address will be removed from your account.",
+        confirmLabel: "Delete property",
+        danger: true
+      });
+      if (!confirmed) return;
+      await api("/client/properties/" + id, { method: "DELETE" });
+      await refresh();
+      notify("Property deleted.", true);
+    }
+  } catch (error) {
+    notify(error.message || "Something went wrong.", false);
   }
 });
 
@@ -570,10 +620,20 @@ async function clientPasswordSubmitHandler(event) {
     const payload = clean(data(form));
     if (isChange) delete payload.confirmNewPassword;
     await api(isChange ? "/client/profile/password" : "/client/auth/forgot-password", { method: "POST", body: JSON.stringify(payload) });
-    if (isChange) { form.reset(); message(msg, "Password updated.", true); setTimeout(closePasswordModals, 700); }
-    else message(msg, "Password reset email delivery is not configured yet. Please contact the company to reset your password.", true);
+    if (isChange) {
+      form.reset();
+      message(msg, "Password updated.", true);
+      notify("Password updated.", true);
+      setTimeout(closePasswordModals, 700);
+    } else {
+      const text = "Password reset instructions requested. Contact the company if no email arrives.";
+      message(msg, text, true);
+      notify(text, true);
+    }
   } catch (error) {
-    message(msg, /current password/i.test(error.message) ? "Current password is incorrect." : error.message);
+    const text = /current password/i.test(error.message) ? "Current password is incorrect." : error.message;
+    message(msg, text);
+    notify(text, false);
   }
 }
 

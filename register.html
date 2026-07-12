@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign Up | FieldCore</title>
     <link rel="stylesheet" href="assets/app.css">
-    <script defer src="assets/auth.js?v=session-boundary-guard-1"></script>
+    <script defer src="assets/ui-feedback.js"></script>
+    <script defer src="assets/form-ux.js"></script><script defer src="assets/auth.js?v=session-boundary-guard-1"></script>
   </head>
   <body class="auth-page" data-auth-page="register">
     <main class="public-booking auth-wrap">
@@ -14,31 +15,33 @@
           <span class="brand-mark">FC</span>
           <span class="brand-name">FieldCore</span>
         </div>
-        <div class="hero-copy">
-          <h2>Create Account</h2>
-          <p>Start a new company workspace with an owner account.</p>
+        <div class="hero-copy auth-onboarding-copy">
+          <span class="eyebrow">New workspace</span>
+          <h2>Create your FieldCore account</h2>
+          <p>Start with the essentials. Operational setup can be delegated after signup.</p>
         </div>
         <form class="form-grid" data-register-form>
-          <div class="field span-2">
-            <label for="companyName">Company Name</label>
-            <input id="companyName" name="companyName" autocomplete="organization" required minlength="2">
-          </div>
-          <div class="field">
-            <label for="name">Your Name</label>
-            <input id="name" name="name" autocomplete="name" required minlength="2">
-          </div>
-          <div class="field">
-            <label for="email">Email</label>
-            <input id="email" name="email" type="email" autocomplete="email" required>
-          </div>
-          <div class="field span-2">
-            <label for="password">Password</label>
-            <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8">
-          </div>
-          <div class="fc-form-actions span-2">
-            <a class="secondary-button" href="login.html">Sign In</a>
-            <button class="primary-button" type="submit">Create Account</button>
-          </div>
+          <div class="signup-progress span-2" aria-label="Signup progress"><span class="active" data-signup-dot="1">1</span><i></i><span data-signup-dot="2">2</span></div>
+          <section class="signup-step span-2" data-signup-step="1">
+            <div class="panel-head"><div><h3>Owner account</h3><p class="muted">You will be the protected company owner.</p></div><span class="badge blue">Step 1 of 2</span></div>
+            <div class="form-grid">
+              <div class="field"><label for="name">Full name</label><input id="name" name="name" autocomplete="name" required minlength="2"></div>
+              <div class="field"><label for="email">Work email</label><input id="email" name="email" type="email" autocomplete="email" required></div>
+              <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="new-password" required minlength="12"><small>At least 12 characters.</small></div>
+              <div class="field"><label for="confirmPassword">Confirm password</label><input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" required minlength="12"></div>
+            </div>
+            <div class="fc-form-actions"><a class="secondary-button" href="login.html">Sign In</a><button class="primary-button" type="button" data-signup-next>Continue</button></div>
+          </section>
+          <section class="signup-step span-2" data-signup-step="2" hidden>
+            <div class="panel-head"><div><h3>Business basics</h3><p class="muted">Used to prepare the right workspace for your business.</p></div><span class="badge blue">Step 2 of 2</span></div>
+            <div class="form-grid">
+              <div class="field span-2"><label for="companyName">Company name</label><input id="companyName" name="companyName" autocomplete="organization" required minlength="2"></div>
+              <div class="field"><label for="market">Country / market</label><select id="market" name="market" required><option value="ZW">Zimbabwe</option><option value="SA">South Africa</option></select></div>
+              <div class="field"><label for="verticalKey">Industry</label><select id="verticalKey" name="verticalKey" required><option value="generic">General field services</option><option value="hvac">HVAC &amp; refrigeration</option><option value="plumbing">Plumbing</option><option value="electrical">Electrical</option><option value="cleaning">Cleaning</option><option value="facilities">Facilities management</option></select></div>
+              <div class="field span-2"><label for="teamSizeBand">Approximate team size</label><select id="teamSizeBand" name="teamSizeBand" required><option value="1-5">1–5 people</option><option value="6-15">6–15 people</option><option value="16-40">16–40 people</option><option value="41-100">41–100 people</option><option value="101+">101+ people</option></select></div>
+            </div>
+            <div class="fc-form-actions"><button class="secondary-button" type="button" data-signup-back>Back</button><button class="primary-button" type="submit">Create workspace</button></div>
+          </section>
           <p class="fc-form-error span-2" data-auth-message hidden></p>
         </form>
       </section>

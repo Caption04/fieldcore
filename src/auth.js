@@ -13,6 +13,7 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || JWT_SEC
 }
 
 const DEFAULT_SESSION_HOURS = 8;
+const SESSION_IDLE_TIMEOUT_MINUTES = Math.max(5, Math.min(Number(process.env.AUTH_SESSION_IDLE_TIMEOUT_MINUTES || 120), 120));
 const COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: 'lax',
@@ -27,6 +28,9 @@ const SAFE_USER_SELECT = {
   email: true,
   name: true,
   role: true,
+  jobTitle: true,
+  roleTemplateId: true,
+  defaultScopeType: true,
   createdAt: true,
   updatedAt: true,
   twoFactorEnabled: true,
@@ -38,7 +42,8 @@ const SAFE_USER_SELECT = {
 
 const SAFE_AUTH_USER_SELECT = {
   ...SAFE_USER_SELECT,
-  company: { select: { id: true, name: true } },
+  company: { select: { id: true, name: true, market: true, verticalKey: true, teamSizeBand: true, onboardingState: true } },
+  roleTemplate: { select: { id: true, key: true, name: true, description: true, defaultScopeType: true } },
   worker: { select: { id: true, roleId: true, title: true, phone: true, active: true, role: { select: { id: true, name: true } } } }
 };
 
@@ -62,7 +67,11 @@ function publicUser(user) {
     email: user.email,
     name: user.name,
     role: user.role,
-    company: user.company ? { id: user.company.id, name: user.company.name } : undefined,
+    systemRole: user.role,
+    jobTitle: user.jobTitle || null,
+    roleTemplate: user.roleTemplate || null,
+    defaultScopeType: user.defaultScopeType || null,
+    company: user.company ? { id: user.company.id, name: user.company.name, market: user.company.market || null, verticalKey: user.company.verticalKey || 'generic', teamSizeBand: user.company.teamSizeBand || null, onboardingState: user.company.onboardingState || 'COMPLETED' } : undefined,
     worker: user.worker ? { id: user.worker.id, roleId: user.worker.roleId, title: user.worker.title, phone: user.worker.phone, active: user.worker.active, role: user.worker.role } : undefined
   };
 }
@@ -111,6 +120,15 @@ async function requireAuth(req, res, next) {
     if (payload.sid && prisma.userSession) {
       const session = await prisma.userSession.findFirst({ where: { id: payload.sid, userId: user.id, companyId: user.companyId } });
       if (!session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) throw new AppError(401, 'Authentication required');
+      const lastSeenAt = session.lastSeenAt || session.createdAt;
+      if (lastSeenAt && Date.now() - new Date(lastSeenAt).getTime() > SESSION_IDLE_TIMEOUT_MINUTES * 60 * 1000) {
+        try {
+          await prisma.userSession.update({ where: { id: session.id }, data: { revokedAt: new Date(), revokedById: user.id } });
+        } catch (error) {
+          // Authentication still fails even if a mock cannot persist revocation.
+        }
+        throw new AppError(401, 'Session expired due to inactivity');
+      }
       req.authSessionId = session.id;
       try {
         await prisma.userSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });

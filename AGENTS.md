@@ -112,6 +112,54 @@ The current HTML/CSS is the visual base. Improve the UI only where needed, and k
 
 Do not redesign the whole app unless explicitly instructed.
 
+## User-Facing Simplicity Rule
+
+FieldCore is built for busy field-service businesses, not software engineers.
+
+Assume many users have ordinary everyday computer skills and little patience for technical language. User-facing copy should usually be understandable at roughly a Grade 5 reading level.
+
+Do not expose backend or infrastructure concepts merely because they exist. Keep technical implementation details in the backend, logs, support tools, or a deliberately hidden advanced/internal area.
+
+Avoid normal customer-facing labels or panels such as:
+
+* system configuration
+* HTTP-only cookies
+* session revocation
+* environment / node environment
+* database configured
+* rate limiting
+* integration secrets
+* raw JSON status output
+* raw event codes
+
+Translate technical actions into plain business language instead:
+
+* `System configuration` → `Settings`
+* `Session revocation` → `Sign out device`
+* `Permission override` → `Change access`
+* `Security event` → `Recent security activity`
+* `Integration credentials` → `Connect account`
+
+Before adding anything to a page, ask whether the user needs it to:
+
+1. make a decision,
+2. take an action, or
+3. understand something necessary to complete their work.
+
+If not, do not show it by default.
+
+Prefer:
+
+* one clear primary job per page
+* short headings and short helper text
+* familiar business language
+* progressive disclosure for advanced options
+* role-relevant information only
+* fewer cards and fewer always-visible inputs
+* simple summaries with an explicit `Edit` or `View details` action
+
+Do not make each module feel like a separate complex product. Reuse familiar FieldCore page patterns so users always know where they are and what to do next.
+
 ## Backend Standards
 
 Use:
@@ -658,6 +706,29 @@ WORKER dashboard:
 * simple completion stats
 
 Workers must never receive admin dashboard financial data from `/api/dashboard`.
+
+## UI Feedback Law
+
+Never use browser-native `alert()`, `confirm()`, or `prompt()` anywhere in FieldCore.
+
+This is a strict product rule.
+
+Use the shared FieldCore feedback system instead:
+
+* standard in-app notifications/toasts for action success and failure
+* proper FieldCore modals for confirmation before destructive, sensitive, or irreversible actions
+* proper FieldCore form modals when the user must enter a reason or other information
+* clear inline field errors for validation problems, with a notification when the overall action fails
+
+Every user-triggered action must give clear feedback. Do not leave the user wondering whether an action worked.
+
+Before completing frontend work, run:
+
+```bash
+node --test test/no-native-dialogs.test.js
+```
+
+The check must pass with no browser-native dialog calls.
 
 ## UI Modal Rules
 

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FieldCore Settings</title>
     <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/ui-feedback.js"></script>
     <script defer src="assets/layout.js"></script>
     <script defer src="assets/api.js?v=worker-activity-notes-1"></script>
   </head>
@@ -12,24 +13,21 @@
     <section class="page">
       <div class="hero-row">
         <div class="hero-copy">
-          <h2>Workspace Settings</h2>
-          <p>Configure the white-label workspace, operating defaults, billing preferences, and account security.</p>
+          <h2>Settings</h2>
+          <p>Manage your company details and how everyday work runs.</p>
         </div>
         <span class="api-status" data-api-status>Connecting...</span>
       </div>
       <section class="settings-layout">
         <aside class="panel settings-tabs" aria-label="Settings sections">
           <button class="settings-tab active" type="button" data-settings-target="company">Company Information</button>
-          <button class="settings-tab" type="button" data-settings-target="team">Team &amp; Roles</button>
           <button class="settings-tab" type="button" data-settings-target="jobs">Job Defaults</button>
           <button class="settings-tab" type="button" data-settings-target="scheduling">Scheduling</button>
           <button class="settings-tab" type="button" data-settings-target="billing">Invoice Defaults</button>
-          <button class="settings-tab" type="button" data-settings-target="subscription">FieldCore Subscription</button>
           <button class="settings-tab" type="button" data-settings-target="finance">Finance &amp; Exports</button>
           <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
           <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
           <button class="settings-tab" type="button" data-settings-target="admin-tools">Admin Tools</button>
-          <button class="settings-tab" type="button" data-settings-target="security">Security</button>
         </aside>
         <div class="settings-panels">
           <div class="panel settings-panel active" data-settings-panel="company">
@@ -114,14 +112,6 @@
                 <label for="address">Business Address</label>
                 <input id="address" name="address" placeholder="Not set" data-profile-field="address">
               </div>
-              <div class="field span-2">
-                <label for="invoiceFooter">Invoice Footer</label>
-                <textarea id="invoiceFooter" name="invoiceFooter" maxlength="500" placeholder="Payment instructions or legal footer." data-branding-field="invoiceFooter" data-preview-footer></textarea>
-              </div>
-              <div class="field span-2">
-                <label for="invoiceTerms">Invoice Terms</label>
-                <textarea id="invoiceTerms" name="invoiceTerms" maxlength="1000" placeholder="Terms shown on invoices and quotes." data-branding-field="invoiceTerms"></textarea>
-              </div>
               <div class="brand-preview span-2" data-brand-preview>
                 <div class="brand-preview-head">
                   <div class="logo-preview small" data-preview-logo>FC</div>
@@ -131,40 +121,11 @@
                   </div>
                 </div>
                 <div class="brand-preview-bar" data-preview-bar></div>
-                <p data-preview-footer-text>Invoice footer preview will appear here.</p>
               </div>
               <div class="form-actions span-2">
-                <button class="primary-button" type="submit">Save Branding</button>
+                <button class="primary-button" type="submit">Save Company Details</button>
               </div>
               <p class="fc-form-error span-2" data-branding-message hidden></p>
-            </form>
-          </div>
-
-          <div class="panel settings-panel" data-settings-panel="team" hidden>
-            <div class="panel-head">
-              <h2>Team &amp; Roles</h2>
-              <span class="badge gray">Access</span>
-            </div>
-            <form class="form-grid">
-              <div class="field">
-                <label for="defaultRole">Default New User Role</label>
-                <select id="defaultRole">
-                  <option>WORKER</option>
-                  <option>ADMIN</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="inviteExpiry">Invite Expiry</label>
-                <select id="inviteExpiry">
-                  <option>7 days</option>
-                  <option>14 days</option>
-                  <option>30 days</option>
-                </select>
-              </div>
-              <div class="field span-2">
-                <label for="roleNotes">Role Notes</label>
-                <textarea id="roleNotes" placeholder="Document internal permission rules."></textarea>
-              </div>
             </form>
           </div>
 
@@ -317,23 +278,6 @@
               </div>
               <p class="fc-form-error span-2" data-invoice-defaults-message hidden></p>
             </form>
-          </div>
-
-          <div class="panel settings-panel" data-settings-panel="subscription" hidden>
-            <div class="panel-head">
-              <div>
-                <h2>FieldCore Subscription</h2>
-                <p class="muted">This is what the business pays FieldCore. It is separate from the invoices this business sends to its own customers.</p>
-              </div>
-              <span class="badge gray">SaaS billing</span>
-            </div>
-            <div class="settings-subform" data-saas-billing-card>
-              <div class="panel-head">
-                <h3>Subscription status</h3>
-                <span class="badge gray">Loading</span>
-              </div>
-              <div class="empty-state"><div><strong>Subscription status unavailable.</strong><span>Open this panel to load SaaS billing details.</span></div></div>
-            </div>
           </div>
 
           <div class="panel settings-panel" data-settings-panel="finance" hidden>
@@ -577,54 +521,6 @@
             </div>
           </div>
 
-          <div class="panel settings-panel" data-settings-panel="security" hidden>
-            <div class="panel-head">
-              <h2>Security</h2>
-              <span class="badge blue">Protected</span>
-            </div>
-            <form class="form-grid" data-admin-password-form>
-              <div class="field">
-                <label for="adminCurrentPassword">Current Password</label>
-                <input id="adminCurrentPassword" name="currentPassword" type="password" autocomplete="current-password" required>
-              </div>
-              <div class="field">
-                <label for="adminNewPassword">New Password</label>
-                <input id="adminNewPassword" name="newPassword" type="password" autocomplete="new-password" minlength="8" required>
-              </div>
-              <div class="field span-2">
-                <label for="adminConfirmPassword">Confirm New Password</label>
-                <input id="adminConfirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required>
-              </div>
-              <div class="form-actions span-2">
-                <button class="primary-button" type="submit">Update Password</button>
-              </div>
-              <p class="fc-form-error span-2" data-admin-password-message hidden></p>
-            </form>
-            <form class="form-grid settings-subform" data-security-preferences-form>
-              <div class="field">
-                <label for="sessionLength">Session Length</label>
-                <select id="sessionLength" name="sessionLengthHours" data-security-field="sessionLengthHours">
-                  <option value="8">8 hours</option>
-                  <option value="12">12 hours</option>
-                  <option value="24">24 hours</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="passwordMinimum">Minimum Password Length</label>
-                <input id="passwordMinimum" name="passwordMinimum" type="number" min="8" value="8" data-security-field="passwordMinimum">
-              </div>
-              <div class="settings-checks span-2">
-                <label><input type="checkbox" checked disabled> Require secure HTTP-only auth cookies</label>
-                <label><input type="checkbox" checked disabled> Lock users to their company workspace</label>
-                <label><input type="checkbox" name="twoFactorEnabled" data-security-field="twoFactorEnabled"> Enable two-factor policy</label>
-                <label><input type="checkbox" name="twoFactorRequired" data-security-field="twoFactorRequired"> Require two-factor policy for everyone</label>
-              </div>
-              <div class="form-actions span-2">
-                <button class="primary-button" type="submit">Save Security</button>
-              </div>
-              <p class="fc-form-error span-2" data-security-message hidden></p>
-            </form>
-          </div>
         </div>
       </section>
     </section>

@@ -13,6 +13,7 @@ const { COOKIE_NAME } = require('./auth');
 const { prisma } = require('./db');
 const { errorHandler } = require('./errors');
 const { assertValidEnv } = require('./config/env');
+const { effectiveAccessForUser } = require('./services/accessControl.service');
 
 const app = express();
 const rootDir = path.resolve(__dirname, '..');
@@ -63,33 +64,46 @@ const publicHtmlPages = new Set([
   'client-login.html',
   'client-register.html',
   'booking.html'
+  ,'accept-invite.html'
 ]);
 
 const staffHtmlPages = new Map([
   ['index.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['jobs.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['schedule.html', ['OWNER', 'ADMIN', 'WORKER']],
-  ['map.html', ['OWNER', 'ADMIN']],
-  ['customers.html', ['OWNER', 'ADMIN']],
-  ['booking-requests.html', ['OWNER', 'ADMIN']],
-  ['quotes.html', ['OWNER', 'ADMIN']],
-  ['invoices.html', ['OWNER', 'ADMIN']],
-  ['reports.html', ['OWNER', 'ADMIN']],
-  ['settings.html', ['OWNER', 'ADMIN']],
-  ['branches.html', ['OWNER', 'ADMIN']],
-  ['approvals.html', ['OWNER', 'ADMIN']],
+  ['map.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['customers.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['members.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['booking-requests.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['quotes.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['invoices.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['reports.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['settings.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['branches.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['approvals.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['assets.html', ['OWNER', 'ADMIN']],
   ['service-contracts.html', ['OWNER', 'ADMIN']],
   ['contract-automation.html', ['OWNER', 'ADMIN']],
-  ['inventory.html', ['OWNER', 'ADMIN']],
-  ['purchase-requests.html', ['OWNER', 'ADMIN']],
-  ['purchase-orders.html', ['OWNER', 'ADMIN']],
+  ['inventory.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['purchase-requests.html', ['OWNER', 'ADMIN', 'WORKER']],
+  ['purchase-orders.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['procurement-costing.html', ['OWNER', 'ADMIN']],
-  ['collections.html', ['OWNER', 'ADMIN']],
+  ['collections.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['mobile-sync.html', ['OWNER', 'ADMIN']],
-  ['executive-dashboard.html', ['OWNER', 'ADMIN']],
+  ['executive-dashboard.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['onboarding.html', ['OWNER', 'ADMIN']],
-  ['security-center.html', ['OWNER', 'ADMIN']]
+  ['security-center.html', ['OWNER', 'ADMIN', 'WORKER']]
+  ,['plan-selection.html', ['OWNER']]
+  ,['subscription.html', ['OWNER']]
+]);
+
+const staffPagePermissions = new Map([
+  ['index.html', 'dashboard.operational.view'], ['jobs.html', 'jobs.view'], ['schedule.html', 'schedule.view'], ['map.html', 'workers.location.view'],
+  ['customers.html', 'customers.view'], ['members.html', 'members.view'], ['booking-requests.html', 'bookings.view'], ['quotes.html', 'quotes.view'], ['invoices.html', 'invoices.view'],
+  ['reports.html', 'finance.reports.view'], ['settings.html', 'company.settings.view'], ['branches.html', 'branch.view'], ['approvals.html', 'approval.request.decide'],
+  ['inventory.html', 'inventory.view'], ['purchase-requests.html', 'purchaseRequest.create'], ['purchase-orders.html', 'purchaseOrder.manage'],
+  ['collections.html', 'payments.view'], ['executive-dashboard.html', 'dashboard.executive.view'], ['security-center.html', 'security.view'],
+  ['subscription.html', 'subscription.view']
 ]);
 
 const clientHtmlPages = new Set(['client-portal.html']);
@@ -112,7 +126,7 @@ async function staffPageUser(req) {
     const payload = jwt.verify(token, JWT_SECRET);
     return prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, role: true, companyId: true }
+      select: { id: true, role: true, companyId: true, roleTemplateId: true, defaultScopeType: true, company: { select: { onboardingState: true } } }
     });
   } catch (error) {
     return null;
@@ -151,7 +165,14 @@ async function htmlPageAccessGuard(req, res, next) {
 
   const user = await staffPageUser(req);
   if (!user) return res.redirect(302, '/login.html');
+  if (user.company && user.company.onboardingState !== 'COMPLETED' && page !== 'plan-selection.html') return res.redirect(302, '/plan-selection.html');
+  if (page === 'plan-selection.html' && user.company && user.company.onboardingState === 'COMPLETED') return res.redirect(302, '/index.html');
   if (!allowedRoles.includes(user.role)) return res.redirect(302, '/index.html');
+  const requiredPermission = staffPagePermissions.get(page);
+  if (requiredPermission) {
+    const access = await effectiveAccessForUser(user, { companyId: user.companyId });
+    if (!access.permissions.includes(requiredPermission)) return res.redirect(302, '/index.html');
+  }
 
   return next();
 }

@@ -25,6 +25,10 @@
     node.classList.toggle('red', ok === false);
   }
 
+  function notifyAction(message, ok = true) {
+    if (window.FieldCoreUI) window.FieldCoreUI.notify(message, { type: ok ? 'success' : 'error' });
+  }
+
   function badge(value) {
     return '<span class="badge">' + escapeHtml(String(value || '-').replace(/_/g, ' ')) + '</span>';
   }
@@ -83,8 +87,10 @@
         await handler(form, formJson(form));
         form.reset();
         setStatus('Saved', true);
+        notifyAction('Saved.');
       } catch (error) {
         setStatus(error.message || 'Action failed', false);
+        notifyAction(error.message || 'Action failed', false);
       }
     });
   }
@@ -130,7 +136,8 @@
         const body = approve ? { decisionNote: 'Approved from admin page' } : { reason: 'Rejected from admin page' };
         await api(`/approvals/${encodeURIComponent(id)}/${route}`, { method: 'POST', body: JSON.stringify(body) });
         await loadApprovals();
-      } catch (error) { setStatus(error.message, false); }
+        notifyAction(approve ? 'Approval completed.' : 'Approval rejected.');
+      } catch (error) { setStatus(error.message, false); notifyAction(error.message, false); }
     });
     loadApprovals().catch((error) => setStatus(error.message, false));
   }
@@ -177,7 +184,8 @@
         if (approve) await api(`/purchase-requests/${encodeURIComponent(approve.dataset.prApprove)}/approve`, { method: 'POST', body: '{}' });
         if (reject) await api(`/purchase-requests/${encodeURIComponent(reject.dataset.prReject)}/reject`, { method: 'POST', body: JSON.stringify({ reason: 'Rejected from admin page' }) });
         await loadPurchaseRequests();
-      } catch (error) { setStatus(error.message, false); }
+        notifyAction(approve ? 'Request approved.' : 'Request rejected.');
+      } catch (error) { setStatus(error.message, false); notifyAction(error.message, false); }
     });
     loadPurchaseRequests().catch((error) => setStatus(error.message, false));
   }
@@ -212,49 +220,182 @@
         if (approve) await api(`/purchase-orders/${encodeURIComponent(approve.dataset.poApprove)}/approve`, { method: 'POST', body: '{}' });
         if (send) await api(`/purchase-orders/${encodeURIComponent(send.dataset.poSend)}/send`, { method: 'POST', body: '{}' });
         await loadPurchaseOrders();
-      } catch (error) { setStatus(error.message, false); }
+        notifyAction(approve ? 'Order approved.' : 'Order sent.');
+      } catch (error) { setStatus(error.message, false); notifyAction(error.message, false); }
     });
     loadPurchaseOrders().catch((error) => setStatus(error.message, false));
   }
 
-  async function loadSecurityStatus() {
-    const data = await api('/system/status');
-    const output = document.querySelector('[data-status-output]');
-    if (output) output.textContent = JSON.stringify(data, null, 2);
-    setStatus('Security status loaded', true);
+  const securityEventLabels = {
+    LOGIN_SUCCESS: 'Signed in successfully',
+    FAILED_LOGIN: 'Failed sign-in attempt',
+    LOGIN_LOCKOUT: 'Account temporarily locked after failed sign-ins',
+    LOCKED_LOGIN_ATTEMPT: 'Sign-in attempt while account was locked',
+    PASSWORD_CHANGED: 'Password changed',
+    ROLE_CHANGED: 'Account access changed',
+    SESSION_REVOKED: 'A signed-in device was removed',
+    ALL_SESSIONS_REVOKED: 'All signed-in devices were removed',
+    TWO_FACTOR_ENABLED: 'Two-step verification turned on',
+    TWO_FACTOR_DISABLED: 'Two-step verification turned off',
+    TWO_FACTOR_FAILURE: 'Two-step verification failed',
+    TWO_FACTOR_RECOVERY_CODES_ROTATED: 'Recovery codes replaced',
+    TWO_FACTOR_SETUP_REQUIRED: 'Two-step verification setup required',
+    DATA_EXPORT_CREATED: 'Company data export created',
+    IDENTITY_PROVIDER_CONFIG_CHANGED: 'Company sign-in settings changed'
+  };
+
+  function securityEventLabel(value) {
+    const key = String(value || '').trim();
+    if (securityEventLabels[key]) return securityEventLabels[key];
+    return key ? key.replace(/_/g, ' ').toLowerCase().replace(/^./, (char) => char.toUpperCase()) : 'Account activity';
+  }
+
+  function deviceLabel(userAgent) {
+    const value = String(userAgent || '');
+    let browser = 'Browser';
+    let device = 'device';
+    if (/Edg\//i.test(value)) browser = 'Microsoft Edge';
+    else if (/Chrome\//i.test(value)) browser = 'Chrome';
+    else if (/Firefox\//i.test(value)) browser = 'Firefox';
+    else if (/Safari\//i.test(value)) browser = 'Safari';
+    if (/iPhone/i.test(value)) device = 'iPhone';
+    else if (/iPad/i.test(value)) device = 'iPad';
+    else if (/Android/i.test(value)) device = 'Android device';
+    else if (/Windows/i.test(value)) device = 'Windows computer';
+    else if (/Macintosh|Mac OS X/i.test(value)) device = 'Mac';
+    else if (/Linux/i.test(value)) device = 'Linux computer';
+    return `${browser} on ${device}`;
   }
 
   async function loadSecurityEvents() {
-    const rows = asArray(await api('/audit-logs')).slice(0, 50).map((item) => `<tr><td>${formatDate(item.createdAt)}</td><td>${escapeHtml(item.severity || 'INFO')}</td><td>${escapeHtml(item.action || item.eventType || '-')}</td><td>${escapeHtml(item.user && item.user.email || item.userId || '-')}</td></tr>`);
-    setRows('[data-events]', rows, 4);
+    const rows = asArray(await api('/security/events')).slice(0, 25).map((item) => `<tr><td>${formatDate(item.createdAt)}</td><td>${escapeHtml(securityEventLabel(item.eventType))}</td></tr>`);
+    setRows('[data-events]', rows, 2);
   }
 
   async function loadSessions() {
     const node = document.querySelector('[data-sessions]');
     if (!node) return;
     try {
-      const sessions = asArray(await api('/auth/sessions'));
-      node.innerHTML = sessions.length ? sessions.map((session) => `<div class="settings-row"><strong>${escapeHtml(session.userAgent || 'Session')}</strong><span>${formatDate(session.createdAt)}</span></div>`).join('') : '<div class="empty-state"><div><strong>No sessions found</strong><span>Session details will appear here when available.</span></div></div>';
+      const sessions = asArray(await api('/auth/sessions')).filter((session) => !session.revokedAt);
+      node.innerHTML = sessions.length ? sessions.map((session) => `<div class="security-session-row">
+        <div class="security-session-copy">
+          <strong>${escapeHtml(deviceLabel(session.userAgent))}${session.current ? ' <span class="security-current-label">Current</span>' : ''}</strong>
+          <span>${session.lastSeenAt ? `Last active ${formatDate(session.lastSeenAt)}` : `Signed in ${formatDate(session.createdAt)}`}</span>
+        </div>
+        ${session.current ? '' : `<button class="secondary-button compact" type="button" data-revoke-session="${escapeHtml(session.id)}">Sign out</button>`}
+      </div>`).join('') : '<div class="security-empty-state"><strong>No signed-in devices to review</strong><span>New device sessions will appear here.</span></div>';
     } catch (error) {
-      node.innerHTML = `<div class="empty-state"><div><strong>Session endpoint unavailable</strong><span>${escapeHtml(error.message)}</span></div></div>`;
+      node.innerHTML = '<div class="security-empty-state"><strong>Could not load signed-in devices</strong><span>Try again in a moment.</span></div>';
     }
   }
 
+  function renderTwoFactorResult(data) {
+    const output = document.querySelector('[data-2fa-output]');
+    if (!output) return;
+    const recoveryCodes = asArray(data && data.recoveryCodes);
+    output.hidden = false;
+    output.innerHTML = `<strong>Two-step verification is on.</strong>
+      <span>Keep these recovery codes somewhere safe. Each code can be used once.</span>
+      ${recoveryCodes.length ? `<div class="security-recovery-codes">${recoveryCodes.map((code) => `<code>${escapeHtml(code)}</code>`).join('')}</div>` : ''}`;
+  }
+
   function initSecurityCenter() {
-    document.querySelector('[data-load-status]')?.addEventListener('click', () => loadSecurityStatus().catch((error) => setStatus(error.message, false)));
-    document.querySelector('[data-load-events]')?.addEventListener('click', () => loadSecurityEvents().catch((error) => setStatus(error.message, false)));
-    document.querySelector('[data-load-sessions]')?.addEventListener('click', () => loadSessions().catch((error) => setStatus(error.message, false)));
-    document.querySelector('[data-enable-2fa]')?.addEventListener('click', async () => {
-      const output = document.querySelector('[data-2fa-output]');
+    const passwordForm = document.querySelector('[data-password-form]');
+    const passwordToggle = document.querySelector('[data-password-toggle]');
+    const passwordCancel = document.querySelector('[data-password-cancel]');
+    const passwordMessage = document.querySelector('[data-password-message]');
+
+    const closePasswordForm = () => {
+      if (!passwordForm) return;
+      passwordForm.hidden = true;
+      passwordForm.reset();
+      if (passwordMessage) {
+        passwordMessage.hidden = true;
+        passwordMessage.textContent = '';
+      }
+      if (passwordToggle) passwordToggle.textContent = 'Change password';
+    };
+
+    passwordToggle?.addEventListener('click', () => {
+      if (!passwordForm) return;
+      const opening = passwordForm.hidden;
+      passwordForm.hidden = !opening;
+      passwordToggle.textContent = opening ? 'Close' : 'Change password';
+      if (opening) passwordForm.querySelector('input')?.focus();
+    });
+
+    passwordCancel?.addEventListener('click', closePasswordForm);
+
+    passwordForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(passwordForm).entries());
+      if (passwordMessage) {
+        passwordMessage.hidden = true;
+        passwordMessage.textContent = '';
+      }
+      if (data.newPassword !== data.confirmPassword) {
+        if (passwordMessage) {
+          passwordMessage.textContent = 'The new passwords do not match.';
+          passwordMessage.hidden = false;
+        }
+        return;
+      }
+
+      const submit = passwordForm.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = true;
       try {
-        const data = await api('/auth/2fa/setup', { method: 'POST', body: '{}' });
-        if (output) output.textContent = JSON.stringify(data, null, 2);
+        await api('/auth/me/password', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            currentPassword: data.currentPassword,
+            newPassword: data.newPassword
+          })
+        });
+        window.location.href = 'login.html?passwordChanged=1';
       } catch (error) {
-        if (output) output.textContent = error.message;
+        if (passwordMessage) {
+          passwordMessage.textContent = error.message || 'Could not change your password.';
+          passwordMessage.hidden = false;
+        }
+        if (submit) submit.disabled = false;
       }
     });
-    bindSubmit('[data-security-form]', async () => { setStatus('Security settings UI saved locally for QA; backend policy endpoint can be wired later.', true); });
-    Promise.allSettled([loadSecurityStatus(), loadSecurityEvents(), loadSessions()]).then(() => setStatus('Security center loaded', true));
+
+    document.querySelector('[data-load-events]')?.addEventListener('click', () => loadSecurityEvents().catch(() => {}));
+    document.querySelector('[data-load-sessions]')?.addEventListener('click', () => loadSessions().catch(() => {}));
+    document.querySelector('[data-sessions]')?.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-revoke-session]');
+      if (!button) return;
+      button.disabled = true;
+      try {
+        await api(`/auth/sessions/${encodeURIComponent(button.dataset.revokeSession)}/revoke`, { method: 'POST', body: '{}' });
+        await loadSessions();
+        notifyAction('Device signed out.');
+      } catch (error) {
+        button.disabled = false;
+        setStatus(error.message || 'Could not sign out that device.', false);
+        notifyAction(error.message || 'Could not sign out that device.', false);
+      }
+    });
+    document.querySelector('[data-enable-2fa]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const data = await api('/auth/2fa/enable', { method: 'POST', body: '{}' });
+        renderTwoFactorResult(data);
+        button.textContent = '2FA enabled';
+        notifyAction('Two-step verification is on.');
+      } catch (error) {
+        const output = document.querySelector('[data-2fa-output]');
+        if (output) {
+          output.hidden = false;
+          output.innerHTML = `<strong>Could not turn on two-step verification.</strong><span>${escapeHtml(error.message || 'Try again.')}</span>`;
+        }
+        button.disabled = false;
+        notifyAction(error.message || 'Could not turn on two-step verification.', false);
+      }
+    });
+    Promise.allSettled([loadSecurityEvents(), loadSessions()]);
   }
 
   async function loadMobileSync() {

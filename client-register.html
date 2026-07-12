@@ -5,6 +5,8 @@
     <meta name=viewport content=width=device-width,initial-scale=1.0>
     <title>Client Register</title>
     <link rel=stylesheet href=assets/app.css>
+    <script defer src="assets/ui-feedback.js"></script>
+    <script defer src=assets/form-ux.js></script>
     <script defer src=assets/client-portal.js?v=client-logo-fix-1></script>
   </head>
   <body class=client-auth-page data-client-page=register>
@@ -16,7 +18,7 @@
           <div class=field><label for=name>Name</label><input id=name name=name required maxlength=160></div>
           <div class=field><label for=email>Email</label><input id=email name=email type=email autocomplete=email required></div>
           <div class=field><label for=phone>Phone</label><input id=phone name=phone maxlength=60></div>
-          <div class=field><label for=password>Password</label><input id=password name=password type=password autocomplete=new-password minlength=8 required></div>
+          <div class=field><label for=password>Password</label><input id=password name=password type=password autocomplete=new-password minlength=12 required></div>
           <div class=fc-form-actions span-2><a class=secondary-button href=client-login.html>Sign In</a><button class=primary-button type=submit>Create Account</button></div>
           <p class=fc-form-error span-2 data-client-message hidden></p>
         </form>

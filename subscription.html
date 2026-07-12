@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldCore Subscription</title>
+    <link rel="stylesheet" href="assets/app.css">
+    <script defer src="assets/ui-feedback.js"></script>
+    <script defer src="assets/layout.js"></script>
+    <script defer src="assets/billing.js"></script>
+  </head>
+  <body data-page="subscription" data-title="FieldCore Subscription">
+    <section class="page billing-workspace-page" data-billing-app="subscription">
+      <div class="hero-row"><div class="hero-copy"><span class="eyebrow">Account billing</span><h2>FieldCore Subscription</h2><p>Review your current plan and compare monthly or annual options.</p></div><span class="badge gray">Mock billing</span></div>
+      <section class="current-subscription" data-current-subscription></section>
+      <div class="billing-toggle" role="group" aria-label="Billing interval"><button class="active" type="button" data-billing-interval="MONTHLY">Monthly</button><button type="button" data-billing-interval="ANNUAL">Annual <span data-annual-saving>Save</span></button></div>
+      <section class="pricing-grid" data-plan-cards aria-live="polite"></section>
+    </section>
+  </body>
+</html>

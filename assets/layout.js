@@ -1,4 +1,12 @@
 (function () {
+  if (!document.querySelector('script[src*="form-ux.js"]')) {
+    const formUx = document.createElement('script');
+    formUx.src = 'assets/form-ux.js';
+    formUx.defer = true;
+    formUx.dataset.fieldcoreFormUx = 'true';
+    document.head.appendChild(formUx);
+  }
+
   const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api';
 
   const adminPages = [
@@ -7,7 +15,8 @@
     ['schedule', 'Schedule', 'schedule.html', 'schedule'],
     ['map', 'Map', 'map.html', 'map'],
     ['booking-requests', 'Booking Requests', 'booking-requests.html', 'inbox'],
-    ['customers', 'People/Members', 'customers.html', 'users'],
+    ['customers', 'Customers', 'customers.html', 'users'],
+    ['members', 'Company Members', 'members.html', 'users'],
     ['branches', 'Branches', 'branches.html', 'map'],
     ['approvals', 'Approvals', 'approvals.html', 'inbox'],
     ['assets', 'Assets', 'assets.html', 'briefcase'],
@@ -24,7 +33,7 @@
     ['reports', 'Reports', 'reports.html', 'chart'],
     ['executive-dashboard', 'Executive Dashboard', 'executive-dashboard.html', 'chart'],
     ['onboarding', 'Onboarding', 'onboarding.html', 'settings'],
-    ['security-center', 'Security Center', 'security-center.html', 'settings'],
+    ['security-center', 'Security', 'security-center.html', 'settings'],
     ['settings', 'Settings', 'settings.html', 'settings']
   ];
 
@@ -68,11 +77,17 @@
   }
 
   const adminNavGroups = [
-    ['Core', ['dashboard', 'jobs', 'schedule', 'map', 'booking-requests', 'customers']],
-    ['Money', ['quotes', 'invoices', 'collections']],
-    ['Enterprise', ['branches', 'approvals', 'assets', 'service-contracts', 'contract-automation', 'inventory', 'purchase-requests', 'purchase-orders', 'procurement-costing', 'mobile-sync', 'reports', 'executive-dashboard', 'onboarding', 'security-center']],
-    ['Workspace', ['settings']]
+    ['Core', 'Daily work', ['dashboard', 'jobs', 'schedule', 'map', 'booking-requests', 'customers', 'members']],
+    ['Money', 'Quotes & payments', ['quotes', 'invoices', 'collections']],
+    ['Enterprise', 'Advanced operations', ['branches', 'approvals', 'assets', 'service-contracts', 'contract-automation', 'inventory', 'purchase-requests', 'purchase-orders', 'procurement-costing', 'mobile-sync', 'reports', 'executive-dashboard', 'onboarding']],
+    ['Workspace', 'Company setup', ['settings']]
   ];
+
+  const pagePermissions = {
+    dashboard: 'dashboard.operational.view', jobs: 'jobs.view', schedule: 'schedule.view', map: 'workers.location.view', 'booking-requests': 'bookings.view', customers: 'customers.view', members: 'members.view',
+    quotes: 'quotes.view', invoices: 'invoices.view', collections: 'payments.view', branches: 'branch.view', approvals: 'approval.request.decide', inventory: 'inventory.view',
+    'purchase-requests': 'purchaseRequest.create', 'purchase-orders': 'purchaseOrder.manage', reports: 'finance.reports.view', 'executive-dashboard': 'dashboard.executive.view', settings: 'company.settings.view', 'security-center': 'security.view'
+  };
 
   function navLink([key, label, href, iconName], current) {
     return `<a class="nav-link${key === current ? ' active' : ''}" href="${href}">
@@ -80,18 +95,26 @@
     </a>`;
   }
 
-  function nav(current, role) {
+  function nav(current, role, permissions) {
+    const permissionSet = new Set(permissions || []);
     if (role === 'WORKER') {
-      return normalizePages(workerPages).map((page) => navLink(page, current)).join('');
+      const combined = new Map([...normalizePages(workerPages), ...normalizePages(adminPages)].map((page) => [page[0], page]));
+      return Array.from(combined.values())
+        .filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]))
+        .map((page) => navLink(page, current))
+        .join('');
     }
 
-    const normalized = normalizePages(adminPages);
+    const normalized = normalizePages(adminPages).filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]) || !role);
     const byKey = new Map(normalized.map((page) => [page[0], page]));
-    return adminNavGroups.map(([title, keys]) => {
+    return adminNavGroups.map(([title, purpose, keys]) => {
       const links = keys.map((key) => byKey.get(key)).filter(Boolean);
-      const isOpen = links.some((page) => page[0] === current) || title === 'Core';
+      const isOpen = links.some((page) => page[0] === current);
       return `<details class="nav-group"${isOpen ? ' open' : ''}>
-        <summary class="nav-group-title">${title}</summary>
+        <summary class="nav-group-title">
+          <span class="nav-group-copy"><span>${title}</span><small>${purpose}</small></span>
+          <span class="nav-group-chevron" aria-hidden="true">⌄</span>
+        </summary>
         <div class="nav-group-links">${links.map((page) => navLink(page, current)).join('')}</div>
       </details>`;
     }).join('');
@@ -111,18 +134,46 @@
     </div>`;
   }
 
-  function renderRoleNavigation(role) {
+  function accountInitials(user) {
+    return String(user && (user.name || user.email) || 'FC')
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join('')
+      .toUpperCase();
+  }
+
+  function renderAccountIdentity(user) {
+    if (!user) return;
+    document.querySelectorAll('[data-current-user-name]').forEach((node) => {
+      node.textContent = user.name || user.email || 'Account';
+    });
+    document.querySelectorAll('[data-current-user-role]').forEach((node) => {
+      node.textContent = user.jobTitle || user.roleTemplate && user.roleTemplate.name || user.role || 'Account';
+    });
+    document.querySelectorAll('[data-account-initials]').forEach((node) => {
+      node.textContent = accountInitials(user);
+    });
+  }
+
+  function renderRoleNavigation(user) {
+    const role = user && user.role;
     const current = activePage();
     const navNode = document.querySelector('.sidebar .nav');
     const quick = document.querySelector('[data-quick-card]');
 
-    if (navNode) navNode.innerHTML = nav(current, role);
+    if (navNode) navNode.innerHTML = nav(current, role, user && user.effectivePermissions);
+    renderAccountIdentity(user);
 
     if (quick) {
       quick.hidden = !shouldShowQuickCard(current, role);
     }
 
     document.body.dataset.userRole = role || '';
+    document.querySelectorAll('[data-owner-only]').forEach((node) => { node.hidden = role !== 'OWNER'; });
+    const permissionSet = new Set(user && user.effectivePermissions || []);
+    document.querySelectorAll('[data-required-permission]').forEach((node) => { node.hidden = !permissionSet.has(node.dataset.requiredPermission); });
   }
 
   async function loadRoleNavigation() {
@@ -135,7 +186,7 @@
       const user = payload && payload.data;
       const role = user && user.role;
 
-      if (role) renderRoleNavigation(role);
+      if (role) renderRoleNavigation(user);
     } catch (error) {
       // Keep admin-shaped default while login modal loads.
     }
@@ -149,39 +200,60 @@
     </div>`;
   }
 
-  function marketSwitcher() {
-    const value = localStorage.getItem('fieldcore.market') || 'ZW';
-    return `<div class="market-switcher" aria-label="Dashboard region">
-      <div class="market-switcher-head"><span>Region</span><small>QA only</small></div>
-      <button type="button" data-market-value="ZW"${value === 'ZW' ? ' class="active"' : ''}>Zimbabwe</button>
-      <button type="button" data-market-value="SA"${value === 'SA' ? ' class="active"' : ''}>South Africa</button>
-    </div>`;
-  }
-
-  function applyMarketMode(value) {
-    const next = value === 'SA' ? 'SA' : 'ZW';
-    localStorage.setItem('fieldcore.market', next);
-    document.body.dataset.market = next;
-    document.querySelectorAll('[data-market-value]').forEach((button) => {
-      button.classList.toggle('active', button.dataset.marketValue === next);
-    });
-    window.dispatchEvent(new CustomEvent('fieldcore:market-change', { detail: { market: next } }));
-  }
-
-  function setupMarketSwitcher() {
-    applyMarketMode(localStorage.getItem('fieldcore.market') || 'ZW');
-    document.addEventListener('click', (event) => {
-      const button = event.target.closest('[data-market-value]');
-      if (!button) return;
-      applyMarketMode(button.dataset.marketValue);
-    });
-  }
-
   function pageSearchBox() {
     return `<div class="page-search-shell" data-page-search-shell>
       <input type="search" placeholder="Search this section..." aria-label="Search this section" data-page-search autocomplete="off">
       <div class="page-search-results" data-page-search-results hidden></div>
     </div>`;
+  }
+
+  function accountMenu() {
+    return `<div class="account-menu" data-account-menu>
+      <button class="account-trigger" type="button" data-account-trigger aria-haspopup="menu" aria-expanded="false">
+        <span class="account-avatar" data-account-initials>FC</span>
+        <span class="account-trigger-copy"><strong data-current-user-name>Signed in</strong><small data-current-user-role>Account</small></span>
+        <span class="account-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div class="account-dropdown" role="menu" data-account-dropdown hidden>
+        <a role="menuitem" href="settings.html">Settings</a>
+        <a role="menuitem" href="subscription.html" data-required-permission="subscription.view" hidden>FieldCore Subscription</a>
+        <a role="menuitem" href="security-center.html" data-required-permission="security.view" hidden>Security</a>
+        <button role="menuitem" type="button" data-logout>Log out</button>
+      </div>
+    </div>`;
+  }
+
+  function setupAccountMenu() {
+    const menu = document.querySelector('[data-account-menu]');
+    const trigger = menu && menu.querySelector('[data-account-trigger]');
+    const dropdown = menu && menu.querySelector('[data-account-dropdown]');
+    if (!trigger || !dropdown) return;
+    const close = () => { dropdown.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };
+    const open = () => { dropdown.hidden = false; trigger.setAttribute('aria-expanded', 'true'); const first = dropdown.querySelector('[role="menuitem"]:not([hidden])'); if (first) first.focus(); };
+    trigger.addEventListener('click', () => dropdown.hidden ? open() : close());
+    document.addEventListener('click', (event) => { if (!menu.contains(event.target)) close(); });
+    menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { close(); trigger.focus(); } });
+
+    const logoutButton = menu.querySelector('[data-logout]');
+    if (logoutButton) {
+      logoutButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        logoutButton.disabled = true;
+        logoutButton.textContent = 'Signing out...';
+        try {
+          await fetch(`${API_BASE}/auth/logout`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+          });
+        } catch (error) {
+          // The local session is still cleared by navigating to the sign-in page.
+        }
+        window.location.href = 'login.html?loggedOut=1';
+      });
+    }
   }
 
   function sectionSearchTargetSelector() {
@@ -369,19 +441,10 @@
       </a>
       ${searchBox()}
       <nav class="nav">${nav(current, null)}</nav>
-      ${marketSwitcher()}
       ${quickCard()}
-      <div class="user">
-        <span class="user-photo"></span>
-        <span>
-          <strong data-current-user-name>Signed in</strong>
-          <small data-current-user-role>Account</small>
-        </span>
-        <button class="icon-button logout-button" type="button" data-logout title="Log out">×</button>
-      </div>
     </aside>
     <main class="content">
-      <button class="menu-toggle" type="button">Menu</button>
+      <div class="content-account-bar"><button class="menu-toggle" type="button">Menu</button>${accountMenu()}</div>
       ${pageSearchBox()}
       <div class="page-mount"></div>
     </main>`;
@@ -398,7 +461,7 @@
 
     setupGlobalSearch();
     setupPageSearch();
-    setupMarketSwitcher();
+    setupAccountMenu();
     loadRoleNavigation();
   }
 

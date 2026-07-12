@@ -1,7 +1,10 @@
 # FieldCore — Full-System Manual QA Test Plan
 
-**Scope:** Every module of the FieldCore platform — Express/Prisma/PostgreSQL backend, static admin web UI, client portal, public booking/tracking portal, regional Zimbabwe/South Africa local deployments, customer payment experience, finance/accounting exports, and the Flutter technician mobile app.
+**Scope:** Every module of the FieldCore platform — Express/Prisma/PostgreSQL backend, owner signup and onboarding, mock SaaS plan selection/subscription management, company-member invitations, role templates, granular permissions and access scopes, static admin web UI, client portal, public booking/tracking portal, regional Zimbabwe/South Africa local deployments, customer payment experience, finance/accounting exports, and the Flutter technician mobile app.
 **Dimensions covered:** Functionality, Security, Multi-tenancy, Data integrity, Performance/Efficiency, Reliability/Recovery.
+
+> **Revision note — July 2026:** Updated after the owner-signup, mock subscription, profile-menu, company-member invitation, role-template, granular-permission, team, and access-scope refactor. The previous manual QA run had reached Section 3; re-run the changed Section 2/3 cases before continuing into the new Section 4 authorization matrix.
+
 **Companion docs already in repo (use alongside, don't duplicate):** `MANUAL_QA_SIMULATION.md` (happy-path phase 1–12 walkthrough), `docs/security-review.md`, `docs/deployment-checklist.md`, `docs/mvp-signoff-checklist.md`, `docs/disaster-recovery-runbook.md`.
 
 This plan is organized differently from the existing simulation script: it is a **module-by-module regression + adversarial test matrix**, meant to be run before any major release, not just once at MVP. Each test case has an ID, so failures can be logged and re-tested individually.
@@ -15,14 +18,54 @@ This plan is organized differently from the existing simulation script: it is a 
 - Type key: **F** = Functional, **S** = Security, **P** = Performance/Efficiency, **D** = Data Integrity, **R** = Reliability/Recovery.
 - Priority key: **P0** = release-blocking, **P1** = must-fix before GA, **P2** = fix soon, **P3** = polish.
 - Log every failure in the Defect Log template (Section 24) — don't just mark "fail" inline and move on.
-- Run the automated suite first (`npm test`) — this plan assumes automated coverage is green and focuses on what automation typically misses: cross-tenant leakage, role edge cases, UI truth-vs-API truth, and real device/network conditions.
+- Run the automated suite first (`npm test`) — this plan assumes automated coverage is green and focuses on what automation typically misses: cross-tenant leakage, permission edge cases, scope enforcement, UI truth-vs-API truth, and real device/network conditions.
 
----
+### QA checkpoint after the signup/access-control refactor
 
+The previous manual QA run reached the end of **Section 3** before the owner-signup, subscription, member-invitation, role-template, permission, and scope changes were introduced.
+
+Do **not** assume the old Section 2/3 results still prove the new behavior. Before continuing with Section 4, re-run the changed cases in:
+
+- **Section 2** — account/persona setup and role-template matrix.
+- **Section 3** — new owner signup, plan selection, onboarding gate, invitation acceptance, session security.
+- **Section 4** — all authorization tests. This section is now the main release gate for the new permission architecture.
+
+You do **not** need to repeat unrelated tests from Sections 0–3 if they already passed and the underlying code was not changed.
 
 ## 0A. Before You Start Manual QA — Required Preflight
 
 Manual QA should start from a **clean, known state**. Do not begin from a database that still contains mixed experimental tenants, old invoices, old customer payment settings, or half-configured region data.
+
+### 0A.0 Resume safely after the signup/RBAC refactor
+
+Because the previous QA run already reached Section 3, decide whether you are **continuing the current run** or **starting a fresh full regression**:
+
+- **Continuing the current run:** do not reset the databases merely because the role system changed. Run the automated suite, confirm Prisma migration status is clean, restart both regional servers, then re-run the changed Section 2/3 cases and continue into Section 4.
+- **Starting a fresh full regression:** use the clean-database reset procedure in 0A.3.
+
+Before continuing either path, verify migration state for both regional databases:
+
+```bash
+cd ~/code/FieldCore_Software
+
+set -a
+source .env.zw
+set +a
+npx prisma migrate status
+
+set -a
+source .env.sa
+set +a
+npx prisma migrate status
+```
+
+Expected for both regions:
+
+```text
+Database schema is up to date!
+```
+
+Do not use `prisma migrate reset` against a database you intend to keep.
 
 ### 0A.1 Confirm the codebase is ready
 
@@ -36,7 +79,13 @@ npm install
 node --check src/routes/api.js
 node --check assets/api.js
 node --check assets/client-portal.js
+node --check assets/layout.js
+node --check assets/billing.js
+node --check assets/invitations.js
+node --check assets/members.js
+node --check src/services/accessControl.service.js
 node --check prisma/seed.js
+npx prisma validate
 npm test
 ```
 
@@ -155,21 +204,23 @@ Password for all seeded staff accounts:
 FieldCoreDemo2026!
 ```
 
+The legacy `OWNER / ADMIN / WORKER` value is now a **coarse internal classification**, not the full business role model. User-facing access is determined by **role template + effective permissions + scope**.
+
 Zimbabwe server (`http://localhost:3000`):
 
-| Role | Email |
-|---|---|
-| Owner | `owner.zw@fieldcore.test` |
-| Admin | `admin.zw@fieldcore.test` |
-| Worker | `worker.zw@fieldcore.test` |
+| Seeded persona | Email | Expected template/access intent |
+|---|---|---|
+| Owner | `owner.zw@fieldcore.test` | Owner template; full company access + protected owner powers |
+| Admin | `admin.zw@fieldcore.test` | Broad general-administrator equivalent; no protected ownership powers |
+| Worker | `worker.zw@fieldcore.test` | Field-worker template; self/assigned-work access |
 
 South Africa server (`http://localhost:3001`):
 
-| Role | Email |
-|---|---|
-| Owner | `owner.sa@fieldcore.test` |
-| Admin | `admin.sa@fieldcore.test` |
-| Worker | `worker.sa@fieldcore.test` |
+| Seeded persona | Email | Expected template/access intent |
+|---|---|---|
+| Owner | `owner.sa@fieldcore.test` | Owner template; full company access + protected owner powers |
+| Admin | `admin.sa@fieldcore.test` | Broad general-administrator equivalent; no protected ownership powers |
+| Worker | `worker.sa@fieldcore.test` | Field-worker template; self/assigned-work access |
 
 ### 0A.7 Go/no-go before manual QA
 
@@ -183,6 +234,11 @@ Do not begin the full manual QA run until all of these are true:
 - [ ] `/healthz` and `/readyz` pass on both servers.
 - [ ] You can log in to the ZW owner account.
 - [ ] You can log in to the SA owner account.
+- [ ] A fresh owner signup reaches the plan-selection gate before normal dashboard access.
+- [ ] Monthly/annual pricing renders and the annual option shows the configured saving.
+- [ ] Mock plan confirmation performs no real external payment.
+- [ ] The top-right profile menu contains Settings, FieldCore Subscription, Security, and Log out.
+- [ ] A seeded owner can open Company Members and see role-template/permission controls.
 - [ ] Finance settings show ZW/USD/Paynow on the ZW server.
 - [ ] Finance settings show SA/ZAR/South African payment providers on the SA server.
 - [ ] The customer payment page shows a generic **Make payment online** action, not provider-choice buttons.
@@ -193,9 +249,9 @@ Do not begin the full manual QA run until all of these are true:
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
 | ENV-01 | Fresh clone or current repo, `cp .env.example .env` if needed, fill a real local `DATABASE_URL` and a long random `JWT_SECRET` | App uses real local values; production mode refuses placeholder `JWT_SECRET` | P0 | S |
-| ENV-02 | Run `npm install` and syntax checks for changed JS files | Dependencies install and syntax checks pass with no parser errors | P0 | F |
+| ENV-02 | Run `npm install`, `npx prisma validate`, and syntax checks for changed JS files including access control, billing, invitation, member, and layout scripts | Dependencies install and syntax checks pass with no parser errors | P0 | F |
 | ENV-03 | Run `npm run env:regions` if present, then inspect `.env.zw` and `.env.sa` | Regional env files reuse the working `.env` database credentials, change only DB name/region/port, and do not contain placeholder `USER:PASSWORD` | P0 | F/S |
-| ENV-04 | Create/reset `fieldcore_zw` and `fieldcore_sa`, then run `npm run db:reset:zw` and `npm run db:reset:sa` | Clean databases are reset and seeded without manual Prisma migration prompts | P0 | F |
+| ENV-04 | For a fresh full regression only: create/reset `fieldcore_zw` and `fieldcore_sa`, then run `npm run db:reset:zw` and `npm run db:reset:sa` | Clean databases are reset and seeded without manual Prisma migration prompts | P0 | F |
 | ENV-05 | `npm test` | All automated tests pass with 0 failures before manual QA starts | P0 | F |
 | ENV-06 | `npm run dev:zw`, hit `http://localhost:3000/healthz` and `/readyz` | ZW server is healthy and connected to `fieldcore_zw` | P0 | R |
 | ENV-07 | `npm run dev:sa`, hit `http://localhost:3001/healthz` and `/readyz` | SA server is healthy and connected to `fieldcore_sa` | P0 | R |
@@ -204,22 +260,66 @@ Do not begin the full manual QA run until all of these are true:
 | ENV-10 | Run destructive reset command with `NODE_ENV=production` set | Command refuses to run in production | P0 | S |
 | ENV-11 | Start app with a bad `DATABASE_URL` | App fails fast with a clear log, not a silent hang or crash loop | P1 | R |
 | ENV-12 | Confirm `.env`, `.env.zw`, `.env.sa`, `.env.backup`, and any `*.log` files are not committed / not served statically | No secrets reachable via direct URL such as `GET /.env` or `GET /server.log` | P0 | S |
-
----
+| ENV-13 | Load `.env.zw`, run `npx prisma migrate status`; repeat with `.env.sa` | Both regional databases report **Database schema is up to date!** and no `P3005` baseline error remains | P0 | D/R |
+| ENV-14 | Inspect the migration table/history after a fresh reset or current baseline | Existing migrations are recorded consistently; future `npx prisma migrate deploy` does not attempt to replay the initial schema over a non-empty DB | P0 | D/R |
+| ENV-15 | Directly request `plan-selection.html`, `subscription.html`, `members.html`, and `accept-invite.html` as appropriate authenticated/unauthenticated users | Public/authenticated page guards match the intended lifecycle; no protected data is exposed merely by loading an HTML page | P1 | S/F |
 
 ## 2. Accounts & Role Matrix
 
 Run QA against **both** regional deployments. Treat ZW and SA as separate local products unless a test explicitly asks for cross-region comparison.
 
-### Zimbabwe seed set — `http://localhost:3000`
+### 2.1 Core authorization model under test
 
-| Role | Email | Purpose |
+FieldCore now separates three concepts:
+
+```text
+WHO/WHAT KIND OF ACCOUNT IS THIS INTERNALLY?
+Coarse system classification: OWNER / ADMIN / WORKER
+
+WHAT BUSINESS ROLE DOES THE PERSON HAVE?
+Role template / job title: Owner, COO, Accountant, Operations Manager, Team Supervisor, Technician, etc.
+
+WHAT CAN THEY ACTUALLY DO, AND WHERE?
+Effective permissions + scope: COMPANY / BRANCH / TEAM / SELF
+```
+
+A role-template name must **not** be treated as authorization by itself. Backend authorization must use effective permissions and scope. `OWNER` remains special only for protected ownership actions.
+
+### 2.2 Seeded regional accounts
+
+#### Zimbabwe — `http://localhost:3000`
+
+| Seeded persona | Email | Purpose |
 |---|---|---|
-| Owner | `owner.zw@fieldcore.test` | Full access, billing, finance settings, security settings |
-| Admin | `admin.zw@fieldcore.test` | Operational access, no owner-only settings |
-| Worker | `worker.zw@fieldcore.test` | Field technician / mobile workflow |
+| Owner | `owner.zw@fieldcore.test` | Full company access + protected ownership actions |
+| General Admin | `admin.zw@fieldcore.test` | Broad existing admin-equivalent access, but not ownership transfer/deletion/final-owner powers |
+| Field Worker | `worker.zw@fieldcore.test` | Self/assigned field-work access |
 
-Expected ZW defaults:
+#### South Africa — `http://localhost:3001`
+
+| Seeded persona | Email | Purpose |
+|---|---|---|
+| Owner | `owner.sa@fieldcore.test` | Full company access + protected ownership actions |
+| General Admin | `admin.sa@fieldcore.test` | Broad existing admin-equivalent access, but not ownership transfer/deletion/final-owner powers |
+| Field Worker | `worker.sa@fieldcore.test` | Self/assigned field-work access |
+
+### 2.3 Additional personas required for the new role/permission tests
+
+Create these through the **Company Members invitation flow**, not by manually inserting passwords into the database:
+
+| Persona | Suggested role template | Required access profile |
+|---|---|---|
+| COO / Senior Manager | Executive / COO or closest generic executive template | Full delegatable company access; **not** an owner |
+| Personal Assistant / Full Administrator | Full Administrator or equivalent | Broad company administration; **not** an owner |
+| Accountant | Accountant | Finance/invoices/payments/reports; no worker-location or scheduling control unless explicitly granted |
+| Operations Manager | Operations Manager | Jobs, scheduling, workforce operations; no company financial dashboard/reports unless explicitly granted |
+| Team Supervisor | Team Supervisor / Senior Field Worker | Team-scoped jobs/workers only |
+| Branch Manager | General/Operations Manager with BRANCH scope | Branch-scoped jobs/workers/reports only |
+| Custom Restricted Role | Create manually | A deliberately narrow set of permissions for adversarial testing |
+
+### 2.4 Expected regional defaults
+
+#### Zimbabwe
 
 | Setting | Expected |
 |---|---|
@@ -230,15 +330,7 @@ Expected ZW defaults:
 | Online payment provider visible to customer | Generic **Make payment online** only; customer must not choose Paynow by name |
 | South African payment providers | Must not appear |
 
-### South Africa seed set — `http://localhost:3001`
-
-| Role | Email | Purpose |
-|---|---|---|
-| Owner | `owner.sa@fieldcore.test` | Full access, billing, finance settings, security settings |
-| Admin | `admin.sa@fieldcore.test` | Operational access, no owner-only settings |
-| Worker | `worker.sa@fieldcore.test` | Field technician / mobile workflow |
-
-Expected SA defaults:
+#### South Africa
 
 | Setting | Expected |
 |---|---|
@@ -249,77 +341,207 @@ Expected SA defaults:
 | Online payment provider visible to customer | Generic **Make payment online** only; customer must not choose Ozow/Yoco/PayFast/SnapScan by name |
 | Zimbabwe payment providers | Paynow must not appear |
 
-### Additional tenant data for isolation tests
+### 2.5 Additional tenant and scope data
 
 For Section 4, create at least one second tenant/company in each database or use the registration flow to create another company. Cross-tenant tests are still required inside each regional database.
 
-| Role | Company | Purpose |
+| Entity/persona | Minimum setup | Purpose |
 |---|---|---|
-| Owner | Company A | Primary tenant under test |
-| Admin | Company A | Operational access boundary |
-| Worker | Company A | Worker-scoped access boundary |
-| Second Worker | Company A | Worker-vs-worker leakage tests |
-| Client Portal user | Company A | Customer-scoped access boundary |
-| Owner | Company B | Tenant isolation testing |
-| Worker | Company B | Worker tenant isolation testing |
+| Company A | Primary tenant | Main functional tests |
+| Company B | Second tenant in same regional DB | Tenant-isolation tests |
+| Branch 1 + Branch 2 | Company A | Branch scope |
+| Team A + Team B | Company A | Team scope |
+| Owner | Company A | Ownership boundary |
+| COO / Full-access non-owner | Company A | Delegated senior-management boundary |
+| Accountant | Company A | Finance-only boundary |
+| Operations Manager | Company A | Operations-without-finance boundary |
+| Team Supervisor | Company A / Team A | Team boundary |
+| Field Worker A1 + A2 | Company A | Worker/self boundary |
+| Client Portal user | Company A | Customer boundary |
+| Owner + Worker | Company B | Cross-tenant boundary |
 
----
+### 2.6 Role/template test principles
+
+- **Full Access** means all **delegatable** company permissions, not ownership.
+- A non-owner with broad access must still be unable to transfer ownership, delete the company, remove/demote the final owner, or grant themselves ownership.
+- Changing a member from an office/management template to a field-worker template must also update the coarse internal classification where required so old `ADMIN` checks cannot leave hidden access behind.
+- Promoting a field worker into a management template must not leave them trapped in a worker-only UI or API path.
+- The owner may customize permissions away from a built-in template for one specific user.
+- A built-in role template is a default bundle, not hard-coded functionality.
+- Company-created custom templates must remain tenant-scoped.
 
 ## 3. Authentication & Session Security
 
+Because the previous QA run reached this section before the signup/access-control refactor, **re-run all P0/P1 cases below**.
+
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
-| AUTH-01 | Register a new company via `/auth/register` | Company + owner created, session cookie set, password never returned in response | P0 | F |
-| AUTH-02 | Login with correct credentials | HTTP-only, secure (in prod), `SameSite`-appropriate cookie issued; response never includes `passwordHash` | P0 | S |
-| AUTH-03 | Login with wrong password repeatedly (exceed `RATE_LIMIT_AUTH_MAX`, default 20/15min) | Requests beyond the limit are throttled with a clear error, not a 500 | P0 | S |
-| AUTH-04 | Inspect JWT payload (decode, don't verify) | Contains only userId/companyId/role-type claims — no password, no unnecessary PII | P1 | S |
-| AUTH-05 | Log out, then reuse the old cookie value on a protected route | Rejected — session/cookie invalidated server-side, not just cleared client-side | P0 | S |
-| AUTH-06 | Enable 2FA (`POST /auth/2fa/enable`) as Owner, log out, log back in | Login requires second factor before issuing a full session | P0 | S |
-| AUTH-07 | Generate recovery codes, disable authenticator access, use a recovery code to log in | Recovery code works once, then is invalidated (can't be reused) | P1 | S |
-| AUTH-08 | Attempt `POST /auth/2fa/disable` without re-authenticating (no current password/2FA code) | Rejected — disabling 2FA requires proof of possession, not just an active session | P0 | S |
-| AUTH-09 | `GET /auth/sessions` — open 3 sessions from different "devices" (browsers), revoke one via `POST /auth/sessions/:id/revoke` | Revoked session's cookie stops working immediately; other sessions remain valid | P0 | S |
-| AUTH-10 | `POST /auth/sessions/revoke-all` | All other sessions die; current session's behavior matches documented intent (confirm whether current session also dies) | P1 | F |
-| AUTH-11 | Set an intentionally weak password on `PATCH /auth/me/password` | Rejected if a password policy is enforced (check `docs/security-compliance-reliability.md` for the actual policy and test against it) | P1 | S |
-| AUTH-12 | Trigger repeated failed logins for one account until lockout policy kicks in | Account locks per policy; legitimate login after lockout window succeeds | P1 | S |
-| AUTH-13 | Client portal: `POST /client/auth/register`, `/login`, `/logout`, `/forgot-password` | Client session is a **separate cookie/namespace** from internal staff session — confirm a client cookie cannot access `/api/auth/me` or any staff route | P0 | S |
-| AUTH-14 | `PATCH /users/:id/role` as non-owner | Rejected — only owner (or explicitly permitted admin) can change roles | P0 | S |
+| AUTH-01 | Open the new registration flow and complete Step 1 with owner name, work email, password, and confirmation | Validation is clear; no password/password hash is returned or logged | P0 | F/S |
+| AUTH-02 | Continue to business basics and enter company name, country/market, business vertical, and approximate team size | Company metadata is stored; unsupported/unknown vertical falls back safely to generic role templates | P0 | F/D |
+| AUTH-03 | After account/business creation, try to navigate directly to a normal protected app page before selecting a plan | User is redirected to the required plan-selection step; no redirect loop; public/auth pages remain reachable | P0 | S/F |
+| AUTH-04 | On plan selection, toggle Monthly ↔ Annual | Same plans render from backend plan data; annual view shows configured saving percentage, annual total, equivalent monthly cost, and absolute saving | P0 | F/D |
+| AUTH-05 | Choose a normal paid plan in Monthly mode | Confirmation modal clearly shows plan, interval, and amount; no card form or external payment provider is opened | P0 | F/S |
+| AUTH-06 | Confirm the mock plan selection | Selected plan + billing interval persist; onboarding gate completes; user enters dashboard; no external payment API is called | P0 | F/D |
+| AUTH-07 | Repeat with Annual mode on another fresh tenant | Annual interval persists and calculated amount matches the central pricing rule, not a duplicated hard-coded frontend value | P0 | D |
+| AUTH-08 | Choose Enterprise / Contact us | Contact/request modal opens; request is recorded; no real checkout occurs; Enterprise is **not silently activated as a paid live subscription** | P0 | F/D |
+| AUTH-09 | Verify trial behavior for a newly selected non-enterprise plan | The configured **30-day free trial** is represented consistently; mock plan selection does not falsely claim a real external charge occurred | P0 | F/D |
+| AUTH-10 | Login with correct credentials | HTTP-only, secure (in prod), `SameSite`-appropriate cookie issued; response never includes `passwordHash` | P0 | S |
+| AUTH-11 | Login with wrong password repeatedly (exceed `RATE_LIMIT_AUTH_MAX`, default 20/15min) | Requests beyond the limit are throttled with a clear error, not a 500 | P0 | S |
+| AUTH-12 | Inspect JWT payload (decode, don't verify) | Contains only necessary identifiers/claims — no password, permission secrets, invite token, 2FA secret, or unnecessary PII | P1 | S |
+| AUTH-13 | Log out, then reuse the old cookie value on a protected route | Rejected — session/cookie invalidated server-side, not just cleared client-side | P0 | S |
+| AUTH-14 | Enable 2FA as an authorized user, log out, log back in | Login requires second factor before issuing a full session | P0 | S |
+| AUTH-15 | Generate recovery codes, disable authenticator access, use a recovery code to log in | Recovery code works once, then is invalidated | P1 | S |
+| AUTH-16 | Attempt to disable 2FA without required proof | Rejected — disabling 2FA requires the documented proof-of-possession flow | P0 | S |
+| AUTH-17 | Open 3 sessions, revoke one via the session-management API/UI | Revoked session stops working immediately; other sessions remain valid | P0 | S |
+| AUTH-18 | Revoke all sessions | Behavior matches documented intent and does not leave supposedly revoked sessions usable | P1 | F/S |
+| AUTH-19 | As owner, invite a new company member by email, select a role template, customize permissions, and choose COMPANY/BRANCH/TEAM/SELF scope | Invitation record is created with normalized email and correct requested access; no password is created by the inviter | P0 | F/S |
+| AUTH-20 | Inspect invitation storage/API responses | Plaintext invite token and token hash are never exposed; stored token is hashed; expiration exists | P0 | S |
+| AUTH-21 | Open a valid invitation link, set and confirm a password, accept | Invitee sees the inviting company/intended role, creates their own password, invitation becomes single-use, and account receives the intended template/permissions/scope | P0 | F/S |
+| AUTH-22 | Reuse an accepted invitation link | Rejected; no second account/access grant is created | P0 | S/D |
+| AUTH-23 | Try an expired invitation | Rejected cleanly | P0 | S |
+| AUTH-24 | Revoke a pending invitation, then try the old link | Rejected; revoked invite cannot be accepted | P0 | S |
+| AUTH-25 | Invite an email already belonging to an existing FieldCore user | Existing account is not hijacked or silently rebound to another company; behavior follows explicit safe membership rules | P0 | S |
+| AUTH-26 | Client portal register/login/logout/forgot-password | Client session remains separate from internal staff session; client cookie cannot access staff routes | P0 | S |
+| AUTH-27 | Attempt direct role/access changes as a user without the required member/role/permission-management authority | Rejected server-side even if a UI control is manually exposed via devtools | P0 | S |
 
----
+### Authentication/onboarding completion check
+
+Before continuing to Section 4, have at least these accounts available in **one** regional database:
+
+- Owner.
+- Full-access non-owner COO/senior manager.
+- Accountant.
+- Operations Manager.
+- Team Supervisor scoped to Team A.
+- Normal field worker.
+- Second tenant owner.
+
+These are required for the adversarial authorization matrix below.
 
 ## 4. Authorization, RBAC & Multi-Tenant Isolation (highest priority section)
 
-This is the section most likely to hide serious bugs in a multi-tenant SaaS. Test every core entity type against every angle below.
+This is the **highest-priority release gate** after the access-control refactor. A hidden menu item is not proof of security. For P0 cases, test the UI **and** the raw API request.
+
+### 4.1 Tenant isolation
 
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
-| TEN-01 | As Company A owner, note IDs for a customer, job, quote, invoice, worker, asset, contract | — | — | — |
-| TEN-02 | Login as Company B owner. Directly request Company A's records by ID (e.g. `GET /api/customers/{A-id}`, `/jobs/{A-id}`, `/invoices/{A-id}`) | Every request returns 404/403 — **never** the record, even partially | P0 | S |
-| TEN-03 | As Company B, list customers/jobs/quotes/invoices/workers/assets | Company A's records never appear, even mixed into pagination | P0 | S |
-| TEN-04 | As Company B worker, hit worker-scoped endpoints (assigned jobs, sync pull) with a guessed/incremented job ID from Company A | Rejected; no data leak, no verbose error revealing the record exists | P0 | S |
-| TEN-05 | As Worker (Company A), attempt to `GET`/`PATCH` a customer, invoice, quote, or another worker's profile directly (not just via UI, via raw API call) | Rejected — worker role is restricted to assigned jobs, own schedule, own location updates, own job photos | P0 | S |
-| TEN-06 | As Worker A1, request Worker A2's assigned jobs or location history | Rejected | P0 | S |
-| TEN-07 | As Client Portal user, request another customer's quotes/invoices/assets/contracts by ID | Rejected | P0 | S |
-| TEN-08 | As Client Portal user, attempt any staff-only route (`/api/workers`, `/api/company/security-settings`, `/api/admin/*`) | Rejected with 401/403 | P0 | S |
-| TEN-09 | As Admin (non-owner), attempt owner-only actions: billing/subscription changes, security settings, identity provider config | Confirm the actual documented boundary (README says admin has "full operational access, no billing/owner-only settings") and verify it's enforced, not just hidden in the UI | P0 | S |
-| TEN-10 | Tamper with a request body to inject a different `companyId` than the authenticated user's (e.g. `POST /api/jobs` with `companyId` of Company B) | Server ignores/overrides client-supplied `companyId`; record is created under the authenticated user's real company (per README: "API handlers never trust client-provided companyId") | P0 | S |
-| TEN-11 | Branch-scoped access (multi-branch companies): create two branches, assign an admin to Branch 1 only, confirm they cannot see Branch 2's jobs/workers/reports | Branch scoping enforced server-side, not just UI filter | P0 | S |
-| TEN-12 | Approval-gated actions (refunds, discounts, etc. per enterprise approval gates): attempt the gated action as a role without approval rights | Rejected or routed into a pending-approval state, never silently executed | P0 | S |
-| TEN-13 | Compare ZW and SA after separate resets: create a customer/invoice in ZW, then search/list on SA; repeat SA → ZW | Records never appear across regional servers/databases. Region separation is enforced by `DATABASE_URL`, not only UI filters | P0 | S/D |
+| TEN-01 | As Company A owner, note IDs for a customer, job, quote, invoice, worker, asset, contract, team, role template, and invitation | Test IDs available | — | — |
+| TEN-02 | Login as Company B owner and directly request Company A records by ID | Every request returns 404/403 — never the record, even partially | P0 | S |
+| TEN-03 | As Company B, list customers/jobs/quotes/invoices/workers/assets/teams/role templates | Company A records never appear, including in pagination/search results | P0 | S |
+| TEN-04 | As Company B worker, hit worker/mobile endpoints with a Company A job/worker/team ID | Rejected without leaking whether the foreign record exists | P0 | S |
+| TEN-05 | As Client Portal user, request another customer's records or any staff-only route | Rejected with 401/403/404 as appropriate | P0 | S |
+| TEN-06 | Tamper with `companyId` in request bodies during create/update/invite/team/role operations | Server ignores or rejects client-supplied tenant ownership; authenticated company context wins | P0 | S |
+| TEN-07 | Create data in ZW and search/list for it in SA; repeat SA → ZW | No cross-region leakage | P0 | S/D |
 
----
+### 4.2 Permission authority — backend must match the UI
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| RBAC-01 | As Accountant, open invoices/payments/finance reports that were explicitly granted | Allowed | P0 | F/S |
+| RBAC-02 | As Accountant, directly call quote-send, job-assignment, schedule-mutation, worker-location, team-management, or other operations endpoints not granted | 403/404; coarse `ADMIN` classification must not bypass missing permissions | P0 | S |
+| RBAC-03 | As Operations Manager, access jobs/scheduling/workforce modules granted to them | Allowed | P0 | F/S |
+| RBAC-04 | As Operations Manager without financial permissions, call financial dashboard, invoice/payment/report/export endpoints directly | Sensitive finance data is not returned | P0 | S |
+| RBAC-05 | As a user with `invoices.view` but not invoice mutation/send permissions, view an invoice then attempt direct edit/send/void/payment mutation | View succeeds; unauthorized actions fail server-side | P0 | S |
+| RBAC-06 | As a user with `quotes.view` but not quote mutation/send permissions, attempt direct create/edit/send/accept/reject/delete actions | Only specifically granted actions succeed | P0 | S |
+| RBAC-07 | As a user with `schedule.view` but not `schedule.manage`, attempt reschedule/delete/override | Rejected | P0 | S |
+| RBAC-08 | As a user with worker visibility but not worker management/location permission, attempt worker edit/deactivate/location-history access | Rejected according to the exact missing permission | P0 | S |
+| RBAC-09 | Open a protected page by URL without the required page/module permission | Page is blocked/redirected and underlying APIs also reject access | P0 | S |
+| RBAC-10 | Manipulate frontend/localStorage permission data to make a hidden menu item appear | Backend still rejects unauthorized API requests | P0 | S |
+
+### 4.3 Protected owner powers vs Full Access
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| OWN-01 | Give a non-owner COO **Full Access** | They receive all delegatable permissions and broad company operation access | P0 | F/S |
+| OWN-02 | As that Full Access COO, attempt to transfer ownership | Rejected | P0 | S |
+| OWN-03 | Attempt to delete the company/account | Rejected unless explicitly defined as an owner-only action and actor is actual owner | P0 | S |
+| OWN-04 | Attempt to remove/demote the final owner | Rejected | P0 | S/D |
+| OWN-05 | Attempt to make self an OWNER by editing profile/member payloads or template metadata | Rejected; no self-escalation | P0 | S |
+| OWN-06 | As actual owner, perform legitimate owner-only action in a safe test environment | Allowed and audited | P0 | F/D |
+
+### 4.4 Delegation security
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| DEL-01 | Give a restricted user only `members.invite`, not broad permission-management authority; have them invite another user with Full Access or permissions they do not possess | Server rejects the over-delegation | P0 | S |
+| DEL-02 | Same actor attempts to grant a broader branch/team/company scope than they are authorized to administer | Rejected | P0 | S |
+| DEL-03 | Authorized owner/permission administrator grants a permitted subset of their delegatable authority | Succeeds | P0 | F/S |
+| DEL-04 | User attempts to edit their own permissions/template/scope to gain more access | Rejected unless explicitly authorized by a higher-level policy; self-escalation must not occur | P0 | S |
+| DEL-05 | Change another member's role template from broad admin → field worker | Effective permissions shrink and coarse system classification/navigation no longer leave old hidden admin access | P0 | S/D |
+| DEL-06 | Promote a field worker → management/COO-style template | User can access the permitted management web modules and is not trapped in worker-only UI/route behavior | P0 | F/S |
+
+### 4.5 Scope enforcement
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| SCP-01 | COMPANY-scoped manager lists jobs/workers/teams they have permission to view | Sees the permitted company-wide data | P0 | F/S |
+| SCP-02 | BRANCH-scoped manager for Branch 1 requests Branch 2 jobs/workers/reports directly by ID and through list/search APIs | Branch 2 data is excluded/rejected server-side | P0 | S |
+| SCP-03 | TEAM-scoped supervisor for Team A lists jobs and workers | Only Team A data appears | P0 | S |
+| SCP-04 | TEAM-scoped supervisor directly requests Team B job/worker/schedule data | Rejected | P0 | S |
+| SCP-05 | SELF-scoped field worker lists jobs/schedule | Only own/assigned work appears | P0 | S |
+| SCP-06 | SELF-scoped field worker requests another worker's job/location/profile | Rejected | P0 | S |
+| SCP-07 | Grant a permission through a TEAM/BRANCH scope and call a resource endpoint that uses the same permission | Permission is not treated as globally company-wide; resource query also enforces scope | P0 | S |
+| SCP-08 | Change a user's scope and refresh/re-login | New scope takes effect consistently in navigation, lists, detail routes, reports, and mutations | P0 | S/D |
+
+### 4.6 Dashboard and reporting data segmentation
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| DASH-AUTH-01 | Operations Manager with operational dashboard permission but no financial dashboard permission loads dashboard | Operational widgets render; revenue, unpaid totals, profit/margin, and other finance-only metrics are omitted or blocked | P0 | S |
+| DASH-AUTH-02 | Accountant with financial dashboard permission but no workforce-location permission loads dashboard | Finance widgets render; restricted worker/location data does not | P0 | S |
+| DASH-AUTH-03 | Executive with explicit executive/financial/operational dashboard permissions loads dashboard | Full permitted dashboard renders | P0 | F/S |
+| DASH-AUTH-04 | Branch/team-scoped manager loads reports/dashboard | Aggregates contain only in-scope records | P0 | S/D |
+
+### 4.7 Role-template and custom-role isolation
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| ROLE-01 | Create a custom company role template with a narrow permission set and default scope | Template saves and is reusable within that company | P1 | F |
+| ROLE-02 | Edit the custom template or a member-specific override | Effective access changes as intended without changing unrelated users unexpectedly | P1 | D |
+| ROLE-03 | Company B attempts to list/use/edit Company A custom template by ID | Rejected/not visible | P0 | S |
+| ROLE-04 | Select a built-in generic template, then customize one member's permissions | Only that member receives the override unless a company template itself was deliberately edited | P1 | D |
+| ROLE-05 | For a supported vertical, verify relevant vertical templates appear alongside generic templates; for unsupported vertical, generic templates still work | No hard dependency on HVAC or any one industry | P2 | F |
+
+### 4.8 Auditability
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| AUD-ACCESS-01 | Create/resend/revoke/accept an invitation | Each sensitive event is audited without plaintext token/password | P0 | S/D |
+| AUD-ACCESS-02 | Change role template, permissions, Full Access, or scope | Actor, target, timestamp, and safe metadata are audited | P0 | D |
+| AUD-ACCESS-03 | Attempt blocked privilege escalation | Security/authorization failure is safely logged where intended without leaking secrets | P1 | S |
 
 ## 5. Core Business Objects — Customers, Services, Workers
+
+The new company-member/team model must be tested separately from customers. **Customers are not company members.**
+
+### 5.1 Company Members, invitations, custom roles and teams
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| MEM-01 | Open Company Members as owner/authorized member manager | Active members and pending invitations are clearly separated; customer records are not mixed into the staff list | P0 | F |
+| MEM-02 | Edit a member's job title, role template, permission overrides, and scope | Changes persist and effective access updates after refresh/re-login | P0 | F/D |
+| MEM-03 | Disable a member, then attempt login/API use with an existing session | Account is blocked according to intended policy; historic records remain intact | P0 | S/D |
+| MEM-04 | Reactivate a disabled member as an authorized administrator | Access returns with the intended current permissions/scope, not stale elevated access | P1 | F/S |
+| MEM-05 | Resend a pending invitation | Old/previous invitation behavior follows the designed token policy; only valid current link can be accepted | P1 | S |
+| MEM-06 | Revoke a pending invitation | Invitation becomes unusable | P0 | S |
+| MEM-07 | Create a custom role using the proper role builder/editor | Name, description, permission categories, and default scope save without browser-prompt-only shortcuts | P1 | F |
+| MEM-08 | Create Team A and Team B, add/remove workers or company members as supported | Membership updates correctly and remains company-scoped | P0 | F/D |
+| MEM-09 | Assign a Team Supervisor to Team A and verify the UI only offers authorized scope selections | No accidental company-wide scope is granted | P0 | S |
+| MEM-10 | Delete/deactivate a team that still has members/jobs | System handles dependencies safely; no orphaned access grants or silent cross-scope expansion | P1 | D |
+
+### 5.2 Customers, services and workers
 
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
 | CORE-01 | Create/edit/delete a customer with valid and invalid data (missing name, malformed email/phone) | Zod validation rejects bad input with a clear message; valid input persists correctly | P1 | F |
-| CORE-02 | Soft-delete a customer, then attempt normal retrieval and "recovery" flow | Soft-deleted record disappears from normal views but is recoverable via the intended recovery path (per `add_soft_delete_fields` / `quote_soft_delete_recovery` migrations) | P1 | D |
-| CORE-03 | Create a service with pricing, mark inactive, confirm it disappears from new-quote pickers but historic quotes referencing it still render correctly | P2 | F |
-| CORE-04 | Create a worker, set role/availability, deactivate, confirm deactivated worker can't log in but historic job assignments remain intact | P1 | D |
-| CORE-05 | Attempt duplicate customer creation (same email/phone) | Confirm actual dedup behavior — either blocked or flagged, matches onboarding "duplicate detection" feature intent | P2 | F |
+| CORE-02 | Soft-delete a customer, then attempt normal retrieval and recovery flow | Soft-deleted record disappears from normal views but is recoverable through the intended path | P1 | D |
+| CORE-03 | Create a service with pricing, mark inactive, confirm it disappears from new-quote pickers but historic quotes referencing it still render correctly | Historic integrity preserved | P2 | F/D |
+| CORE-04 | Create a worker, set role/availability, deactivate, confirm deactivated worker cannot use field-worker login/workflow but historic job assignments remain intact | Access blocked; history preserved | P1 | D/S |
+| CORE-05 | Attempt duplicate customer creation (same email/phone) | Actual dedup behavior matches documented intent — blocked or clearly flagged | P2 | F |
 | CORE-06 | Upload a customer/company logo via branding settings | Accepted only for configured image MIME types and size limit; oversized/wrong-type files rejected | P1 | S |
-
----
+| CORE-07 | Promote an existing field worker into an office/management role template where supported | WorkerProfile/history is preserved; new management access follows template/permissions without duplicate user records | P1 | D/F |
+| CORE-08 | Demote an office admin to field-worker template | Legacy admin access is removed; worker-specific prerequisites are handled explicitly | P0 | S/D |
 
 ## 6. Quotes & Booking Requests (Public + Admin)
 
@@ -387,9 +609,16 @@ This is the section most likely to hide serious bugs in a multi-tenant SaaS. Tes
 | PAY-14 | Attempt a refund as a role without refund-approval rights | Blocked / routed to approval gate | P0 | S |
 | PAY-15 | Approve a refund as an authorized role, confirm invoice/collections state updates correctly | P1 | F/D |
 | PAY-16 | Collections: age an invoice past due, confirm it surfaces in collections views with correct aging buckets | P2 | F |
-| BILL-01 | SaaS billing: with `SAAS_BILLING_PROVIDER` blank, confirm checkout is disabled cleanly | No broken button/500; UI explains provider is not configured | P1 | F |
-| BILL-02 | With `SAAS_BILLING_PROVIDER=manual`, walk through the manual billing workflow end-to-end | Manual request/record is created without pretending a live card checkout occurred | P1 | F |
-| BILL-03 | Attempt to access another company's subscription/billing data | Rejected; multi-tenant scoping applies to billing too | P0 | S |
+| BILL-01 | Open the dedicated **FieldCore Subscription** page from the top-right account menu | Current plan, interval, status, usage where available, and reusable plan cards render correctly | P0 | F |
+| BILL-02 | Toggle Monthly ↔ Annual on the subscription page | Uses the same backend plan data and central annual-pricing rule as signup; no duplicated conflicting prices | P0 | D/F |
+| BILL-03 | Select a different normal plan | Mock confirmation modal shows plan/interval/amount; confirming changes internal subscription state only and does not call a real payment provider | P0 | F/S |
+| BILL-04 | Select Enterprise / Contact us | Request/contact state is recorded; Enterprise is not silently activated as a paid live plan | P0 | F/D |
+| BILL-05 | Give a non-owner authorized `subscription.view` but not `subscription.manage` | Can view subscription page/data but cannot change plan/interval | P0 | S |
+| BILL-06 | Give an authorized senior manager `subscription.manage` if this permission is intentionally delegatable | Can manage subscription without becoming OWNER or gaining protected ownership powers | P0 | S/F |
+| BILL-07 | User without `subscription.view` directly requests subscription page/API | Rejected/hidden consistently | P0 | S |
+| BILL-08 | Attempt to access another company's subscription/billing data | Rejected; multi-tenant scoping applies to billing too | P0 | S |
+| BILL-09 | Inspect network traffic while confirming mock plan changes | No Stripe/Paynow/Ozow/PayFast/Yoco or other external SaaS-billing checkout call occurs | P0 | S |
+| BILL-10 | Verify trial dates/status after new signup and plan selection | 30-day trial behavior is consistent and does not falsely represent a real successful charge | P0 | D/F |
 
 ---
 
@@ -469,50 +698,65 @@ This is the section most likely to hide serious bugs in a multi-tenant SaaS. Tes
 
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
-| ENT-01 | Create a granular permission override for one admin (e.g. can view invoices but not edit) | Override is enforced on both UI and raw API calls | P0 | S |
-| ENT-02 | Trigger an approval-gated action (discount above X%, refund, PO above threshold) | Creates a pending approval record; action does not execute until approved | P0 | F/D |
-| ENT-03 | Approve/reject a pending approval as an authorized approver | State transitions correctly; rejected actions do not silently apply anyway | P0 | D |
-| ENT-04 | Review the audit log after a sequence of sensitive actions (role change, refund, security setting change) | Every sensitive action is logged with actor, timestamp, and target — logs cannot be edited/deleted via any exposed API | P0 | S |
-| ENT-05 | Cross-branch report request as a branch-scoped admin | Only their branch's data appears, never company-wide data | P0 | S |
-
----
+| ENT-01 | Create a granular member-specific permission override (e.g. view invoices but not edit/send) | Override is enforced in UI and raw API | P0 | S |
+| ENT-02 | Create a custom company role template and assign it to two members | Both receive template defaults; member-specific override affects only the targeted member | P0 | D/S |
+| ENT-03 | Change a member from one role template to another | Effective permissions and coarse classification transition safely; no stale access remains | P0 | S/D |
+| ENT-04 | Give a non-owner Full Access | All delegatable permissions available; protected owner actions remain blocked | P0 | S |
+| ENT-05 | Restricted member attempts to delegate permissions/scope they do not control | Rejected | P0 | S |
+| ENT-06 | Branch-scoped admin requests cross-branch data/report | Only in-scope branch data appears | P0 | S |
+| ENT-07 | Team-scoped supervisor requests another team's worker/job/schedule | Rejected | P0 | S |
+| ENT-08 | Trigger an approval-gated action (discount above threshold, refund, PO above threshold) | Creates pending approval; action does not execute until approved | P0 | F/D |
+| ENT-09 | Approve/reject a pending approval as an authorized approver | State transitions correctly; rejected action does not apply | P0 | D |
+| ENT-10 | Review audit log after invitation, role, permission, scope, refund, and security changes | Sensitive actions logged with actor/timestamp/target; no plaintext token/password/secrets; logs cannot be edited/deleted via exposed API | P0 | S/D |
 
 ## 16. Executive Dashboards & Analytics
 
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
-| DASH-01 | Load `executive-dashboard.html` with a data-rich seeded company | Revenue leakage, branch performance, technician productivity, quote-to-cash, contract/SLA, and inventory risk widgets all render with numbers that reconcile against source records (spot-check 2–3 manually) | P1 | F/D |
-| DASH-02 | Load the dashboard as a role without executive-analytics access | Blocked or shows nothing sensitive | P0 | S |
-| DASH-03 | Load dashboard for a company with **zero** data (fresh tenant) | Graceful empty states, no crashes/NaNs/`undefined` rendered to the page | P1 | R |
-| DASH-04 | Load dashboard for a company with a large dataset (thousands of jobs/invoices — seed synthetic data if needed) | Loads within an acceptable time (define and record actual seconds); no browser tab freeze | P1 | P |
-
----
+| DASH-01 | Load `executive-dashboard.html` with a data-rich company as a user explicitly granted executive/financial/operational analytics | Widgets render with numbers that reconcile against source records | P1 | F/D |
+| DASH-02 | Load dashboard as Operations Manager with operational access but no financial-dashboard permission | Operational data renders; revenue/unpaid/profit/margin or other finance-only metrics are absent/blocked | P0 | S |
+| DASH-03 | Load dashboard as Accountant with finance access but no worker-location access | Financial data renders; restricted worker/location information does not | P0 | S |
+| DASH-04 | Load executive dashboard as a role without executive analytics permission | Blocked or no sensitive executive data is returned | P0 | S |
+| DASH-05 | Load branch/team-scoped dashboard/report | Aggregates reconcile only to the user's authorized scope | P0 | S/D |
+| DASH-06 | Load dashboard for a company with zero data | Graceful empty states, no crashes/NaNs/`undefined` | P1 | R |
+| DASH-07 | Load dashboard for a company with a large dataset | Record actual load time; no browser freeze; investigate slow aggregation | P1 | P |
 
 ## 17. Onboarding & Data Migration
 
+### 17.1 Owner onboarding and delegated setup
+
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
-| ONB-01 | Walk through `onboarding.html` checklist end-to-end for a new tenant | Each step tracked and marked complete correctly | P2 | F |
-| ONB-02 | CSV import preview with a clean file | Preview accurately reflects what will be imported before committing | P1 | F |
-| ONB-03 | CSV import with malformed rows (missing required fields, wrong types, duplicate rows) | Bad rows are rejected/flagged with row-level errors; the import doesn't partially corrupt data on failure | P0 | D |
-| ONB-04 | CSV import with rows that duplicate existing customers | Duplicate-detection flags them rather than silently creating dupes | P1 | F |
-| ONB-05 | Download a CSV template, fill it exactly as documented, re-upload | Round-trips cleanly | P2 | F |
-| ONB-06 | Generate vertical demo data for an implementation project | Demo data is clearly scoped to that company and doesn't leak into other tenants | P1 | S |
+| ONB-01 | Register a new owner and answer only the basic business questions | Signup does not demand detailed operational/financial data the owner may not know | P0 | F |
+| ONB-02 | Attempt to skip plan selection and open normal dashboard directly | Onboarding gate redirects to plan selection | P0 | S/F |
+| ONB-03 | Select a plan using mock confirmation, enter dashboard, then invite a COO/PA/senior manager with broad delegated access | Senior manager can continue company setup without becoming OWNER | P0 | F/S |
+| ONB-04 | Give that senior manager broad operational/company-settings permissions but withhold protected ownership powers | They can complete permitted setup; ownership transfer/delete/final-owner actions remain blocked | P0 | S |
+| ONB-05 | Verify business vertical influences available built-in role templates where configured | Relevant vertical templates appear alongside generic templates; unsupported vertical falls back to generic set | P1 | F |
+| ONB-06 | Open the top-right account menu across authenticated pages | Settings, FieldCore Subscription, Security, and Log out are present according to permission/ownership rules; old duplicate sidebar account treatment is not competing | P1 | F |
 
----
+### 17.2 Implementation checklist / data migration
+
+| ID | Steps | Expected Result | Priority | Type |
+|---|---|---|---|---|
+| ONB-07 | Walk through the post-signup implementation/onboarding checklist if still used | Each detailed setup step is tracked independently from the initial signup/plan gate | P2 | F |
+| ONB-08 | CSV import preview with a clean file | Preview accurately reflects what will be imported before committing | P1 | F |
+| ONB-09 | CSV import with malformed rows | Bad rows rejected/flagged with row-level errors; no silent partial corruption | P0 | D |
+| ONB-10 | CSV import with rows that duplicate existing customers | Duplicate detection flags them rather than silently creating dupes | P1 | F |
+| ONB-11 | Download a CSV template, fill it exactly as documented, re-upload | Round-trips cleanly | P2 | F |
+| ONB-12 | Generate vertical demo data for an implementation project | Demo data is scoped to that company and does not leak into other tenants | P1 | S |
 
 ## 18. Security Center
 
 | ID | Steps | Expected Result | Priority | Type |
 |---|---|---|---|---|
-| SEC-01 | `PATCH /company/security-settings` as Owner vs Admin vs Worker | Only Owner (or explicitly permitted role) can change company-wide security policy | P0 | S |
-| SEC-02 | `GET /security/events` | Shows real security-relevant events (failed logins, 2FA changes, session revokes) scoped to the current company only | P0 | S |
-| SEC-03 | Configure an identity provider record, then check it isn't exposing client secrets in any `GET` response | Secrets write-only, never echoed back | P0 | S |
-| SEC-04 | `GET /admin/data-export/:type` for each supported type | Export contains only current company's data, correctly scoped fields, no cross-tenant leakage | P0 | S |
-| SEC-05 | `GET /ops/status` as non-admin | Confirm whether this is meant to be admin-only or safe-for-all; verify it doesn't leak infra details (DB host, internal IPs) regardless of role | P1 | S |
-| SEC-06 | Full walkthrough of `security-center.html` UI matches what the API actually enforces (no UI toggle that doesn't do anything server-side, and no server behavior with no UI control) | P1 | F |
-
----
+| SEC-01 | `PATCH /company/security-settings` as Owner, authorized security manager, and unauthorized user | Effective `security.manage`/owner policy is enforced server-side; coarse `ADMIN` alone is not sufficient unless its template grants permission | P0 | S |
+| SEC-02 | `GET /security/events` as user with `security.view` vs user without it | Authorized user sees current-company events only; unauthorized user is rejected | P0 | S |
+| SEC-03 | Configure an identity provider/integration record, then inspect all GET responses | Secrets are write-only and never echoed | P0 | S |
+| SEC-04 | `GET /admin/data-export/:type` with and without the required export/security permission | Authorized export is tenant/scope limited; unauthorized user is rejected | P0 | S |
+| SEC-05 | `GET /ops/status` as non-admin/non-permitted user | Endpoint follows intended policy and never leaks DB host/internal IPs/secrets | P1 | S |
+| SEC-06 | Full walkthrough of `security-center.html` | UI controls match backend enforcement; no fake toggle and no hidden server capability without appropriate permission gate | P1 | F/S |
+| SEC-07 | Open Security from the top-right profile menu as a user with `security.view` | Link/page appears and loads | P1 | F |
+| SEC-08 | Same as a user without `security.view` | Link is hidden/disabled and direct page/API access is rejected | P0 | S |
 
 ## 19. Accounting Exports
 
@@ -588,10 +832,26 @@ Run these against a representative sample of endpoints across every module above
 Before marking a release GA, confirm:
 
 - [ ] Regional env files are generated/verified: `.env.zw` and `.env.sa` use real local DB credentials, not placeholders.
-- [ ] `fieldcore_zw` and `fieldcore_sa` have been reset cleanly.
+- [ ] Prisma migration history is healthy for both regional databases; `npx prisma migrate status` reports **Database schema is up to date!**.
+- [ ] For a fresh full regression, `fieldcore_zw` and `fieldcore_sa` were reset cleanly; for a resumed run, existing QA data was intentionally preserved.
 - [ ] ZW server runs on `http://localhost:3000` and passes `/healthz` + `/readyz`.
 - [ ] SA server runs on `http://localhost:3001` and passes `/healthz` + `/readyz`.
 - [ ] All automated tests pass (`npm test`).
+- [ ] Fresh owner signup completes: owner account → business basics → plan selection → mock confirmation/contact request → dashboard.
+- [ ] Direct navigation cannot bypass the plan-selection onboarding gate.
+- [ ] Monthly/annual pricing uses one consistent calculation and annual savings display.
+- [ ] Mock SaaS plan changes make no real external payment-provider call.
+- [ ] Enterprise Contact us does not silently activate a paid live Enterprise subscription.
+- [ ] 30-day trial state/dates are consistent.
+- [ ] Top-right account menu works: Settings, FieldCore Subscription, Security, Log out.
+- [ ] Company Members invitation flow works end-to-end with invitee-created password, hashed/expiring/single-use token, revoke/resend behavior.
+- [ ] Full Access non-owner can run the business but cannot transfer ownership, delete the company, remove/demote the final owner, or grant themselves ownership.
+- [ ] Accountant can access granted finance functions but cannot use ungranted operational endpoints.
+- [ ] Operations Manager can access granted operational functions but cannot see finance data without explicit permission.
+- [ ] TEAM, BRANCH, SELF, and COMPANY scopes are enforced server-side across lists, detail routes, reports, and mutations.
+- [ ] Changing role templates does not leave stale legacy `ADMIN` or `WORKER` access behavior.
+- [ ] Non-owners cannot delegate permissions or scope beyond what they are authorized to grant.
+- [ ] Custom role templates and teams are tenant-scoped.
 - [ ] You can log in as ZW owner/admin/worker and SA owner/admin/worker.
 - [ ] ZW finance defaults are USD/Zimbabwe/Paynow-local; no SA digital providers appear in ZW settings.
 - [ ] SA finance defaults are ZAR/South Africa/South African providers; Paynow does not appear in SA settings.
@@ -600,15 +860,13 @@ Before marking a release GA, confirm:
 - [ ] Bank transfer only appears to customers when Bank transfer is enabled for that business.
 - [ ] Bank transfer proof-of-payment requirement behaves according to the business setting.
 - [ ] Accounting UI shows CSV/export controls only; no Xero/QuickBooks/Sage coming-soon cards.
-- [ ] Section 4 (multi-tenant isolation) — zero failures, no exceptions accepted.
+- [ ] Section 4 (authorization, scope, multi-tenancy) — **zero P0 failures, no exceptions accepted**.
 - [ ] Section 20 (cross-cutting security) — zero P0 failures.
 - [ ] Section 9/PAY (money engine) — zero P0 failures, especially webhook forgery and double-crediting.
 - [ ] Section 22 (backup/restore) run at least once against current schema after any migration changes.
 - [ ] `docs/mvp-signoff-checklist.md` items still hold.
 - [ ] All P0/P1 defects from this run closed or explicitly risk-accepted by a named owner.
 - [ ] Deployment checklist (`docs/deployment-checklist.md`) followed for the target environment.
-
----
 
 ## 24. Defect Log Template
 
@@ -626,11 +884,16 @@ Before marking a release GA, confirm:
 | Regional servers | 2 running servers: ZW on port `3000`, SA on port `3001` |
 | Companies | At least 1 seeded tenant per region, plus a second tenant inside each region for isolation testing |
 | Branches | 2 within Company A |
-| Roles | Owner, Admin, Worker ×2, Client Portal user, per company |
+| Teams | Team A and Team B within Company A |
+| Core access personas | Owner, Full-access non-owner COO/senior manager, Accountant, Operations Manager, Team Supervisor, normal Field Worker, Client Portal user |
+| Custom access persona | One deliberately restricted custom role/template with a narrow permission set |
+| Scope variants | COMPANY, BRANCH, TEAM, SELF |
+| Pending invitations | At least one valid, one expired/revoked, and one accepted invitation |
 | Customers | ≥3 per company, including one soft-deleted |
-| Jobs | Spanning statuses: scheduled, in-progress, completed, cancelled |
+| Jobs | Spanning statuses: scheduled, in-progress, completed, cancelled; distributed across branches/teams/workers |
 | Quotes | Draft, sent, accepted, rejected, expired |
 | Invoices | Unpaid, partially paid, paid, overdue/collections |
+| SaaS plans | At least one normal monthly selection, one annual selection, and one Enterprise contact request |
 | Payments | ZW: Cash, Bank transfer, Paynow/mock; SA: Cash, Bank transfer, Ozow/Yoco/PayFast/SnapScan mock as supported by current provider code; plus forged webhook attempts |
 | Customer payment UI | One unpaid invoice with online enabled, one with cash disabled, one with bank transfer disabled, one with POP required |
 | Accounting exports | Customers, invoices, payments/receipts, tax/VAT report where available |
@@ -640,4 +903,4 @@ Before marking a release GA, confirm:
 
 ---
 
-**Notes on scope:** this plan intentionally does not re-list every API endpoint individually. Section 20 (XSEC-03) directs a representative IDOR sweep across the full surface rather than manually writing every endpoint row. If a compliance audit specifically requires per-endpoint sign-off, this document can be expanded into a full endpoint-by-endpoint matrix on request.
+**Notes on scope:** this plan intentionally does not re-list every API endpoint individually. Section 20 (XSEC-03) directs a representative IDOR sweep across the full surface. The new Section 4 adds a dedicated permission/scope adversarial matrix because the access-control refactor makes route-by-route authorization behavior a release-critical concern. If a compliance audit specifically requires per-endpoint sign-off, this document can be expanded into a full endpoint-by-endpoint matrix.

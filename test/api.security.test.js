@@ -31,6 +31,8 @@ function stripUndefined(input) {
 
 function matchesWhere(record, where = {}) {
   return Object.entries(where || {}).every(([key, expected]) => {
+    if (key === 'OR') return expected.some((clause) => matchesWhere(record, clause));
+    if (key === 'AND') return expected.every((clause) => matchesWhere(record, clause));
     const actual = record[key];
 
     if (expected === null) {
@@ -119,6 +121,15 @@ function createMockPrisma(seed) {
     if (!subscription) return null;
     const result = { ...subscription };
     if (include && include.plan) result.plan = clone(planById(subscription.planId)) || null;
+    return result;
+  }
+
+  function enrichInvitation(invitation, include) {
+    if (!invitation) return null;
+    const result = { ...invitation };
+    if (include && include.company) result.company = clone(companyById(invitation.companyId));
+    if (include && include.invitedBy) result.invitedBy = clone(userById(invitation.invitedByUserId));
+    if (include && include.roleTemplate) result.roleTemplate = clone(db.permissionRoleTemplates.find((item) => item.id === invitation.roleTemplateId)) || null;
     return result;
   }
 
@@ -505,6 +516,10 @@ function createMockPrisma(seed) {
     permissionRoleTemplate: makeModel('permissionRoleTemplates'),
     userPermissionOverride: makeModel('userPermissionOverrides'),
     userBranchAccess: makeModel('userBranchAccesses'),
+    userAccessGrant: makeModel('userAccessGrants'),
+    team: makeModel('teams'),
+    teamMembership: makeModel('teamMemberships'),
+    memberInvitation: makeModel('memberInvitations', enrichInvitation),
     approvalPolicy: makeModel('approvalPolicies'),
     approvalRequest: makeModel('approvalRequests', enrichApprovalRequest),
     customer: makeModel('customers'),
@@ -640,7 +655,7 @@ async function buildApp() {
   const upcomingStart = new Date(todayStart);
   upcomingStart.setDate(upcomingStart.getDate() + 1);
   const seed = {
-    companies: [{ id: 'company-a', name: 'Company A', email: 'hello@a.test', phone: '+12025550109' }, { id: 'company-b', name: 'Company B', email: 'hello@b.test', phone: '+12025550209' }],
+    companies: [{ id: 'company-a', name: 'Company A', email: 'hello@a.test', phone: '+12025550109', onboardingState: 'COMPLETED', verticalKey: 'generic', market: 'ZW' }, { id: 'company-b', name: 'Company B', email: 'hello@b.test', phone: '+12025550209', onboardingState: 'COMPLETED', verticalKey: 'generic', market: 'ZW' }],
     saaSPlans: [
       { id: 'starter', name: 'Starter', description: 'Small team plan', price: 49, currency: 'USD', interval: 'month', isActive: true, limits: { maxUsers: 3, maxWorkers: 2, maxClients: 50, maxJobsPerMonth: 100, maxPublicBookingsPerMonth: 50, maxWhatsAppNotificationsPerMonth: 0, maxEmailNotificationsPerMonth: 500 }, features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: false, proofOfWork: true, customBranding: false } },
       { id: 'growth', name: 'Growth', description: 'Growth plan', price: 129, currency: 'USD', interval: 'month', isActive: true, limits: { maxUsers: 12, maxWorkers: 10, maxClients: 500, maxJobsPerMonth: 1000, maxPublicBookingsPerMonth: 400, maxWhatsAppNotificationsPerMonth: 1000, maxEmailNotificationsPerMonth: 5000 }, features: { clientPortal: true, publicBookingPortal: true, whatsappNotifications: true, proofOfWork: true, customBranding: true } },
@@ -684,6 +699,10 @@ async function buildApp() {
     permissionRoleTemplates: [],
     userPermissionOverrides: [],
     userBranchAccesses: [],
+    userAccessGrants: [],
+    teams: [],
+    teamMemberships: [],
+    memberInvitations: [],
     approvalPolicies: [],
     approvalRequests: [],
     users: [
@@ -779,7 +798,7 @@ async function buildApp() {
 
   const dbPath = require.resolve('../src/db');
   require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { prisma: createMockPrisma(seed) } };
-  for (const mod of ['../src/config/env', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/services/payments/paymentProviderRegistry', '../src/services/payments/paymentToken.service', '../src/services/payments/reconciliation.service', '../src/services/payments/providers/manual.provider', '../src/services/payments/providers/payfast.provider', '../src/services/payments/providers/yoco.provider', '../src/services/payments/providers/ozow.provider', '../src/services/executiveAnalytics.service', '../src/app']) {
+  for (const mod of ['../src/config/env', '../src/services/accessControl.service', '../src/services/subscription.service', '../src/services/saasBillingProvider.service', '../src/services/saasBilling.service', '../src/services/reporting.service', '../src/services/emailProvider.service', '../src/services/whatsappProvider.service', '../src/services/phoneNumber.service', '../src/services/notificationTemplates.service', '../src/services/integrations/integrationSecrets.service', '../src/services/integrations/integrationConnections.service', '../src/services/integrations/messageLog.service', '../src/services/integrations/storageUsage.service', '../src/services/integrations/storage.service', '../src/services/integrations/providers/cloudflareR2Storage.provider', '../src/services/notification.service', '../src/auth', '../src/routes/api', '../src/services/payments/paymentProviderRegistry', '../src/services/payments/paymentToken.service', '../src/services/payments/reconciliation.service', '../src/services/payments/providers/manual.provider', '../src/services/payments/providers/payfast.provider', '../src/services/payments/providers/yoco.provider', '../src/services/payments/providers/ozow.provider', '../src/services/executiveAnalytics.service', '../src/app']) {
     const resolved = require.resolve(mod);
     delete require.cache[resolved];
   }
@@ -933,7 +952,7 @@ test('phase 11 billing plans and subscription are scoped and secret safe', async
   const adminB = await login(app, 'admin-b@test.local');
   const client = await loginClient(app);
 
-  const plans = await admin.get('/api/billing/plans');
+  const plans = await owner.get('/api/billing/plans');
   assert.equal(plans.status, 200);
   assert.deepEqual(plans.body.data.map((item) => item.id).sort(), ['growth', 'starter']);
   assert.equal(plans.body.data.some((item) => item.id === 'free-internal'), false);
@@ -946,10 +965,10 @@ test('phase 11 billing plans and subscription are scoped and secret safe', async
   assert.equal(JSON.stringify(subscription.body).includes('sub_secret_should_not_return'), false);
   assertNoPasswordHash(subscription.body);
 
-  const subscriptionB = await adminB.get('/api/billing/subscription');
-  assert.equal(subscriptionB.status, 200);
-  assert.equal(subscriptionB.body.data.subscription.status, 'ACTIVE');
-  assert.equal(JSON.stringify(subscriptionB.body).includes('sub-a'), false);
+  assert.equal((await admin.get('/api/billing/plans')).status, 403);
+  assert.equal((await admin.get('/api/billing/subscription')).status, 403);
+  assert.equal((await admin.get('/api/billing/usage')).status, 403);
+  assert.equal((await adminB.get('/api/billing/subscription')).status, 403);
 
   assert.equal((await worker.get('/api/billing/subscription')).status, 403);
   assert.equal((await client.get('/api/billing/subscription')).status, 401);
@@ -1027,6 +1046,119 @@ test('phase 11 SaaS billing actions are owner-only and do not fake paid status',
     if (previousProvider === undefined) delete process.env.SAAS_BILLING_PROVIDER;
     else process.env.SAAS_BILLING_PROVIDER = previousProvider;
   }
+});
+
+test('owner signup requires mock plan selection and annual pricing uses central discount', async () => {
+  const app = await buildApp();
+  const agent = request.agent(app);
+  const registered = await agent.post('/api/auth/register').send({ companyName: 'New Field Company', name: 'New Owner', email: 'new-owner@test.local', password: 'StrongPassword123!', market: 'ZW', verticalKey: 'plumbing', teamSizeBand: '6-15' });
+  assert.equal(registered.status, 201);
+  const user = app.locals.testDb.users.find((item) => item.email === 'new-owner@test.local');
+  const company = app.locals.testDb.companies.find((item) => item.id === user.companyId);
+  assert.equal(user.role, 'OWNER');
+  assert.equal(company.onboardingState, 'PLAN_SELECTION_REQUIRED');
+  assert.equal(company.verticalKey, 'plumbing');
+
+  const catalog = await agent.get('/api/billing/catalog');
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.body.data.annualDiscountPercent, 10);
+  const starter = catalog.body.data.plans.find((item) => item.id === 'starter');
+  assert.equal(starter.pricing.annualTotal, 529.2);
+  assert.equal(starter.pricing.annualSavings, 58.8);
+
+  const selected = await agent.post('/api/billing/mock-select').send({ planId: 'starter', billingInterval: 'ANNUAL' });
+  assert.equal(selected.status, 200);
+  assert.equal(selected.body.data.mock, true);
+  assert.equal(selected.body.data.externalPaymentProcessed, false);
+  assert.equal(app.locals.testDb.companySubscriptions.find((item) => item.companyId === company.id).billingInterval, 'ANNUAL');
+  assert.equal(app.locals.testDb.companies.find((item) => item.id === company.id).onboardingState, 'COMPLETED');
+  assert.equal(app.locals.testDb.saaSBillingEvents.some((item) => item.companyId === company.id && item.provider === 'MOCK_INTERNAL'), true);
+});
+
+test('member invitations hash tokens invoke email and are single use', async () => {
+  const app = await buildApp();
+  app.locals.testDb.permissionRoleTemplates.push({ id: 'template-accountant', companyId: null, key: 'accountant', name: 'Accountant', description: 'Finance access', verticalKey: 'generic', systemRole: 'ADMIN', isSystemTemplate: true, isCustom: false, defaultPermissions: ['invoices.view', 'payments.view', 'finance.reports.view'], defaultScopeType: 'COMPANY', active: true });
+  const owner = await login(app, 'owner-a@test.local');
+  let delivered;
+  require('../src/services/emailProvider.service').setEmailProvider(async (message) => { delivered = message; return { status: 'SENT' }; });
+  const invited = await owner.post('/api/member-invitations').send({ email: 'accountant-invite@test.local', jobTitle: 'Accountant', roleTemplateId: 'template-accountant', fullAccess: false, permissions: ['invoices.view', 'payments.view', 'finance.reports.view'], scopeType: 'COMPANY', branchIds: [], teamIds: [] });
+  assert.equal(invited.status, 201);
+  assert.equal(JSON.stringify(invited.body).includes('tokenHash'), false);
+  const stored = app.locals.testDb.memberInvitations[0];
+  assert.equal(stored.tokenHash.length, 64);
+  assert.equal(Boolean(delivered && delivered.text), true);
+  const token = new URL(delivered.text.match(/https?:\/\/[^\s]+/)[0]).searchParams.get('token');
+  assert.notEqual(stored.tokenHash, token);
+
+  const invitee = request.agent(app);
+  const accepted = await invitee.post('/api/public/member-invitations/accept').send({ token, name: 'Invited Accountant', password: 'AnotherStrong123!' });
+  assert.equal(accepted.status, 201);
+  assert.equal(app.locals.testDb.users.some((item) => item.email === 'accountant-invite@test.local' && item.companyId === 'company-a'), true);
+  const reused = await request(app).post('/api/public/member-invitations/accept').send({ token, name: 'Again', password: 'AnotherStrong123!' });
+  assert.equal(reused.status, 409);
+});
+
+test('new invitation roles are company-owned and system templates stay hidden', async () => {
+  const app = await buildApp();
+  app.locals.testDb.permissionRoleTemplates.push({ id: 'system-template', companyId: null, key: 'dispatcher', name: 'System Dispatcher', verticalKey: 'generic', systemRole: 'ADMIN', isSystemTemplate: true, isCustom: false, defaultPermissions: ['jobs.view'], defaultScopeType: 'COMPANY', active: true });
+  const owner = await login(app, 'owner-a@test.local');
+  require('../src/services/emailProvider.service').setEmailProvider(async () => ({ status: 'SENT' }));
+
+  const invited = await owner.post('/api/member-invitations').send({
+    email: 'dispatcher-invite@test.local',
+    jobTitle: 'Dispatch Lead',
+    roleName: 'Dispatch Lead',
+    systemRole: 'ADMIN',
+    fullAccess: false,
+    permissions: ['jobs.view', 'schedule.view'],
+    scopeType: 'COMPANY',
+    branchIds: [],
+    teamIds: []
+  });
+
+  assert.equal(invited.status, 201);
+  const savedRole = app.locals.testDb.permissionRoleTemplates.find((item) => item.companyId === 'company-a' && item.name === 'Dispatch Lead');
+  assert.equal(Boolean(savedRole), true);
+  assert.equal(savedRole.isCustom, true);
+  assert.deepEqual(savedRole.defaultPermissions.sort(), ['jobs.view', 'schedule.view']);
+
+  const visibleRoles = await owner.get('/api/role-templates');
+  assert.equal(visibleRoles.status, 200);
+  assert.deepEqual(visibleRoles.body.data.map((item) => item.name), ['Dispatch Lead']);
+});
+
+test('role templates and scopes enforce finance operations team and owner boundaries', async () => {
+  const app = await buildApp();
+  app.locals.testDb.permissionRoleTemplates.push(
+    { id: 'template-finance', companyId: null, key: 'accountant', name: 'Accountant', verticalKey: 'generic', systemRole: 'ADMIN', defaultPermissions: ['invoices.view', 'payments.view', 'finance.reports.view'], defaultScopeType: 'COMPANY', active: true },
+    { id: 'template-ops', companyId: null, key: 'operations-manager', name: 'Operations Manager', verticalKey: 'generic', systemRole: 'ADMIN', defaultPermissions: ['jobs.view', 'schedule.view', 'workers.view'], defaultScopeType: 'COMPANY', active: true },
+    { id: 'template-supervisor', companyId: null, key: 'team-supervisor', name: 'Team Supervisor', verticalKey: 'generic', systemRole: 'WORKER', defaultPermissions: ['jobs.view', 'schedule.view', 'workers.view'], defaultScopeType: 'TEAM', active: true }
+  );
+
+  app.locals.testDb.users.find((item) => item.id === 'admin-a').roleTemplateId = 'template-finance';
+  let accountant = await login(app, 'admin-a@test.local');
+  assert.equal((await accountant.get('/api/invoices')).status, 200);
+  assert.equal((await accountant.get('/api/workers')).status, 403);
+  assert.equal((await accountant.get('/api/billing/subscription')).status, 403);
+
+  app.locals.testDb.users.find((item) => item.id === 'admin-a').roleTemplateId = 'template-ops';
+  accountant = await login(app, 'admin-a@test.local');
+  assert.equal((await accountant.get('/api/jobs')).status, 200);
+  assert.equal((await accountant.get('/api/invoices')).status, 403);
+
+  app.locals.testDb.teams.push({ id: 'team-a', companyId: 'company-a', name: 'Team A', active: true }, { id: 'team-other', companyId: 'company-a', name: 'Other Team', active: true });
+  app.locals.testDb.jobs.find((item) => item.id === 'job-a').teamId = 'team-a';
+  app.locals.testDb.jobs.find((item) => item.id === 'job-other-worker').teamId = 'team-other';
+  app.locals.testDb.users.find((item) => item.id === 'worker-a').roleTemplateId = 'template-supervisor';
+  app.locals.testDb.userAccessGrants.push({ id: 'grant-team-a', companyId: 'company-a', userId: 'worker-a', scopeType: 'TEAM', teamId: 'team-a', permissions: ['jobs.view'], active: true });
+  const supervisor = await login(app, 'worker-a@test.local');
+  const jobs = await supervisor.get('/api/jobs');
+  assert.equal(jobs.status, 200);
+  assert.deepEqual(jobs.body.data.map((item) => item.id), ['job-a']);
+
+  const owner = await login(app, 'owner-a@test.local');
+  const finalOwnerDemotion = await owner.patch('/api/users/owner-a/role').send({ role: 'ADMIN' });
+  assert.equal(finalOwnerDemotion.status, 409);
 });
 
 test('phase 11 WhatsApp and client portal gates log or block by plan', async () => {
@@ -3835,15 +3967,20 @@ test('task15 2fa required recovery codes and session revocation are safe', async
   const app = await buildApp();
   const owner = await login(app, 'owner-a@test.local');
 
-  const settings = await owner.patch('/api/company/security-settings').send({
+  app.locals.testDb.companySecuritySettings.push({
+    id: 'security-company-a',
+    companyId: 'company-a',
     sessionLengthHours: 8,
-    passwordMinimum: 10,
+    sessionIdleTimeoutMinutes: 120,
+    passwordMinimum: 12,
+    requirePasswordResetOnInvite: true,
     twoFactorEnabled: true,
     twoFactorRequired: true,
     failedLoginLockoutThreshold: 4,
-    lockoutDurationMinutes: 15
+    lockoutDurationMinutes: 30
   });
-  assert.equal(settings.status, 200);
+  assert.equal((await owner.get('/api/company/security-settings')).status, 404);
+  assert.equal((await owner.patch('/api/company/security-settings').send({ passwordMinimum: 8 })).status, 404);
 
   const setup = await owner.post('/api/auth/2fa/enable').send({ code: '123456' });
   assert.equal(setup.status, 200);
@@ -3882,9 +4019,13 @@ test('task15 lockout security events role audit exports and ops status are safe'
   const workerBlocked = await worker.get('/api/security/events');
   assert.equal(workerBlocked.status, 403);
 
-  await owner.patch('/api/company/security-settings').send({
+  app.locals.testDb.companySecuritySettings.push({
+    id: 'security-company-a',
+    companyId: 'company-a',
     sessionLengthHours: 8,
-    passwordMinimum: 8,
+    sessionIdleTimeoutMinutes: 120,
+    passwordMinimum: 12,
+    requirePasswordResetOnInvite: true,
     twoFactorEnabled: false,
     twoFactorRequired: false,
     failedLoginLockoutThreshold: 3,
