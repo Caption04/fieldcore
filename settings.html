@@ -20,17 +20,17 @@
       </div>
       <section class="settings-layout">
         <aside class="panel settings-tabs" aria-label="Settings sections">
-          <button class="settings-tab active" type="button" data-settings-target="company">Company Information</button>
-          <button class="settings-tab" type="button" data-settings-target="jobs">Job Defaults</button>
-          <button class="settings-tab" type="button" data-settings-target="scheduling">Scheduling</button>
-          <button class="settings-tab" type="button" data-settings-target="billing">Invoice Defaults</button>
-          <button class="settings-tab" type="button" data-settings-target="finance">Finance &amp; Exports</button>
-          <button class="settings-tab" type="button" data-settings-target="notifications">Notifications</button>
-          <button class="settings-tab" type="button" data-settings-target="integrations">Integrations</button>
-          <button class="settings-tab" type="button" data-settings-target="admin-tools">Admin Tools</button>
+          <button class="settings-tab active" type="button" data-settings-target="company" data-required-any-permission="company.settings.view,company.settings.manage,company.branding.manage">Company Information</button>
+          <button class="settings-tab" type="button" data-settings-target="jobs" data-required-permission="company.settings.manage">Job Defaults</button>
+          <button class="settings-tab" type="button" data-settings-target="scheduling" data-required-permission="company.settings.manage">Scheduling</button>
+          <button class="settings-tab" type="button" data-settings-target="billing" data-required-permission="settings.finance.manage">Invoice Defaults</button>
+          <button class="settings-tab" type="button" data-settings-target="finance" data-required-any-permission="settings.finance.manage,finance.exports.manage">Money Settings &amp; Files</button>
+          <button class="settings-tab" type="button" data-settings-target="notifications" data-required-permission="notifications.view">Sent Messages</button>
+          <button class="settings-tab" type="button" data-settings-target="integrations" data-required-any-permission="integration.view,integration.manage">Connected Apps</button>
+          <button class="settings-tab" type="button" data-settings-target="admin-tools" data-required-permission="audit.view">Company Activity</button>
         </aside>
         <div class="settings-panels">
-          <div class="panel settings-panel active" data-settings-panel="company">
+          <div class="panel settings-panel active" data-settings-panel="company" data-required-any-permission="company.settings.view,company.settings.manage,company.branding.manage">
             <div class="panel-head">
               <h2>Company Information</h2>
               <!-- <span class="badge blue">White-label</span> -->
@@ -129,7 +129,7 @@
             </form>
           </div>
 
-          <div class="panel settings-panel" data-settings-panel="jobs" hidden>
+          <div class="panel settings-panel" data-settings-panel="jobs" data-required-permission="company.settings.manage" hidden>
             <div class="panel-head">
               <h2>Job Defaults</h2>
               <span class="badge gray">Operations</span>
@@ -170,7 +170,7 @@
               <p class="fc-form-error span-2" data-job-defaults-message hidden></p>
             </form>
           </div>
-          <div class="panel settings-panel" data-settings-panel="scheduling" hidden>
+          <div class="panel settings-panel" data-settings-panel="scheduling" data-required-permission="company.settings.manage" hidden>
             <div class="panel-head">
               <h3>Scheduling Engine</h3>
             </div>
@@ -237,7 +237,7 @@
               <p class="fc-form-error span-2" data-availability-message hidden></p>
             </form>
           </div>
-          <div class="panel settings-panel" data-settings-panel="billing" hidden>
+          <div class="panel settings-panel" data-settings-panel="billing" data-required-permission="settings.finance.manage" hidden>
             <div class="panel-head">
               <h2>Invoice &amp; Payment Defaults</h2>
               <span class="badge gray">Customer billing</span>
@@ -280,7 +280,7 @@
             </form>
           </div>
 
-          <div class="panel settings-panel" data-settings-panel="finance" hidden>
+          <div class="panel settings-panel" data-settings-panel="finance" data-required-any-permission="settings.finance.manage,finance.exports.manage" hidden>
             <div class="panel-head">
               <div>
                 <h2>Finance &amp; Exports</h2>
@@ -288,7 +288,7 @@
               </div>
               <span class="badge gray">Customer finance</span>
             </div>
-            <form class="form-grid finance-user-form" data-finance-settings-form>
+            <form class="form-grid finance-user-form" data-finance-settings-form data-required-permission="settings.finance.manage">
               <div class="form-section-title span-2">
                 <strong>Tax &amp; Invoice Defaults</strong>
                 <span>Used on quotes, customer invoices, receipts, payment pages, and exports.</span>
@@ -413,7 +413,11 @@
               </div>
               <p class="fc-form-error span-2" data-finance-message hidden></p>
             </form>
-            <div class="table-card span-2" data-finance-export-card>
+            <div class="settings-subform span-2" data-payment-providers-card data-required-permission="settings.finance.manage">
+              <div class="panel-head"><div><h3>Online payment setup</h3><p class="muted">Choose how customers can pay online.</p></div></div>
+              <div class="empty-state"><div><strong>Payment setup unavailable.</strong><span>Open this section to load payment options.</span></div></div>
+            </div>
+            <div class="table-card span-2" data-finance-export-card data-required-permission="finance.exports.manage">
               <div class="panel-head card">
                 <div>
                   <h3>Accounting Exports</h3>
@@ -428,15 +432,15 @@
                 <a class="list-item" href="/api/finance/export/customers.csv"><span class="initials">CUS</span><div><strong>Export customers</strong><small>Company-scoped customer directory.</small></div><span class="badge gray">CSV</span></a>
               </div>
             </div>
-            <div class="table-card span-2" data-finance-export-logs-card>
+            <div class="table-card span-2" data-finance-export-logs-card data-required-permission="finance.exports.manage">
               <div class="panel-head card"><h3>Export Logs</h3><span class="badge gray">Audit</span></div>
               <div class="empty-state"><div><strong>No export logs loaded.</strong><span>CSV exports will appear here.</span></div></div>
             </div>
           </div>
 
-          <div class="panel settings-panel" data-settings-panel="notifications" hidden>
+          <div class="panel settings-panel" data-settings-panel="notifications" data-required-permission="notifications.view" hidden>
             <div class="panel-head">
-              <h2>Notifications</h2>
+              <h2>Sent Messages</h2>
               <span class="badge gray">Messaging</span>
             </div>
             <form class="form-grid">
@@ -479,17 +483,13 @@
             </div>
           </div>
 
-          <div class="panel settings-panel" data-settings-panel="integrations" hidden>
+          <div class="panel settings-panel" data-settings-panel="integrations" data-required-any-permission="integration.view,integration.manage" hidden>
             <div class="panel-head">
-              <h2>Integrations</h2>
+              <h2>Connected Apps</h2>
               <span class="badge gray">Connect</span>
             </div>
             <div class="settings-list" data-integrations-card>
               <div class="empty-state"><div><strong>Integrations unavailable.</strong><span>Open this panel to load provider settings.</span></div></div>
-            </div>
-            <div class="settings-subform span-2" data-payment-providers-card>
-              <div class="panel-head"><h3>Customer Payment Providers</h3><span class="badge gray">Tenant scoped</span></div>
-              <div class="empty-state"><div><strong>Payment providers unavailable.</strong><span>Paynow, Ozow, mock, manual bank, and cash settings load here.</span></div></div>
             </div>
             <div class="table-card span-2" data-message-log-card>
               <div class="panel-head card"><h3>Message Logs</h3><span class="badge gray">Provider</span></div>
@@ -501,23 +501,14 @@
             </div>
           </div>
 
-          <div class="panel settings-panel" data-settings-panel="admin-tools" hidden>
+          <div class="panel settings-panel" data-settings-panel="admin-tools" data-required-permission="audit.view" hidden>
             <div class="panel-head">
-              <h2>Admin Tools</h2>
+              <h2>Company Activity</h2>
               <span class="badge blue">Production</span>
-            </div>
-            <div class="table-card span-2" data-system-status-card>
-              <div class="panel-head card"><h3>System Status</h3><span class="badge gray">No secrets</span></div>
-              <div class="empty-state"><div><strong>Status unavailable.</strong><span>Open this panel to load configuration status.</span></div></div>
             </div>
             <div class="table-card span-2" data-audit-log-card>
               <div class="panel-head card"><h3>Recent Audit Logs</h3><span class="badge gray" data-audit-log-count>0</span></div>
               <div class="empty-state"><div><strong>No audit logs loaded.</strong><span>Recent admin and system actions will appear here.</span></div></div>
-            </div>
-            <div class="settings-list span-2">
-              <a class="list-item" href="docs/deployment-checklist.md"><span class="initials">DC</span><div><strong>Deployment Checklist</strong><small>Environment, migrations, smoke tests, and launch checks.</small></div><span class="badge gray">Docs</span></a>
-              <a class="list-item" href="docs/backup-plan.md"><span class="initials">BP</span><div><strong>Backup Plan</strong><small>Database, uploads, environment variables, and restore drills.</small></div><span class="badge gray">Docs</span></a>
-              <a class="list-item" href="docs/security-review.md"><span class="initials">SR</span><div><strong>Security Review</strong><small>Route boundaries, secrets, uploads, errors, and rate limits.</small></div><span class="badge gray">Docs</span></a>
             </div>
           </div>
 

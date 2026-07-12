@@ -746,6 +746,7 @@ model User {
   lockedUntil                 DateTime?
   disabledAt                  DateTime?
   mustResetPassword           Boolean                 @default(false)
+  fullBusinessAccess          Boolean                 @default(false)
   passwordChangedAt           DateTime?
   sessions                    UserSession[]
   securityEvents              SecurityEvent[]

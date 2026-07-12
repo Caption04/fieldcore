@@ -3,46 +3,143 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FieldCore Executive Dashboard</title>
-    <link rel="stylesheet" href="assets/app.css?v=ux-stabilization-1">
+    <title>Business Performance | FieldCore</title>
+    <link rel="stylesheet" href="assets/app.css?v=business-performance-1">
     <script defer src="assets/ui-feedback.js"></script>
     <script defer src="assets/layout.js"></script>
   </head>
-  <body data-page="executive-dashboard" data-title="Executive Dashboard">
-    <section class="page">
+  <body data-page="executive-dashboard" data-title="Business Performance">
+    <section class="page business-performance-page">
       <div class="hero-row">
         <div class="hero-copy">
-          <h2>Executive Dashboard</h2>
-          <p>Cash leakage, operations risk, SLA health, productivity, and branch performance in one company-scoped view.</p>
+          <h2>Business Performance</h2>
+          <p>See how the whole business is doing.</p>
         </div>
-        <span class="api-status" data-api-status>Connecting...</span>
+        <span class="api-status" data-api-status>Loading...</span>
       </div>
+
+      <form class="panel form-grid business-performance-filters" data-business-filters>
+        <div class="field">
+          <label for="businessStartDate">Start date</label>
+          <input id="businessStartDate" name="startDate" type="date">
+        </div>
+        <div class="field">
+          <label for="businessEndDate">End date</label>
+          <input id="businessEndDate" name="endDate" type="date">
+        </div>
+        <div class="form-actions">
+          <button class="primary-button" type="submit">Show results</button>
+        </div>
+      </form>
+
+      <section class="report-kpi-row" data-business-overview>
+        <article class="card stat-card"><div class="stat-label">Loading results</div><div class="stat-value">-</div></article>
+      </section>
+
       <section class="panel">
         <div class="panel-head">
-          <h3>Filters</h3>
-          <span class="badge gray">TASK13</span>
+          <div>
+            <h3>Branch results</h3>
+            <p class="muted">Compare money, completed jobs, late jobs, and stock.</p>
+          </div>
         </div>
-        <form class="form-grid" data-filters>
-          <label>Start date<input name="startDate" type="date"></label>
-          <label>End date<input name="endDate" type="date"></label>
-          <label>Branch ID<input name="branchId" placeholder="Optional branch ID"></label>
-          <button class="primary-button" type="submit">Refresh</button>
-        </form>
+        <div class="table-scroll report-table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Branch</th>
+                <th>Money received</th>
+                <th>Jobs done</th>
+                <th>Late jobs</th>
+                <th>Missed service times</th>
+                <th>Stock value</th>
+              </tr>
+            </thead>
+            <tbody data-business-branches>
+              <tr><td colspan="6">Loading branch results...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
-      <section class="grid cards" data-overview></section>
-      <section class="panel">
-        <div class="panel-head"><h3>Branch performance</h3><a class="badge gray" href="/api/analytics/export.csv?section=branches">CSV</a></div>
-        <div data-branches class="settings-list"><div class="empty-state"><strong>Loading branch analytics</strong><span>Revenue, jobs, SLA, stock value, and approvals will appear here.</span></div></div>
+
+      <section class="report-grid two">
+        <section class="panel report-insight-card">
+          <div class="panel-head">
+            <div>
+              <h3>From request to payment</h3>
+              <p class="muted">See where work slows down or gets lost.</p>
+            </div>
+          </div>
+          <div class="business-stage-list" data-business-funnel>
+            <div class="empty-state compact-empty"><strong>Loading work flow...</strong></div>
+          </div>
+        </section>
+
+        <section class="panel report-insight-card">
+          <div class="panel-head">
+            <div>
+              <h3>Money still owed</h3>
+              <p class="muted">See how long unpaid invoices have been open.</p>
+            </div>
+          </div>
+          <div class="business-aging-grid" data-business-aging>
+            <div class="empty-state compact-empty"><strong>Loading unpaid money...</strong></div>
+          </div>
+        </section>
       </section>
+
       <section class="panel">
-        <div class="panel-head"><h3>Quote to cash funnel</h3><a class="badge gray" href="/api/analytics/export.csv?section=quote-to-cash">CSV</a></div>
-        <div data-funnel class="settings-list"><div class="empty-state"><strong>Loading funnel</strong><span>Booking, quote, job, invoice, and payment stages will appear here.</span></div></div>
+        <div class="panel-head">
+          <div>
+            <h3>Worker results</h3>
+            <p class="muted">See jobs done, arrival times, and proof of work.</p>
+          </div>
+        </div>
+        <div class="table-scroll report-table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Jobs done</th>
+                <th>Average job time</th>
+                <th>On-time arrivals</th>
+                <th>Proof complete</th>
+                <th>Parts used</th>
+              </tr>
+            </thead>
+            <tbody data-business-workers>
+              <tr><td colspan="6">Loading worker results...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
-      <section class="panel">
-        <div class="panel-head"><h3>Definitions</h3><span class="badge gray">No misleading metrics</span></div>
-        <div data-definitions class="settings-list"></div>
+
+      <section class="report-grid two">
+        <section class="panel report-insight-card">
+          <div class="panel-head">
+            <div>
+              <h3>Service work</h3>
+              <p class="muted">Check service deadlines and contract work.</p>
+            </div>
+          </div>
+          <div class="business-summary-list" data-business-service>
+            <div class="empty-state compact-empty"><strong>Loading service results...</strong></div>
+          </div>
+        </section>
+
+        <section class="panel report-insight-card">
+          <div class="panel-head">
+            <div>
+              <h3>Stock and buying</h3>
+              <p class="muted">See low stock, open orders, and supplier delays.</p>
+            </div>
+          </div>
+          <div class="business-summary-list" data-business-stock>
+            <div class="empty-state compact-empty"><strong>Loading stock results...</strong></div>
+          </div>
+        </section>
       </section>
     </section>
-        <script defer src="assets/enterprise-pages.js?v=ux-stabilization-1"></script>
+    <script defer src="assets/enterprise-pages.js?v=business-performance-1"></script>
   </body>
 </html>

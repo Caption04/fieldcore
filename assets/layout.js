@@ -32,7 +32,7 @@
     ['collections', 'Collections', 'collections.html', 'receipt'],
     ['mobile-sync', 'Mobile Sync', 'mobile-sync.html', 'settings'],
     ['reports', 'Reports', 'reports.html', 'chart'],
-    ['executive-dashboard', 'Executive Dashboard', 'executive-dashboard.html', 'chart'],
+    ['executive-dashboard', 'Business Performance', 'executive-dashboard.html', 'chart'],
     ['onboarding', 'Onboarding', 'onboarding.html', 'settings'],
     ['security-center', 'Security', 'security-center.html', 'settings'],
     ['settings', 'Settings', 'settings.html', 'settings']
@@ -79,18 +79,19 @@
 
   const adminNavGroups = [
     ['Core', 'Daily work', ['dashboard', 'jobs', 'schedule', 'map', 'booking-requests', 'customers', 'members']],
-    ['Money', 'Quotes & payments', ['quotes', 'invoices', 'collections']],
-    ['Enterprise', 'Advanced operations', ['branches', 'approvals', 'assets', 'service-contracts', 'contract-automation', 'inventory', 'purchase-requests', 'purchase-orders', 'procurement-costing', 'mobile-sync', 'reports', 'executive-dashboard', 'onboarding']],
+    ['Money', 'Quotes and payments', ['quotes', 'invoices', 'collections']],
+    ['Reports', 'Business results', ['executive-dashboard', 'reports']],
+    ['Enterprise', 'Advanced operations', ['branches', 'approvals', 'assets', 'service-contracts', 'contract-automation', 'inventory', 'purchase-requests', 'purchase-orders', 'procurement-costing', 'mobile-sync', 'onboarding']],
     ['Workspace', 'Company setup', ['settings']]
   ];
 
   const pagePermissions = {
-    dashboard: 'dashboard.operational.view', jobs: 'jobs.view', schedule: 'schedule.view', map: 'workers.location.view', 'booking-requests': 'bookings.view', customers: 'customers.view', members: 'members.view',
+    dashboard: ['dashboard.operational.view', 'dashboard.financial.view', 'dashboard.executive.view'], jobs: 'jobs.view', schedule: 'schedule.view', map: 'workers.location.view', 'booking-requests': 'bookings.view', customers: 'customers.view', members: 'members.view',
     quotes: 'quotes.view', invoices: 'invoices.view', collections: 'payments.view', branches: 'branch.view', approvals: 'approval.request.decide',
     assets: 'contract.automation.manage', 'service-contracts': 'contract.automation.manage', 'contract-automation': 'contract.automation.manage',
     inventory: 'inventory.view', 'purchase-requests': 'purchaseRequest.create', 'purchase-orders': 'purchaseOrder.manage', 'procurement-costing': 'inventory.manage',
-    'mobile-sync': 'mobile.sync.manage', reports: 'finance.reports.view', 'executive-dashboard': 'dashboard.executive.view', onboarding: 'company.settings.manage',
-    settings: 'company.settings.view', 'security-center': 'security.view'
+    'mobile-sync': 'mobile.sync.manage', reports: ['reports.money.view', 'reports.work.view', 'reports.workers.view', 'reports.sales.view', 'reports.stock.view'], 'executive-dashboard': 'dashboard.executive.view', onboarding: 'company.settings.manage',
+    settings: ['company.settings.view', 'company.settings.manage', 'company.branding.manage', 'settings.finance.manage', 'finance.exports.manage', 'notifications.view', 'integration.view', 'integration.manage', 'audit.view'], 'security-center': 'security.view'
   };
 
   function navLink([key, label, href, iconName], current) {
@@ -99,18 +100,24 @@
     </a>`;
   }
 
+  function hasPagePermission(permissionSet, requirement) {
+    if (!requirement) return true;
+    const required = Array.isArray(requirement) ? requirement : [requirement];
+    return required.some((permission) => permissionSet.has(permission));
+  }
+
   function nav(current, role, permissions) {
     const permissionSet = new Set(permissions || []);
     if (!role) return '';
     if (role === 'WORKER') {
       const combined = new Map([...normalizePages(workerPages), ...normalizePages(adminPages)].map((page) => [page[0], page]));
       return Array.from(combined.values())
-        .filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]))
+        .filter((page) => hasPagePermission(permissionSet, pagePermissions[page[0]]))
         .map((page) => navLink(page, current))
         .join('');
     }
 
-    const normalized = normalizePages(adminPages).filter((page) => !pagePermissions[page[0]] || permissionSet.has(pagePermissions[page[0]]));
+    const normalized = normalizePages(adminPages).filter((page) => role === 'OWNER' || hasPagePermission(permissionSet, pagePermissions[page[0]]));
     const byKey = new Map(normalized.map((page) => [page[0], page]));
     return adminNavGroups.map(([title, purpose, keys]) => {
       const links = keys.map((key) => byKey.get(key)).filter(Boolean);
@@ -127,7 +134,7 @@
   }
 
   function shouldShowQuickCard(current, role, permissions) {
-    if (!role || role === 'WORKER') return false;
+    if (!role) return false;
     if (current === 'settings' || current === 'no-access') return false;
     const permissionSet = new Set(permissions || []);
     return permissionSet.has('jobs.create') && permissionSet.has('jobs.view');
@@ -180,8 +187,13 @@
 
     document.body.dataset.userRole = role || '';
     document.querySelectorAll('[data-owner-only]').forEach((node) => { node.hidden = role !== 'OWNER'; });
+    document.querySelectorAll('[data-full-access-only]').forEach((node) => { node.hidden = !Boolean(user && user.fullBusinessAccess); });
     const permissionSet = new Set(user && user.effectivePermissions || []);
-    document.querySelectorAll('[data-required-permission]').forEach((node) => { node.hidden = !permissionSet.has(node.dataset.requiredPermission); });
+    document.querySelectorAll('[data-required-permission]').forEach((node) => { node.hidden = role !== 'OWNER' && !permissionSet.has(node.dataset.requiredPermission); });
+    document.querySelectorAll('[data-required-any-permission]').forEach((node) => {
+      const required = String(node.dataset.requiredAnyPermission || '').split(',').map((item) => item.trim()).filter(Boolean);
+      node.hidden = role !== 'OWNER' && !required.some((permission) => permissionSet.has(permission));
+    });
   }
 
   async function loadRoleNavigation() {
@@ -223,8 +235,8 @@
         <span class="account-chevron" aria-hidden="true">⌄</span>
       </button>
       <div class="account-dropdown" role="menu" data-account-dropdown hidden>
-        <a role="menuitem" href="settings.html" data-required-permission="company.settings.view" hidden>Settings</a>
-        <a role="menuitem" href="subscription.html" data-required-permission="subscription.view" hidden>FieldCore Subscription</a>
+        <a role="menuitem" href="settings.html" data-required-any-permission="company.settings.view,company.settings.manage,company.branding.manage,settings.finance.manage,finance.exports.manage,notifications.view,integration.view,integration.manage,audit.view" hidden>Settings</a>
+        <a role="menuitem" href="subscription.html" data-full-access-only hidden>FieldCore Subscription</a>
         <a role="menuitem" href="security-center.html" data-required-permission="security.view" hidden>Security</a>
         <button role="menuitem" type="button" data-logout>Log out</button>
       </div>
@@ -415,7 +427,7 @@
         results.hidden = false;
         results.innerHTML = '<div class="search-result muted">Searching...</div>';
         const found = [];
-        await Promise.all(searchResources.filter(([key]) => !pagePermissions[key] || currentPermissionSet.has(pagePermissions[key])).map(async ([key, endpoint, label, title]) => {
+        await Promise.all(searchResources.filter(([key]) => hasPagePermission(currentPermissionSet, pagePermissions[key])).map(async ([key, endpoint, label, title]) => {
           try {
             const response = await fetch(`${API_BASE}${endpoint}`, { credentials: 'include' });
             const payload = await response.json().catch(() => ({}));

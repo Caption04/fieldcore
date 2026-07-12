@@ -13,7 +13,7 @@ const { COOKIE_NAME } = require('./auth');
 const { prisma } = require('./db');
 const { errorHandler } = require('./errors');
 const { assertValidEnv } = require('./config/env');
-const { effectiveAccessForUser } = require('./services/accessControl.service');
+const { effectiveAccessForUser, hasFullBusinessAccess } = require('./services/accessControl.service');
 
 const app = express();
 const rootDir = path.resolve(__dirname, '..');
@@ -95,13 +95,13 @@ const staffHtmlPages = new Map([
   ['security-center.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['no-access.html', ['OWNER', 'ADMIN', 'WORKER']],
   ['plan-selection.html', ['OWNER']],
-  ['subscription.html', ['OWNER']]
+  ['subscription.html', ['OWNER', 'ADMIN', 'WORKER']]
 ]);
 
 const staffPagePermissions = new Map([
-  ['index.html', 'dashboard.operational.view'], ['jobs.html', 'jobs.view'], ['schedule.html', 'schedule.view'], ['map.html', 'workers.location.view'],
+  ['index.html', ['dashboard.operational.view', 'dashboard.financial.view', 'dashboard.executive.view']], ['jobs.html', 'jobs.view'], ['schedule.html', 'schedule.view'], ['map.html', 'workers.location.view'],
   ['customers.html', 'customers.view'], ['members.html', 'members.view'], ['booking-requests.html', 'bookings.view'], ['quotes.html', 'quotes.view'], ['invoices.html', 'invoices.view'],
-  ['reports.html', 'finance.reports.view'], ['settings.html', 'company.settings.view'], ['branches.html', 'branch.view'], ['approvals.html', 'approval.request.decide'],
+  ['reports.html', ['reports.money.view', 'reports.work.view', 'reports.workers.view', 'reports.sales.view', 'reports.stock.view']], ['settings.html', ['company.settings.view', 'company.settings.manage', 'company.branding.manage', 'settings.finance.manage', 'finance.exports.manage', 'notifications.view', 'integration.view', 'integration.manage', 'audit.view']], ['branches.html', 'branch.view'], ['approvals.html', 'approval.request.decide'],
   ['assets.html', 'contract.automation.manage'], ['service-contracts.html', 'contract.automation.manage'], ['contract-automation.html', 'contract.automation.manage'],
   ['inventory.html', 'inventory.view'], ['purchase-requests.html', 'purchaseRequest.create'], ['purchase-orders.html', 'purchaseOrder.manage'], ['procurement-costing.html', 'inventory.manage'],
   ['collections.html', 'payments.view'], ['mobile-sync.html', 'mobile.sync.manage'], ['executive-dashboard.html', 'dashboard.executive.view'], ['onboarding.html', 'company.settings.manage'],
@@ -115,12 +115,21 @@ const staffPagePriority = [
   'executive-dashboard.html', 'settings.html', 'security-center.html', 'subscription.html'
 ];
 
+function hasPagePermission(permissions, requirement) {
+  if (!requirement) return true;
+  const required = Array.isArray(requirement) ? requirement : [requirement];
+  return required.some((permission) => permissions.has(permission));
+}
+
 function firstAllowedStaffPage(user, access) {
   const permissions = new Set(access && access.permissions || []);
   for (const page of staffPagePriority) {
     const roles = staffHtmlPages.get(page) || [];
     const permission = staffPagePermissions.get(page);
-    if (roles.includes(user.role) && (!permission || permissions.has(permission))) return `/${page}`;
+    const allowedByAccess = page === 'subscription.html'
+      ? hasFullBusinessAccess(user, access)
+      : user.role === 'OWNER' || hasPagePermission(permissions, permission);
+    if (roles.includes(user.role) && allowedByAccess) return `/${page}`;
   }
   return '/no-access.html';
 }
@@ -195,7 +204,8 @@ async function htmlPageAccessGuard(req, res, next) {
   }
   if (!allowedRoles.includes(user.role)) return res.redirect(302, fallback);
   const requiredPermission = staffPagePermissions.get(page);
-  if (requiredPermission && !access.permissions.includes(requiredPermission)) return res.redirect(302, fallback);
+  if (page === 'subscription.html' && !hasFullBusinessAccess(user, access)) return res.redirect(302, fallback);
+  if (page !== 'subscription.html' && user.role !== 'OWNER' && !hasPagePermission(new Set(access.permissions || []), requiredPermission)) return res.redirect(302, fallback);
 
   return next();
 }

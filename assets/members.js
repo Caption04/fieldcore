@@ -1,7 +1,7 @@
 (function () {
   if (document.body.dataset.page !== 'members') return;
 
-  let data = { currentUser: null, members: [], invitations: [], templates: [], permissions: { keys: [], groups: {} }, branches: [], teams: [] };
+  let data = { currentUser: null, members: [], invitations: [], templates: [], permissions: { keys: [], groups: {}, catalog: [], dependencies: {} }, branches: [], teams: [] };
   const escapeHtml = (value) => String(value == null ? '' : value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
   const formatDate = (value) => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value)) : '—';
 
@@ -31,7 +31,7 @@
   const permissionLabels = {
     'dashboard.operational.view': 'View work summary',
     'dashboard.financial.view': 'View money summary',
-    'dashboard.executive.view': 'View owner summary',
+    'dashboard.executive.view': 'View business performance',
     'customers.view': 'View customers',
     'customers.create': 'Add customers',
     'customers.edit': 'Edit customers',
@@ -66,10 +66,14 @@
     'payments.view': 'View payments',
     'payments.manage': 'Manage payments',
     'payment.refund': 'Approve refunds',
-    'finance.reports.view': 'View money reports',
     'settings.finance.manage': 'Change money settings',
     'finance.exports.manage': 'Download money reports',
     'finance.integrations.manage': 'Manage accounting links',
+    'reports.money.view': 'View money reports',
+    'reports.work.view': 'View job reports',
+    'reports.workers.view': 'View worker reports',
+    'reports.sales.view': 'View sales and customer reports',
+    'reports.stock.view': 'View stock reports',
     'inventory.view': 'View stock',
     'inventory.manage': 'Manage stock',
     'stock.adjust': 'Change stock counts',
@@ -86,11 +90,10 @@
     'members.manage': 'Manage members',
     'roles.manage': 'Manage roles',
     'permissions.manage': 'Change member access',
-    'subscription.view': 'View the FieldCore plan',
-    'subscription.manage': 'Change the FieldCore plan',
     'security.view': 'View account security',
     'security.manage': 'Change security settings',
-    'audit.view': 'View account activity',
+    'audit.view': 'View company activity',
+    'notifications.view': 'View sent messages',
     'integration.view': 'View connected apps',
     'integration.manage': 'Manage connected apps',
     'branch.view': 'View branches',
@@ -99,7 +102,6 @@
     'team.manage': 'Manage teams',
     'approval.policy.manage': 'Set approval rules',
     'approval.request.decide': 'Approve requests',
-    'report.enterprise.view': 'View advanced reports',
     'mobile.sync.manage': 'Manage worker app sync',
     'contract.automation.manage': 'Manage contract rules',
     'contract.sla.override': 'Override service deadlines'
@@ -110,17 +112,32 @@
     Workforce: 'Workers',
     Scheduling: 'Schedule',
     Finance: 'Money',
+    Reports: 'Reports',
     Inventory: 'Stock',
     Company: 'Company settings',
     People: 'Team access',
-    Subscription: 'FieldCore plan',
+    Messages: 'Sent messages',
     Integrations: 'Connected apps',
     Organization: 'Branches and teams',
     Enterprise: 'Advanced tools'
   };
 
+  function permissionCatalogGroups() {
+    if (Array.isArray(data.permissions.catalog) && data.permissions.catalog.length) return data.permissions.catalog;
+    return Object.entries(data.permissions.groups || {}).map(([key, keys]) => ({ key, label: permissionGroupLabels[key] || key, help: '', permissions: keys.map((permissionKey) => ({ key: permissionKey, label: permissionLabels[permissionKey] })) }));
+  }
+
+  function permissionMeta(key) {
+    for (const group of permissionCatalogGroups()) {
+      const found = (group.permissions || []).find((item) => item.key === key);
+      if (found) return found;
+    }
+    return { key, label: permissionLabels[key] };
+  }
+
   function permissionLabel(key) {
-    return permissionLabels[key] || key.split('.').slice(1).join(' ').replace(/\b\w/g, (char) => char.toUpperCase());
+    const meta = permissionMeta(key);
+    return meta.label || key.split('.').slice(1).join(' ').replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
   function selectedPermissions(root) {
@@ -129,7 +146,31 @@
 
   function permissionEditor(selected = []) {
     const selectedSet = new Set(selected);
-    return Object.entries(data.permissions.groups || {}).map(([group, keys]) => `<fieldset class="permission-group"><legend>${escapeHtml(permissionGroupLabels[group] || group)} <button type="button" data-select-category>Select all</button></legend>${keys.map((key) => `<label><input type="checkbox" name="permissions" value="${escapeHtml(key)}"${selectedSet.has(key) ? ' checked' : ''}> ${escapeHtml(permissionLabel(key))}</label>`).join('')}</fieldset>`).join('');
+    return permissionCatalogGroups().map((group) => {
+      const items = (group.permissions || []).map((item) => `<label class="permission-choice"><input type="checkbox" name="permissions" value="${escapeHtml(item.key)}"${selectedSet.has(item.key) ? ' checked' : ''}><span><strong>${escapeHtml(item.label || permissionLabel(item.key))}</strong>${item.help ? `<small>${escapeHtml(item.help)}</small>` : ''}</span></label>`).join('');
+      return `<fieldset class="permission-group"><legend><span>${escapeHtml(group.label || group.key)}</span><button type="button" data-select-category>Select all</button></legend>${group.help ? `<p class="permission-group-help">${escapeHtml(group.help)}</p>` : ''}${items}</fieldset>`;
+    }).join('');
+  }
+
+  function permissionDependencies(key) {
+    return Array.isArray(data.permissions.dependencies && data.permissions.dependencies[key]) ? data.permissions.dependencies[key] : [];
+  }
+
+  function permissionDependents(key) {
+    return Object.entries(data.permissions.dependencies || {}).filter(([, dependencies]) => Array.isArray(dependencies) && dependencies.includes(key)).map(([dependent]) => dependent);
+  }
+
+  function setPermissionState(root, key, checked, visited = new Set()) {
+    if (visited.has(key)) return;
+    visited.add(key);
+    const box = root.querySelector(`input[name="permissions"][value="${CSS.escape(key)}"]`);
+    if (box) box.checked = checked;
+    const linked = checked ? permissionDependencies(key) : permissionDependents(key);
+    linked.forEach((linkedKey) => setPermissionState(root, linkedKey, checked, visited));
+  }
+
+  function normalizePermissionDependencies(root) {
+    selectedPermissions(root).forEach((key) => setPermissionState(root, key, true));
   }
 
   function updateCategoryButton(button) {
@@ -141,10 +182,11 @@
     root.querySelectorAll('[data-select-category]').forEach((button) => {
       updateCategoryButton(button);
       button.onclick = () => {
-        const boxes = Array.from(button.closest('fieldset').querySelectorAll('input[type="checkbox"]'));
+        const boxes = Array.from(button.closest('fieldset').querySelectorAll('input[name="permissions"]'));
         const shouldSelect = !boxes.every((box) => box.checked);
-        boxes.forEach((box) => { box.checked = shouldSelect; });
-        updateCategoryButton(button);
+        boxes.forEach((box) => setPermissionState(root, box.value, shouldSelect));
+        normalizePermissionDependencies(root);
+        root.querySelectorAll('[data-select-category]').forEach(updateCategoryButton);
         if (onChange) onChange();
       };
     });
@@ -165,10 +207,11 @@
 
   function setPermissionBoxes(permissionWrap, permissions, onChange) {
     permissionWrap.innerHTML = permissionEditor(permissions);
+    normalizePermissionDependencies(permissionWrap);
     permissionWrap.querySelectorAll('input[name="permissions"]').forEach((box) => {
       box.addEventListener('change', () => {
-        const categoryButton = box.closest('fieldset').querySelector('[data-select-category]');
-        if (categoryButton) updateCategoryButton(categoryButton);
+        setPermissionState(permissionWrap, box.value, box.checked);
+        permissionWrap.querySelectorAll('[data-select-category]').forEach(updateCategoryButton);
         if (onChange) onChange();
       });
     });
@@ -229,6 +272,7 @@
     fullAccess.onchange = () => {
       changingAll = true;
       permissionBoxes().forEach((box) => { box.checked = fullAccess.checked; });
+      if (fullAccess.checked) normalizePermissionDependencies(permissionWrap);
       permissionWrap.querySelectorAll('[data-select-category]').forEach(updateCategoryButton);
       changingAll = false;
     };
@@ -439,7 +483,7 @@
     form.fieldWorker.checked = member.role === 'WORKER';
     form.scopeType.value = member.accessScope && member.accessScope.type || member.defaultScopeType || 'COMPANY';
     const scopeIds = form.scopeType.value === 'BRANCH' ? member.accessScope && member.accessScope.branchIds || [] : form.scopeType.value === 'TEAM' ? member.accessScope && member.accessScope.teamIds || [] : [];
-    bindAccessForm(modal, form, { permissions: member.effectivePermissions || [], scopeIds });
+    bindAccessForm(modal, form, { permissions: member.effectivePermissions || [], scopeIds, fullAccess: member.fullBusinessAccess === true });
     form.onsubmit = async (event) => {
       event.preventDefault();
       const errorNode = modal.querySelector('[data-form-error]');

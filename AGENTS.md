@@ -782,3 +782,20 @@ Worker restrictions still work
 No passwordHash leaks
 No cross-company access
 ```
+
+## Permission Checkbox Law
+
+Every access checkbox shown to a company must control a real FieldCore function.
+
+For each visible checkbox, all four layers must agree:
+
+* the correct page or sidebar item is shown only when access exists
+* matching buttons and forms are shown only when access exists
+* the backend rejects the action with `403` when access is missing
+* company, branch, team, and own-work limits are still enforced
+
+Do not add placeholder permissions. If a function does not exist, do not show a checkbox for it.
+
+Keep permissions in the correct plain-language section. Money settings, invoices, reports, connected apps, and operations are separate areas. Do not use one broad checkbox to unlock unrelated data.
+
+The Owner must always retain access to Reports and every owner page, even if old saved permission rows are incomplete.

@@ -413,21 +413,182 @@
     loadMobileSync().catch((error) => setStatus(error.message, false));
   }
 
-  async function initExecutiveDashboard() {
-    const overview = document.querySelector('[data-overview]');
-    const definitions = document.querySelector('[data-definitions]');
+  function businessMoney(value, currency) {
     try {
-      const data = await api('/analytics/executive').catch(() => api('/reports'));
-      if (overview) {
-        const metrics = data && data.overview || data || {};
-        overview.innerHTML = Object.entries(metrics).slice(0, 8).map(([key, value]) => `<article class="card stat-card"><div class="stat-label">${escapeHtml(key.replace(/([A-Z])/g, ' $1'))}</div><div class="stat-value">${escapeHtml(typeof value === 'object' ? JSON.stringify(value) : value)}</div></article>`).join('') || '<div class="empty-state"><div><strong>No analytics yet</strong><span>Operational metrics will appear here when data exists.</span></div></div>';
-      }
-      if (definitions) definitions.innerHTML = '<div class="settings-row"><strong>Numbers are company-scoped</strong><span>Metrics are based on real API data and hidden if unavailable.</span></div>';
-      setStatus('Executive data loaded', true);
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: currency || 'USD',
+        maximumFractionDigits: 2
+      }).format(Number(value || 0));
     } catch (error) {
-      if (overview) overview.innerHTML = `<div class="empty-state"><div><strong>Executive data unavailable</strong><span>${escapeHtml(error.message)}</span></div></div>`;
-      setStatus(error.message, false);
+      return `${currency || ''} ${Number(value || 0).toLocaleString()}`.trim();
     }
+  }
+
+  function businessPercent(value) {
+    return value == null ? '-' : `${Number(value || 0).toLocaleString()}%`;
+  }
+
+  function businessMinutes(value) {
+    return value == null ? '-' : `${Number(value || 0).toLocaleString()} min`;
+  }
+
+  function businessEmptyRow(columns, text) {
+    return `<tr><td colspan="${columns}" class="muted">${escapeHtml(text)}</td></tr>`;
+  }
+
+  function businessSummaryRow(label, value) {
+    return `<div class="business-summary-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+  }
+
+  async function initExecutiveDashboard() {
+    const form = document.querySelector('[data-business-filters]');
+    let firstLoad = true;
+
+    const queryFromForm = () => {
+      const params = new URLSearchParams();
+      if (!form) return params;
+      const startDate = form.elements.startDate && form.elements.startDate.value;
+      const endDate = form.elements.endDate && form.elements.endDate.value;
+      if (startDate) params.set('startDate', startDate);
+      if (endDate) params.set('endDate', endDate);
+      return params;
+    };
+
+    const loadBusinessPerformance = async () => {
+      setStatus('Loading...', true);
+      const query = queryFromForm().toString();
+      const suffix = query ? `?${query}` : '';
+      try {
+        const [overviewData, branchData, workerData, funnelData, serviceData, stockData] = await Promise.all([
+          api(`/analytics/executive${suffix}`),
+          api(`/analytics/branches${suffix}`),
+          api(`/analytics/technicians${suffix}`),
+          api(`/analytics/quote-to-cash${suffix}`),
+          api(`/analytics/contracts-sla${suffix}`),
+          api(`/analytics/inventory-procurement${suffix}`)
+        ]);
+
+        const currency = overviewData.currency || branchData.currency || 'USD';
+        const overview = overviewData.overview || {};
+        const overviewNode = document.querySelector('[data-business-overview]');
+        if (overviewNode) {
+          const cards = [
+            ['Money this month', businessMoney(overview.mtdRevenue, currency), 'Confirmed payments'],
+            ['Money in this period', businessMoney(overview.periodRevenue, currency), 'Confirmed payments'],
+            ['Money still owed', businessMoney(overview.outstandingInvoiceTotal, currency), `${overview.outstandingInvoices || 0} unpaid invoices`],
+            ['Jobs done', String(overview.completedJobs || 0), 'Completed in this period'],
+            ['Jobs at risk', String(overview.jobsAtRisk || 0), 'Late or close to late'],
+            ['Quote success', businessPercent(overview.quoteAcceptanceRate), 'Accepted quotes'],
+            ['Missing proof', String(overview.proofMissingCount || 0), 'Completed jobs missing proof'],
+            ['Low stock items', String(overview.lowStockCriticalItems || 0), 'Need attention']
+          ];
+          overviewNode.innerHTML = cards.map(([label, value, note]) => `<article class="card stat-card"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${escapeHtml(value)}</div><div class="trend">${escapeHtml(note)}</div></article>`).join('');
+        }
+
+        const branches = branchData.branchPerformance || [];
+        const branchBody = document.querySelector('[data-business-branches]');
+        if (branchBody) {
+          branchBody.innerHTML = branches.length ? branches.map((branch) => `<tr>
+            <td>${escapeHtml(branch.branchName || 'Main business')}</td>
+            <td>${escapeHtml(businessMoney(branch.revenue, currency))}</td>
+            <td>${escapeHtml(branch.completedJobs || 0)}</td>
+            <td>${escapeHtml(branch.overdueJobs || 0)}</td>
+            <td>${escapeHtml(branch.slaBreaches || 0)}</td>
+            <td>${escapeHtml(businessMoney(branch.stockValue, currency))}</td>
+          </tr>`).join('') : businessEmptyRow(6, 'No branch results yet.');
+        }
+
+        const stageNames = {
+          bookingRequest: 'Requests',
+          quoteSent: 'Quotes sent',
+          quoteAccepted: 'Quotes accepted',
+          jobScheduled: 'Jobs booked',
+          jobCompleted: 'Jobs done',
+          invoiceIssued: 'Invoices sent',
+          paymentCollected: 'Payments received'
+        };
+        const funnel = funnelData.quoteToCash || {};
+        const funnelNode = document.querySelector('[data-business-funnel]');
+        if (funnelNode) {
+          const stages = funnel.stages || [];
+          funnelNode.innerHTML = stages.length ? stages.map((stage) => `<div class="business-stage-row">
+            <span>${escapeHtml(stageNames[stage.stage] || String(stage.stage || '').replace(/([A-Z])/g, ' $1'))}</span>
+            <strong>${escapeHtml(stage.count || 0)}</strong>
+            <small>${escapeHtml(businessPercent(stage.conversionRate))}</small>
+          </div>`).join('') : '<div class="empty-state compact-empty"><strong>No work flow data yet.</strong></div>';
+        }
+
+        const aging = overviewData.accountsReceivable && overviewData.accountsReceivable.agingBuckets || {};
+        const agingNode = document.querySelector('[data-business-aging]');
+        if (agingNode) {
+          const rows = [
+            ['Not due yet', aging.current],
+            ['1 to 30 days late', aging.days1To30],
+            ['31 to 60 days late', aging.days31To60],
+            ['61 to 90 days late', aging.days61To90],
+            ['More than 90 days late', aging.over90]
+          ];
+          agingNode.innerHTML = rows.map(([label, value]) => businessSummaryRow(label, businessMoney(value, currency))).join('');
+        }
+
+        const workers = workerData.technicianProductivity || [];
+        const workerBody = document.querySelector('[data-business-workers]');
+        if (workerBody) {
+          workerBody.innerHTML = workers.length ? workers.map((worker) => `<tr>
+            <td>${escapeHtml(worker.workerName || 'Worker')}</td>
+            <td>${escapeHtml(worker.jobsCompleted || 0)}</td>
+            <td>${escapeHtml(businessMinutes(worker.averageJobDurationMinutes))}</td>
+            <td>${escapeHtml(businessPercent(worker.onTimeArrivalRate))}</td>
+            <td>${escapeHtml(businessPercent(worker.proofCompletionRate))}</td>
+            <td>${escapeHtml(worker.partsUsed || 0)}</td>
+          </tr>`).join('') : businessEmptyRow(6, 'No worker results yet.');
+        }
+
+        const service = serviceData.contractsSla || {};
+        const serviceNode = document.querySelector('[data-business-service]');
+        if (serviceNode) {
+          serviceNode.innerHTML = [
+            businessSummaryRow('Active contracts', String(service.activeContracts || 0)),
+            businessSummaryRow('Contracts ending soon', String(service.expiringContracts || 0)),
+            businessSummaryRow('Planned work overdue', String(service.overduePlannedMaintenance || 0)),
+            businessSummaryRow('Jobs at risk', String(service.slaAtRisk || 0)),
+            businessSummaryRow('Missed service times', String(service.slaBreached || 0)),
+            businessSummaryRow('Possible renewal value', businessMoney(service.renewalValue, currency))
+          ].join('');
+        }
+
+        const stock = stockData.inventoryProcurement || {};
+        const stockNode = document.querySelector('[data-business-stock]');
+        if (stockNode) {
+          stockNode.innerHTML = [
+            businessSummaryRow('Low stock items', String(stock.lowStock || 0)),
+            businessSummaryRow('Buying requests waiting', String(stock.pendingPurchaseRequests || 0)),
+            businessSummaryRow('Open buying orders', String(stock.openPurchaseOrders || 0)),
+            businessSummaryRow('Supplier delays', String(stock.supplierDelays || 0)),
+            businessSummaryRow('Stock value', businessMoney(stock.stockValue, currency))
+          ].join('');
+        }
+
+        if (firstLoad && form && overviewData.filters) {
+          if (form.elements.startDate) form.elements.startDate.value = String(overviewData.filters.startDate || '').slice(0, 10);
+          if (form.elements.endDate) form.elements.endDate.value = String(overviewData.filters.endDate || '').slice(0, 10);
+        }
+        firstLoad = false;
+        setStatus('Results ready', true);
+      } catch (error) {
+        setStatus('Could not load results', false);
+        notifyAction(error.message || 'Could not load business performance.', false);
+      }
+    };
+
+    if (form) {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        loadBusinessPerformance();
+      });
+    }
+    loadBusinessPerformance();
   }
 
   function initProcurementCosting() {

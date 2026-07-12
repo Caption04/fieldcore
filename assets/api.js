@@ -155,6 +155,16 @@
     new MutationObserver(syncModalScrollLock).observe(document.body, { childList: true });
   }
 
+  function hasPermission(permission) {
+    if (!state.user) return false;
+    if (state.user.role === 'OWNER') return true;
+    return new Set(state.user.effectivePermissions || []).has(permission);
+  }
+
+  function hasAnyPermission(permissions) {
+    return (permissions || []).some((permission) => hasPermission(permission));
+  }
+
   function isWorker() {
     return state.user && state.user.role === 'WORKER';
   }
@@ -168,22 +178,20 @@
   }
 
   function applyRoleUi() {
-    const allowedHrefs = new Set(['index.html', 'jobs.html', 'schedule.html', 'map.html', 'settings.html']);
     document.querySelectorAll('.nav-link').forEach((link) => {
       const href = (link.getAttribute('href') || '').split('/').pop();
-      const workerAllowed = allowedHrefs.has(href);
-      link.hidden = isWorker() && !workerAllowed;
       if (href === 'jobs.html') setLinkLabel(link, isWorker() ? 'My Jobs' : 'Jobs');
       if (href === 'schedule.html') setLinkLabel(link, isWorker() ? 'My Schedule' : 'Schedule');
     });
     document.body.classList.toggle('worker-role', Boolean(isWorker()));
-    document.querySelectorAll('.quick-card').forEach((node) => { node.hidden = Boolean(isWorker()); });
-    document.querySelectorAll('.primary-button').forEach((button) => {
-      if (!button.closest('form') && button.textContent.trim().toLowerCase().startsWith('+ new ')) button.hidden = Boolean(isWorker());
+    document.querySelectorAll('.quick-card').forEach((node) => {
+      node.hidden = !(hasPermission('jobs.create') && hasPermission('jobs.view'));
     });
-    const isOwner = Boolean(state.user && state.user.role === 'OWNER');
-    document.querySelectorAll('[data-settings-target="subscription"], [data-settings-panel="subscription"]').forEach((node) => {
-      node.hidden = !isOwner;
+    document.querySelectorAll('.primary-button').forEach((button) => {
+      if (button.closest('form') || !button.textContent.trim().toLowerCase().startsWith('+ new ')) return;
+      const resource = createResourceForButton(button);
+      const permission = createPermission(resource);
+      if (permission) button.hidden = !hasPermission(permission);
     });
     if (!isWorker()) return;
     const title = document.querySelector('h1, h2');
@@ -353,42 +361,41 @@
 
 
   function rowActionItems(resource, item) {
-    if (isWorker()) {
-      return [];
-    }
     const actions = [];
-    const add = (label, action, primary) => actions.push({ label, action, primary: Boolean(primary) });
+    const add = (label, action, primary, permission) => {
+      if (!permission || hasPermission(permission)) actions.push({ label, action, primary: Boolean(primary) });
+    };
     if (resource === 'quotes') {
       const status = String(item.status || '').toUpperCase();
       if (item.deletedAt) {
-        add('Restore', 'quote-restore', true);
+        add('Restore', 'quote-restore', true, 'quotes.edit');
       } else {
-        if (status === 'DRAFT') add('Send', 'quote-send', true);
-        if (status === 'SENT') add('Accept', 'quote-accept', true);
-        if (status === 'SENT') add('Reject', 'quote-reject');
-        if (status === 'REJECTED') add('Reverse Rejection', 'quote-reverse-rejection', true);
-        add('Delete', 'quote-delete');
+        if (status === 'DRAFT') add('Send', 'quote-send', true, 'quotes.send');
+        if (status === 'SENT') add('Accept', 'quote-accept', true, 'quotes.edit');
+        if (status === 'SENT') add('Reject', 'quote-reject', false, 'quotes.edit');
+        if (status === 'REJECTED') add('Reverse Rejection', 'quote-reverse-rejection', true, 'quotes.edit');
+        add('Delete', 'quote-delete', false, 'quotes.edit');
       }
     }
-    if (resource === 'jobs') add('Details', 'job-detail', true);
-    if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add(item.scheduledStart ? 'Reschedule' : 'Schedule', item.scheduledStart ? 'job-reschedule' : 'job-schedule');
-    if (resource === 'jobs' && item.scheduledStart && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Unschedule', 'job-unschedule');
-    if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice');
+    if (resource === 'jobs') add('Details', 'job-detail', true, 'jobs.view');
+    if (resource === 'jobs' && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add(item.scheduledStart ? 'Reschedule' : 'Schedule', item.scheduledStart ? 'job-reschedule' : 'job-schedule', false, 'schedule.manage');
+    if (resource === 'jobs' && item.scheduledStart && item.status !== 'COMPLETED' && item.status !== 'CANCELLED') add('Unschedule', 'job-unschedule', false, 'schedule.manage');
+    if (resource === 'jobs' && item.status === 'COMPLETED') add('Invoice', 'job-invoice', false, 'invoices.create');
     if (resource === 'booking-requests') {
       const quoteAlreadySent = /quote has been sent/i.test(String(item.customerFacingMessage || ''));
-      add('View', 'booking-view', true);
-      if (item.status === 'NEW') add('Mark Reviewed', 'booking-review');
-      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Decline', 'booking-decline');
-      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Convert to Job', 'booking-convert');
-      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED' && !quoteAlreadySent) add('Create Quote', 'booking-quote');
+      add('View', 'booking-view', true, 'bookings.view');
+      if (item.status === 'NEW') add('Mark Reviewed', 'booking-review', false, 'bookings.manage');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Decline', 'booking-decline', false, 'bookings.manage');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED') add('Convert to Job', 'booking-convert', false, 'bookings.manage');
+      if (item.status !== 'CONVERTED' && item.status !== 'DECLINED' && !quoteAlreadySent) add('Create Quote', 'booking-quote', false, 'bookings.manage');
     }
     if (resource === 'invoices') {
       const status = String(item.status || '').toUpperCase();
       const hasReceipts = Array.isArray(item.receipts) && item.receipts.length > 0;
-      if (status === 'DRAFT') add('Send', 'invoice-send');
-      if (status !== 'PAID' && status !== 'VOID') add('Record Payment', 'invoice-pay');
-      if (hasReceipts) add(status === 'PARTIALLY_PAID' || item.receipts.length > 1 ? 'View Receipts' : 'View Receipt', 'invoice-receipts', status === 'PAID');
-      if (status !== 'VOID' && status !== 'PAID') add('Void', 'invoice-void');
+      if (status === 'DRAFT') add('Send', 'invoice-send', false, 'invoices.send');
+      if (status !== 'PAID' && status !== 'VOID') add('Record Payment', 'invoice-pay', false, 'payments.manage');
+      if (hasReceipts) add(status === 'PARTIALLY_PAID' || item.receipts.length > 1 ? 'View Receipts' : 'View Receipt', 'invoice-receipts', status === 'PAID', 'payments.view');
+      if (status !== 'VOID' && status !== 'PAID') add('Void', 'invoice-void', false, 'invoice.void');
     }
     return actions;
   }
@@ -888,36 +895,59 @@
     return '/api/reports/export?' + params.toString();
   }
 
+  function reportViewOptions(data) {
+    const allowed = new Set(data.allowedReports || []);
+    const views = [];
+    if (allowed.has('money')) {
+      views.push(['revenue', 'Money received']);
+      views.push(['unpaid-invoices', 'Unpaid invoices']);
+    }
+    if (allowed.has('work')) views.push(['completed-jobs', 'Jobs']);
+    if (allowed.has('workers')) views.push(['worker-performance', 'Workers']);
+    if (allowed.has('sales')) {
+      views.push(['service-popularity', 'Services']);
+      views.push(['quote-conversion', 'Quotes']);
+      views.push(['customer-analytics', 'Customers']);
+    }
+    if (allowed.has('stock')) views.push(['stock-value', 'Stock value']);
+    return views;
+  }
+
   function renderReportFilters(data) {
     const filters = data.filters || {};
     const options = data.options || {};
-    return '<form class="panel form-grid report-filters" data-report-filters><div class="field"><label for="reportPeriod">Period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisWeek">This week</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option><option value="custom">Custom</option></select></div><div class="field"><label for="reportStart">Start</label><input id="reportStart" name="startDate" type="date"></div><div class="field"><label for="reportEnd">End</label><input id="reportEnd" name="endDate" type="date"></div><div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div><div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div><div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div><div class="form-actions span-2"><button class="primary-button" type="submit">Apply Filters</button><a class="secondary-button" href="' + escapeHtml(reportExportHref('revenue', filters)) + '">Export Revenue CSV</a><a class="secondary-button" href="' + escapeHtml(reportExportHref('invoices', filters)) + '">Export Invoices CSV</a><a class="secondary-button" href="' + escapeHtml(reportExportHref('jobs', filters)) + '">Export Jobs CSV</a></div><p class="fc-form-error span-2" data-report-message hidden></p></form>';
+    const allowed = new Set(data.allowedReports || []);
+    const fields = [
+      '<div class="field"><label for="reportPeriod">Time period</label><select id="reportPeriod" name="period"><option value="last30days">Last 30 days</option><option value="today">Today</option><option value="thisWeek">This week</option><option value="thisMonth">This month</option><option value="lastMonth">Last month</option><option value="thisYear">This year</option><option value="custom">Choose dates</option></select></div>',
+      '<div class="field"><label for="reportStart">Start date</label><input id="reportStart" name="startDate" type="date"></div>',
+      '<div class="field"><label for="reportEnd">End date</label><input id="reportEnd" name="endDate" type="date"></div>'
+    ];
+    if ((allowed.has('money') || allowed.has('work') || allowed.has('sales')) && (options.services || []).length) {
+      fields.push('<div class="field"><label for="reportService">Service</label><select id="reportService" name="serviceId">' + reportOptionList(options.services, 'All services', filters.serviceId) + '</select></div>');
+    }
+    if ((allowed.has('work') || allowed.has('workers')) && (options.workers || []).length) {
+      fields.push('<div class="field"><label for="reportWorker">Worker</label><select id="reportWorker" name="workerId">' + reportOptionList(options.workers, 'All workers', filters.workerId) + '</select></div>');
+    }
+    if ((allowed.has('money') || allowed.has('work') || allowed.has('sales')) && (options.customers || []).length) {
+      fields.push('<div class="field"><label for="reportCustomer">Customer</label><select id="reportCustomer" name="customerId">' + reportOptionList(options.customers, 'All customers', filters.customerId) + '</select></div>');
+    }
+
+    const actions = ['<button class="primary-button" type="submit">Show reports</button>'];
+    if (data.canExport && allowed.has('money')) {
+      actions.push('<a class="secondary-button" href="' + escapeHtml(reportExportHref('revenue', filters)) + '">Download revenue</a>');
+      actions.push('<a class="secondary-button" href="' + escapeHtml(reportExportHref('invoices', filters)) + '">Download unpaid invoices</a>');
+    }
+    if (data.canExport && (allowed.has('work') || allowed.has('workers'))) {
+      actions.push('<a class="secondary-button" href="' + escapeHtml(reportExportHref('jobs', filters)) + '">Download job report</a>');
+    }
+
+    return '<form class="panel form-grid report-filters" data-report-filters>' + fields.join('') + '<div class="form-actions span-2">' + actions.join('') + '</div><p class="fc-form-error span-2" data-report-message hidden></p></form>';
   }
 
-  function renderReportSwitcher() {
-    const views = [
-      ['overview', 'Overview'],
-      ['revenue', 'Revenue'],
-      ['unpaid-invoices', 'Unpaid invoices'],
-      ['completed-jobs', 'Completed jobs'],
-      ['worker-performance', 'Worker performance'],
-      ['service-popularity', 'Service popularity'],
-      ['quote-conversion', 'Quote conversion'],
-      ['customer-analytics', 'Customer analytics/history']
-    ];
-
-    return `
-      <div class="report-switcher">
-        <label for="reportView">Report view</label>
-        <select id="reportView" data-report-view>
-          ${views.map(([key, label]) => `
-            <option value="${key}" ${state.activeReportTab === key ? 'selected' : ''}>
-              ${escapeHtml(label)}
-            </option>
-          `).join('')}
-        </select>
-      </div>
-    `;
+  function renderReportSwitcher(data) {
+    const views = reportViewOptions(data);
+    if (views.length <= 1) return '';
+    return '<div class="report-switcher"><label for="reportView">Choose a report</label><select id="reportView" data-report-view>' + views.map(([key, label]) => '<option value="' + escapeHtml(key) + '"' + (state.activeReportTab === key ? ' selected' : '') + '>' + escapeHtml(label) + '</option>').join('') + '</select></div>';
   }
 
   function renderOverviewReport(data) {
@@ -990,79 +1020,145 @@
 
   function renderWorkerPerformanceReport(data) {
     const workers = data.workers || [];
+    const canSeeMoney = (data.allowedReports || []).includes('money');
     const avgCompletion = workers.length ? Math.round(workers.reduce((sum, worker) => sum + Number(worker.completionRate || 0), 0) / workers.length) : 0;
     const avgProof = workers.filter((worker) => worker.proofComplianceRate != null);
-    return '<section class="report-section"><div class="report-kpi-row">' +
-      reportMetricCard('Workers tracked', workers.length, 'With activity') +
-      reportMetricCard('Avg completion', avgCompletion + '%', 'Across workers') +
-      reportMetricCard('Proof compliance', (avgProof.length ? Math.round(avgProof.reduce((sum, worker) => sum + Number(worker.proofComplianceRate || 0), 0) / avgProof.length) : 0) + '%', 'Required proof') +
-      reportMetricCard('Revenue handled', money.format(workers.reduce((sum, worker) => sum + Number(worker.revenueHandled || 0), 0)), 'Completed paid work') +
+    const cards = [
+      reportMetricCard('Workers tracked', workers.length, 'With activity'),
+      reportMetricCard('Average completion', avgCompletion + '%', 'Across workers'),
+      reportMetricCard('Proof complete', (avgProof.length ? Math.round(avgProof.reduce((sum, worker) => sum + Number(worker.proofComplianceRate || 0), 0) / avgProof.length) : 0) + '%', 'Required proof')
+    ];
+    if (canSeeMoney) cards.push(reportMetricCard('Money from completed work', money.format(workers.reduce((sum, worker) => sum + Number(worker.revenueHandled || 0), 0)), 'Paid work'));
+    const columns = [
+      { label: 'Worker', value: (row) => row.name },
+      { label: 'Assigned', value: (row) => row.assigned },
+      { label: 'Completed', value: (row) => row.completed },
+      { label: 'In progress', value: (row) => row.inProgress },
+      { label: 'Completion', value: (row) => row.completionRate + '%' },
+      { label: 'Average time', value: (row) => row.averageDurationMinutes ? row.averageDurationMinutes + ' min' : '-' },
+      { label: 'Proof', value: (row) => row.proofComplianceRate == null ? '-' : row.proofComplianceRate + '%' },
+      { label: 'Active', value: (row) => row.active ? 'Yes' : 'No' }
+    ];
+    if (canSeeMoney) columns.splice(columns.length - 1, 0, { label: 'Money handled', value: (row) => money.format(row.revenueHandled || 0) });
+    return '<section class="report-section"><div class="report-kpi-row">' + cards.join('') +
       '</div><div class="report-grid two">' +
-      reportBarChart('Worker completion', workers, 'name', 'completed', (value) => String(value || 0)) +
-      reportBarChart('Proof compliance', workers.filter((worker) => worker.proofComplianceRate != null), 'name', 'proofComplianceRate', (value) => (value || 0) + '%') +
+      reportBarChart('Jobs completed', workers, 'name', 'completed', (value) => String(value || 0)) +
+      reportBarChart('Proof complete', workers.filter((worker) => worker.proofComplianceRate != null), 'name', 'proofComplianceRate', (value) => (value || 0) + '%') +
       '</div>' +
-      reportPanel('Worker performance table', reportTable([{ label: 'Worker', value: (row) => row.name }, { label: 'Assigned', value: (row) => row.assigned }, { label: 'Completed', value: (row) => row.completed }, { label: 'In progress', value: (row) => row.inProgress }, { label: 'Completion', value: (row) => row.completionRate + '%' }, { label: 'Avg duration', value: (row) => row.averageDurationMinutes ? row.averageDurationMinutes + ' min' : '-' }, { label: 'Proof', value: (row) => row.proofComplianceRate == null ? '-' : row.proofComplianceRate + '%' }, { label: 'Revenue', value: (row) => money.format(row.revenueHandled || 0) }, { label: 'Active', value: (row) => row.active ? 'Yes' : 'No' }], workers, 'No worker activity.')) +
+      reportPanel('Worker results', reportTable(columns, workers, 'No worker activity yet.')) +
       '</section>';
   }
 
   function renderServicePopularityReport(data) {
     const services = data.services || [];
-    return '<section class="report-section"><div class="report-kpi-row">' +
-      reportMetricCard('Services tracked', services.length, 'Configured services') +
-      reportMetricCard('Booking requests', services.reduce((sum, item) => sum + Number(item.bookingRequests || 0), 0), 'From requests') +
-      reportMetricCard('Jobs', services.reduce((sum, item) => sum + Number(item.jobs || 0), 0), 'All job activity') +
-      reportMetricCard('Revenue', money.format(services.reduce((sum, item) => sum + Number(item.revenue || 0), 0)), 'By service') +
-      '</div><div class="report-grid two">' +
-      reportBarChart('Service revenue', services, 'name', 'revenue', (value) => money.format(value || 0)) +
-      reportBarChart('Service quote acceptance', services, 'name', 'quoteAcceptanceRate', (value) => (value || 0) + '%') +
-      '</div>' +
-      reportPanel('Service performance table', reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Bookings', value: (row) => row.bookingRequests }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Completed', value: (row) => row.completedJobs }, { label: 'Revenue', value: (row) => money.format(row.revenue || 0) }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Accepted', value: (row) => row.acceptedQuotes }, { label: 'Quote rate', value: (row) => row.quoteAcceptanceRate + '%' }, { label: 'Avg invoice', value: (row) => money.format(row.averageInvoiceValue || 0) }], services, 'No service activity.')) +
-      '</section>';
+    const canSeeMoney = (data.allowedReports || []).includes('money');
+    const cards = [
+      reportMetricCard('Services', services.length, 'Set up in FieldCore'),
+      reportMetricCard('Booking requests', services.reduce((sum, item) => sum + Number(item.bookingRequests || 0), 0), 'New requests'),
+      reportMetricCard('Jobs', services.reduce((sum, item) => sum + Number(item.jobs || 0), 0), 'All work')
+    ];
+    if (canSeeMoney) cards.push(reportMetricCard('Money received', money.format(services.reduce((sum, item) => sum + Number(item.revenue || 0), 0)), 'By service'));
+    const charts = [reportBarChart('Jobs by service', services, 'name', 'jobs', (value) => String(value || 0)), reportBarChart('Quote success', services, 'name', 'quoteAcceptanceRate', (value) => (value || 0) + '%')];
+    if (canSeeMoney) charts.unshift(reportBarChart('Money by service', services, 'name', 'revenue', (value) => money.format(value || 0)));
+    const columns = [
+      { label: 'Service', value: (row) => row.name },
+      { label: 'Bookings', value: (row) => row.bookingRequests },
+      { label: 'Jobs', value: (row) => row.jobs },
+      { label: 'Completed', value: (row) => row.completedJobs },
+      { label: 'Quotes', value: (row) => row.quotes },
+      { label: 'Accepted', value: (row) => row.acceptedQuotes },
+      { label: 'Quote success', value: (row) => row.quoteAcceptanceRate + '%' }
+    ];
+    if (canSeeMoney) {
+      columns.splice(4, 0, { label: 'Money', value: (row) => money.format(row.revenue || 0) });
+      columns.push({ label: 'Average invoice', value: (row) => money.format(row.averageInvoiceValue || 0) });
+    }
+    return '<section class="report-section"><div class="report-kpi-row">' + cards.join('') + '</div><div class="report-grid two">' + charts.join('') + '</div>' + reportPanel('Service results', reportTable(columns, services, 'No service activity yet.')) + '</section>';
   }
 
   function renderQuoteConversionReport(data) {
     const quotes = data.quotes || {};
-    return '<section class="report-section"><div class="report-kpi-row">' +
-      reportMetricCard('Created', quotes.createdCount || 0, 'All quotes') +
-      reportMetricCard('Accepted', quotes.acceptedCount || 0, money.format(quotes.acceptedQuoteValue || 0)) +
-      reportMetricCard('Rejected', quotes.rejectedCount || 0, (quotes.rejectionRate || 0) + '% rejection') +
-      reportMetricCard('Acceptance', (quotes.acceptanceRate || 0) + '%', money.format(quotes.averageQuoteValue || 0) + ' avg quote') +
+    const canSeeMoney = (data.allowedReports || []).includes('money');
+    const cards = [
+      reportMetricCard('Created', quotes.createdCount || 0, 'All quotes'),
+      reportMetricCard('Accepted', quotes.acceptedCount || 0, 'Won work'),
+      reportMetricCard('Rejected', quotes.rejectedCount || 0, (quotes.rejectionRate || 0) + '% rejected'),
+      reportMetricCard('Success rate', (quotes.acceptanceRate || 0) + '%', 'Sent quote results')
+    ];
+    if (canSeeMoney) {
+      cards[1] = reportMetricCard('Accepted', quotes.acceptedCount || 0, money.format(quotes.acceptedQuoteValue || 0));
+      cards[3] = reportMetricCard('Success rate', (quotes.acceptanceRate || 0) + '%', money.format(quotes.averageQuoteValue || 0) + ' average');
+    }
+    return '<section class="report-section"><div class="report-kpi-row">' + cards.join('') +
       '</div><div class="report-grid two">' +
-      reportFunnelChart('Quote funnel', quotes.funnel || []) +
-      reportLineChart('Quote trend', quotes.byPeriod || [], 'date', 'value', (value) => String(value || 0)) +
+      reportFunnelChart('Quote steps', quotes.funnel || []) +
+      reportLineChart('Quotes over time', quotes.byPeriod || [], 'date', 'value', (value) => String(value || 0)) +
       '</div>' +
-      reportPanel('Quote conversion by service', reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Sent', value: (row) => row.sent }, { label: 'Accepted', value: (row) => row.accepted }, { label: 'Rejected', value: (row) => row.rejected }, { label: 'Acceptance', value: (row) => row.acceptanceRate + '%' }], quotes.byService || [], 'No quotes in this range.')) +
+      reportPanel('Quotes by service', reportTable([{ label: 'Service', value: (row) => row.name }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Sent', value: (row) => row.sent }, { label: 'Accepted', value: (row) => row.accepted }, { label: 'Rejected', value: (row) => row.rejected }, { label: 'Success rate', value: (row) => row.acceptanceRate + '%' }], quotes.byService || [], 'No quotes in this time period.')) +
       '</section>';
   }
 
   function renderCustomerAnalyticsReport(data) {
     const customers = data.customers || {};
+    const canSeeMoney = (data.allowedReports || []).includes('money');
+    const cards = [
+      reportMetricCard('Customers', customers.totalCustomers || 0, 'All customers'),
+      reportMetricCard('New customers', customers.newCustomers || 0, 'In this time period'),
+      reportMetricCard('Repeat customers', customers.repeatCustomers || 0, 'More than one job')
+    ];
+    if (canSeeMoney) cards.push(reportMetricCard('Customers who owe money', (customers.customersWithUnpaidInvoices || []).length, 'Need follow-up'));
+    const columns = [
+      { label: 'Customer', value: (row) => row.name },
+      { label: 'Invoices', value: (row) => row.invoices },
+      { label: 'Jobs', value: (row) => row.jobs },
+      { label: 'Completed jobs', value: (row) => row.completedJobs },
+      { label: 'Quotes', value: (row) => row.quotes },
+      { label: 'Bookings', value: (row) => row.bookingRequests },
+      { label: 'Last job', value: (row) => formatDate(row.lastJobDate) },
+      { label: 'Last payment', value: (row) => formatDate(row.lastPaymentDate) }
+    ];
+    if (canSeeMoney) {
+      columns.splice(1, 0, { label: 'Money received', value: (row) => money.format(row.revenue || 0) });
+      columns.splice(2, 0, { label: 'Money owed', value: (row) => money.format(row.unpaidTotal || 0) });
+    }
+    const extra = canSeeMoney
+      ? '<div class="report-grid two">' + reportBarChart('Top customers by money received', customers.topCustomers || [], 'name', 'revenue', (value) => money.format(value || 0)) + reportPanel('Customers who owe money', reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Money owed', value: (row) => money.format(row.unpaidTotal || 0) }, { label: 'Invoices', value: (row) => row.invoices }], customers.customersWithUnpaidInvoices || [], 'No customers owe money.')) + '</div>'
+      : '';
+    return '<section class="report-section"><div class="report-kpi-row">' + cards.join('') + '</div>' + extra + reportPanel('Customer activity', reportTable(columns, customers.customerHistory || customers.topCustomers || [], 'No customer activity yet.')) + '</section>';
+  }
+
+  function renderStockValueReport(data) {
+    const stock = data.stock || { totalValue: 0, rows: [] };
     return '<section class="report-section"><div class="report-kpi-row">' +
-      reportMetricCard('Total customers', customers.totalCustomers || 0, 'All time') +
-      reportMetricCard('New customers', customers.newCustomers || 0, 'In selected range') +
-      reportMetricCard('Repeat customers', customers.repeatCustomers || 0, 'More than one job') +
-      reportMetricCard('Customers with unpaid', (customers.customersWithUnpaidInvoices || []).length, 'Need collection') +
-      '</div><div class="report-grid two">' +
-      reportBarChart('Top customer revenue', customers.topCustomers || [], 'name', 'revenue', (value) => money.format(value || 0)) +
-      reportPanel('Customers with unpaid invoices', reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Unpaid', value: (row) => money.format(row.unpaidTotal || 0) }, { label: 'Invoices', value: (row) => row.invoices }, { label: 'Jobs', value: (row) => row.jobs }], customers.customersWithUnpaidInvoices || [], 'No customers with unpaid invoices.')) +
+      reportMetricCard('Stock value', money.format(stock.totalValue || 0), 'Items currently on hand') +
+      reportMetricCard('Stock lines', (stock.rows || []).length, 'Across all locations') +
       '</div>' +
-      reportPanel('Customer history', reportTable([{ label: 'Customer', value: (row) => row.name }, { label: 'Revenue', value: (row) => money.format(row.revenue || 0) }, { label: 'Unpaid', value: (row) => money.format(row.unpaidTotal || 0) }, { label: 'Invoices', value: (row) => row.invoices }, { label: 'Jobs', value: (row) => row.jobs }, { label: 'Completed jobs', value: (row) => row.completedJobs }, { label: 'Quotes', value: (row) => row.quotes }, { label: 'Bookings', value: (row) => row.bookingRequests }, { label: 'Last job', value: (row) => formatDate(row.lastJobDate) }, { label: 'Last payment', value: (row) => formatDate(row.lastPaymentDate) }], customers.customerHistory || customers.topCustomers || [], 'No customer history yet.')) +
+      reportPanel('Stock value by item', reportTable([
+        { label: 'Item', value: (row) => row.itemName },
+        { label: 'Location', value: (row) => row.locationName },
+        { label: 'Quantity', value: (row) => row.quantity },
+        { label: 'Cost each', value: (row) => money.format(row.unitCost || 0) },
+        { label: 'Value', value: (row) => money.format(row.value || 0) }
+      ], stock.rows || [], 'No stock value is available yet.')) +
       '</section>';
   }
 
   function renderActiveReportTab(data) {
     const renderers = {
-      overview: renderOverviewReport,
       revenue: renderRevenueReport,
       'unpaid-invoices': renderUnpaidInvoicesReport,
       'completed-jobs': renderCompletedJobsReport,
       'worker-performance': renderWorkerPerformanceReport,
       'service-popularity': renderServicePopularityReport,
       'quote-conversion': renderQuoteConversionReport,
-      'customer-analytics': renderCustomerAnalyticsReport
+      'customer-analytics': renderCustomerAnalyticsReport,
+      'stock-value': renderStockValueReport
     };
-    const renderer = renderers[state.activeReportTab] || renderOverviewReport;
-    return renderer(data || {});
+    const views = reportViewOptions(data);
+    const allowedKeys = new Set(views.map(([key]) => key));
+    if (!allowedKeys.has(state.activeReportTab)) state.activeReportTab = views.length ? views[0][0] : '';
+    const renderer = renderers[state.activeReportTab];
+    return renderer ? renderer(data || {}) : '<section class="panel"><div class="empty-state"><div><strong>No reports selected</strong><span>Ask the owner to add report access to your account.</span></div></div></section>';
   }
 
   function bindReportControls(data) {
@@ -1070,23 +1166,23 @@
     const reportView = document.querySelector('[data-report-view]');
     if (reportView) {
       reportView.addEventListener('change', () => {
-        state.activeReportTab = reportView.value || 'overview';
+        state.activeReportTab = reportView.value || '';
         renderReports(state.reports || data);
       });
     }
     if (!form) return;
     const filters = data.filters || {};
-    form.elements.period.value = filters.period || 'last30days';
-    form.elements.startDate.value = String(filters.startDate || '').slice(0, 10);
-    form.elements.endDate.value = String(filters.endDate || '').slice(0, 10);
-    form.elements.period.addEventListener('change', () => {
+    if (form.elements.period) form.elements.period.value = filters.period || 'last30days';
+    if (form.elements.startDate) form.elements.startDate.value = String(filters.startDate || '').slice(0, 10);
+    if (form.elements.endDate) form.elements.endDate.value = String(filters.endDate || '').slice(0, 10);
+    if (form.elements.period) form.elements.period.addEventListener('change', () => {
       if (form.elements.period.value === 'custom') return;
-      form.elements.startDate.value = '';
-      form.elements.endDate.value = '';
+      if (form.elements.startDate) form.elements.startDate.value = '';
+      if (form.elements.endDate) form.elements.endDate.value = '';
     });
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (form.elements.startDate.value || form.elements.endDate.value) form.elements.period.value = 'custom';
+      if (form.elements.period && ((form.elements.startDate && form.elements.startDate.value) || (form.elements.endDate && form.elements.endDate.value))) form.elements.period.value = 'custom';
       await loadReports();
     });
   }
@@ -1095,11 +1191,12 @@
     const root = document.querySelector('[data-reports-root]');
     if (!root) return;
     state.reports = data || {};
-    state.activeReportTab = state.activeReportTab || 'overview';
+    const views = reportViewOptions(data || {});
+    if (!views.some(([key]) => key === state.activeReportTab)) state.activeReportTab = views.length ? views[0][0] : '';
     const filters = data.filters || {};
-    root.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Business Performance</h2><p>Company-scoped analytics from ' + escapeHtml(formatDate(filters.startDate)) + ' to ' + escapeHtml(formatDate(filters.endDate)) + '.</p></div><span class="api-status" data-api-status>Connected</span></div>' +
+    root.innerHTML = '<div class="hero-row"><div class="hero-copy"><h2>Reports</h2><p>Showing the reports this account can use from ' + escapeHtml(formatDate(filters.startDate)) + ' to ' + escapeHtml(formatDate(filters.endDate)) + '.</p></div></div>' +
       renderReportFilters(data || {}) +
-      renderReportSwitcher() +
+      renderReportSwitcher(data || {}) +
       '<div data-report-tab-panel>' + renderActiveReportTab(data || {}) + '</div>';
     bindReportControls(data || {});
   }
@@ -1416,12 +1513,16 @@
 
               if (check.hasConflict) {
                 const detail = check.conflicts.map((item) => item.message).join('\n');
+                if (!hasPermission('schedule.override')) {
+                  showToast('This time has a clash. Choose another time or worker.', false);
+                  return;
+                }
                 const override = await openConfirmModal({
-                  title: 'Schedule Conflict',
-                  message: 'This schedule has a conflict. You can edit the time, worker, or buffer, or override it if you intentionally want to allow it.',
+                  title: 'Schedule clash',
+                  message: 'This time has a clash. You can change the time or allow it anyway.',
                   detail,
-                  cancelLabel: 'Edit Schedule',
-                  okLabel: 'Override Anyway',
+                  cancelLabel: 'Change schedule',
+                  okLabel: 'Allow anyway',
                   closeExisting: false
                 });
 
@@ -1597,12 +1698,17 @@
         const check = await api('/schedule/check-conflicts', { method: 'POST', body: JSON.stringify({ ...body, jobId }) });
         if (check.hasConflict) {
           const message = check.conflicts.map((item) => item.message).join('\n');
+          if (!hasPermission('schedule.override')) {
+            error.textContent = 'This time has a clash. Choose another time or worker.';
+            error.hidden = false;
+            return;
+          }
           const override = await openConfirmModal({
-            title: 'Schedule Conflict',
-            message: 'This schedule has a conflict. You can edit the time, worker, or buffer, or override it if you intentionally want to allow it.',
+            title: 'Schedule clash',
+            message: 'This time has a clash. You can change the time or allow it anyway.',
             detail: message,
-            cancelLabel: 'Edit Schedule',
-            okLabel: 'Override Anyway',
+            cancelLabel: 'Change schedule',
+            okLabel: 'Allow anyway',
             closeExisting: false
           });
           if (!override) return;
@@ -1613,14 +1719,14 @@
         await load();
         showToast(mode === 'reschedule' ? 'Job rescheduled.' : 'Job scheduled.', true);
       } catch (err) {
-        if (err.status === 409 && err.details && err.details.conflicts) {
+        if (err.status === 409 && err.details && err.details.conflicts && hasPermission('schedule.override')) {
           const detail = err.details.conflicts.map((item) => item.message).join('\n');
           const override = await openConfirmModal({
-            title: 'Schedule Conflict',
-            message: 'This schedule has a conflict. You can edit the time, worker, or buffer, or override it if you intentionally want to allow it.',
+            title: 'Schedule clash',
+            message: 'This time has a clash. You can change the time or allow it anyway.',
             detail,
-            cancelLabel: 'Edit Schedule',
-            okLabel: 'Override Anyway',
+            cancelLabel: 'Change schedule',
+            okLabel: 'Allow anyway',
             closeExisting: false
           });
           if (override) {
@@ -1649,15 +1755,24 @@
     syncModalScrollLock();
   }
 
+  function createPermission(resource) {
+    return ({ customers: 'customers.create', workers: 'workers.manage', jobs: 'jobs.create', quotes: 'quotes.create', invoices: 'invoices.create' })[resource];
+  }
+
+  function createResourceForButton(button) {
+    const text = button.textContent.trim().toLowerCase();
+    return button.dataset.createResource || (text.includes('worker') ? 'workers' : text.includes('customer') ? 'customers' : text.includes('job') ? 'jobs' : text.includes('quote') ? 'quotes' : text.includes('invoice') ? 'invoices' : null);
+  }
+
   function setupCreateButtons() {
     document.querySelectorAll('.primary-button').forEach((button) => {
       if (button.closest('form')) return;
       const text = button.textContent.trim().toLowerCase();
       if (!text.startsWith('+ new ')) return;
       button.addEventListener('click', async () => {
-        const currentText = button.textContent.trim().toLowerCase();
-        const resource = button.dataset.createResource || (currentText.includes('worker') ? 'workers' : currentText.includes('customer') ? 'customers' : currentText.includes('job') ? 'jobs' : currentText.includes('quote') ? 'quotes' : currentText.includes('invoice') ? 'invoices' : null);
-        if (!resource) return;
+        const resource = createResourceForButton(button);
+        const permission = createPermission(resource);
+        if (!resource || permission && !hasPermission(permission)) return;
         await preloadLookups();
         openModal(formFor(resource));
       });
@@ -1680,6 +1795,7 @@
     if (create) {
       create.textContent = resource === 'workers' ? '+ New Worker' : '+ New Customer';
       create.dataset.createResource = resource;
+      create.hidden = !hasPermission(resource === 'workers' ? 'workers.manage' : 'customers.create');
     }
   }
 
@@ -2557,17 +2673,20 @@
   function renderIntegrations() {
     const card = document.querySelector('[data-integrations-card]');
     if (!card) return;
+    const canManage = hasPermission('integration.manage');
     card.innerHTML = integrationProviders.map((definition) => {
       const item = integrationByProvider(definition.provider) || {};
       const config = item.config || {};
       const configuredSecrets = new Set(item.configuredSecrets || []);
       const status = item.status || 'DISCONNECTED';
       const statusClass = status === 'ACTIVE' || status === 'CONFIGURED' ? 'green' : status === 'ERROR' ? 'red' : 'gray';
+      const summary = '<div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(item.lastTestedAt ? 'Last checked ' + formatDateTime(item.lastTestedAt) : 'Not checked yet') + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status === 'ACTIVE' || status === 'CONFIGURED' ? 'Connected' : status === 'ERROR' ? 'Needs attention' : 'Not connected') + '</span></div>';
+      if (!canManage) return '<article class="integration-card read-only">' + summary + '</article>';
       const configFields = definition.config.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="config.' + escapeHtml(key) + '" value="' + escapeHtml(config[key] || '') + '"></div>').join('');
       const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" placeholder="' + (configuredSecrets.has(key) ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved' : 'Not saved') + '"></div>').join('');
-      return '<form class="integration-card" data-integration-form="' + escapeHtml(definition.provider) + '" data-integration-id="' + escapeHtml(item.id || '') + '"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.channel + (item.lastTestedAt ? ' / tested ' + formatDateTime(item.lastTestedAt) : ' / not tested')) + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span></div><div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save Settings</button><button class="secondary-button compact" type="button" data-integration-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Test Connection</button><button class="secondary-button compact" type="button" data-integration-disable="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Disable</button></div><p class="fc-form-error span-2" data-integration-message hidden></p></div></form>';
+      return '<form class="integration-card" data-integration-form="' + escapeHtml(definition.provider) + '" data-integration-id="' + escapeHtml(item.id || '') + '">' + summary + '<div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save</button><button class="secondary-button compact" type="button" data-integration-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Check connection</button><button class="secondary-button compact" type="button" data-integration-disable="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Turn off</button></div><p class="fc-form-error span-2" data-integration-message hidden></p></div></form>';
     }).join('');
-    bindIntegrationActions();
+    if (canManage) bindIntegrationActions();
   }
 
   function integrationPayload(form) {
@@ -2580,20 +2699,22 @@
   }
 
   async function loadIntegrations() {
-    if (!document.querySelector('[data-integrations-card]')) return;
+    if (!document.querySelector('[data-integrations-card]') || !hasPermission('integration.view')) return;
     try {
-      const [integrations, logs, storage, paymentProviders] = await Promise.all([api('/admin/integrations'), api('/admin/integrations/message-logs').catch(() => []), api('/admin/integrations/storage-usage').catch(() => ({ usage: [], objects: [] })), api('/payment-providers').catch(() => [])]);
+      const [integrations, logs, storage] = await Promise.all([
+        api('/admin/integrations'),
+        api('/admin/integrations/message-logs').catch(() => []),
+        api('/admin/integrations/storage-usage').catch(() => ({ usage: [], objects: [] }))
+      ]);
       state.integrations = integrations;
-      state.paymentProviders = paymentProviders;
       state.messageLogs = logs;
       state.storageUsage = storage;
       renderIntegrations();
       renderProviderMessageLogs(logs);
       renderStorageUsage(storage);
-      renderPaymentProviders();
     } catch (error) {
       const card = document.querySelector('[data-integrations-card]');
-      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Integrations unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Connected apps are unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
     }
   }
 
@@ -3019,16 +3140,23 @@
   }
 
   async function loadFinanceSettings() {
-    if (!document.querySelector('[data-finance-settings-form]') && !document.querySelector('[data-invoice-defaults-form]')) return;
+    const canChangeMoney = hasPermission('settings.finance.manage');
+    const canDownloadMoney = hasPermission('finance.exports.manage');
+    if (!canChangeMoney && !canDownloadMoney) return;
     try {
       const [settings, logs] = await Promise.all([
-        api('/company/finance-settings'),
-        api('/finance/export-logs').catch(() => [])
+        canChangeMoney ? api('/company/finance-settings') : Promise.resolve(null),
+        canDownloadMoney ? api('/finance/export-logs').catch(() => []) : Promise.resolve([])
       ]);
-      state.financeSettings = applyMarketCurrencyForDisplay(settings);
-      state.financeExportLogs = logs;
-      fillFinanceForm(state.financeSettings);
-      renderFinanceExportLogs(logs);
+      if (settings) {
+        state.financeSettings = applyMarketCurrencyForDisplay(settings);
+        fillFinanceForm(state.financeSettings);
+      }
+      if (canDownloadMoney) {
+        state.financeExportLogs = logs;
+        renderFinanceExportLogs(logs);
+      }
+      if (canChangeMoney) await loadPaymentProviders();
     } catch (error) {
       setFormMessage('[data-finance-message]', error.message, false);
     }
@@ -3094,15 +3222,62 @@
   }
 
   async function loadAdminTools() {
-    if (!document.querySelector('[data-system-status-card]')) return;
+    const card = document.querySelector('[data-audit-log-card]');
+    if (!card || !hasPermission('audit.view')) return;
     try {
-      const [status, logs] = await Promise.all([api('/system/status'), api('/audit-logs')]);
-      renderSystemStatus(status);
-      renderAuditLogs(logs);
+      renderAuditLogs(await api('/audit-logs'));
     } catch (error) {
-      const card = document.querySelector('[data-system-status-card]');
-      if (card) card.innerHTML = '<div class="empty-state"><div><strong>Admin tools unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
+      card.innerHTML = '<div class="empty-state"><div><strong>Company activity is unavailable.</strong><span>' + escapeHtml(error.message) + '</span></div></div>';
     }
+  }
+
+  function settingsNodeAllowed(node) {
+    if (!node || !state.user || state.user.role === 'OWNER') return true;
+    const one = node.dataset.requiredPermission;
+    if (one && !hasPermission(one)) return false;
+    const any = String(node.dataset.requiredAnyPermission || '').split(',').map((item) => item.trim()).filter(Boolean);
+    if (any.length && !hasAnyPermission(any)) return false;
+    return true;
+  }
+
+  function activateSettingsPanel(target) {
+    const tabs = Array.from(document.querySelectorAll('[data-settings-target]'));
+    const panels = Array.from(document.querySelectorAll('[data-settings-panel]'));
+    const selected = tabs.find((tab) => !tab.hidden && tab.dataset.settingsTarget === target) || tabs.find((tab) => !tab.hidden);
+    const selectedTarget = selected && selected.dataset.settingsTarget;
+    tabs.forEach((tab) => tab.classList.toggle('active', tab === selected));
+    panels.forEach((panel) => {
+      const allowed = settingsNodeAllowed(panel);
+      const active = allowed && panel.dataset.settingsPanel === selectedTarget;
+      panel.classList.toggle('active', active);
+      panel.hidden = !active;
+    });
+    return selectedTarget;
+  }
+
+  function applySettingsAccess() {
+    if (page !== 'settings' || !state.user) return;
+    const tabs = Array.from(document.querySelectorAll('[data-settings-target]'));
+    const panels = Array.from(document.querySelectorAll('[data-settings-panel]'));
+    tabs.forEach((tab) => { tab.hidden = !settingsNodeAllowed(tab); });
+    panels.forEach((panel) => { panel.hidden = !settingsNodeAllowed(panel); });
+
+    document.querySelectorAll('[data-required-permission], [data-required-any-permission]').forEach((node) => {
+      if (node.matches('[data-settings-target], [data-settings-panel]')) return;
+      node.hidden = !settingsNodeAllowed(node);
+    });
+
+    const canChangeCompany = hasPermission('company.settings.manage');
+    const canChangeBrand = hasPermission('company.branding.manage');
+    document.querySelectorAll('[data-profile-field]').forEach((field) => { field.disabled = !canChangeCompany; });
+    document.querySelectorAll('[data-branding-field], [data-logo-input]').forEach((field) => { field.disabled = !canChangeBrand; });
+    const logoButton = document.querySelector('.file-upload-button');
+    if (logoButton) logoButton.hidden = !canChangeBrand;
+    const companySave = document.querySelector('[data-branding-form] button[type="submit"]');
+    if (companySave) companySave.hidden = !canChangeCompany && !canChangeBrand;
+
+    const current = tabs.find((tab) => tab.classList.contains('active') && !tab.hidden);
+    activateSettingsPanel(current && current.dataset.settingsTarget);
   }
 
   function setupSettings() {
@@ -3112,20 +3287,15 @@
 
     tabs.forEach((tab) => {
       tab.addEventListener('click', () => {
-        const target = tab.dataset.settingsTarget;
-        tabs.forEach((item) => item.classList.toggle('active', item === tab));
-        panels.forEach((panel) => {
-          const active = panel.dataset.settingsPanel === target;
-          panel.classList.toggle('active', active);
-          panel.hidden = !active;
-        });
-        if (target === 'subscription') loadBilling();
+        if (tab.hidden || !settingsNodeAllowed(tab)) return;
+        const target = activateSettingsPanel(tab.dataset.settingsTarget);
         if (target === 'finance') loadFinanceSettings();
-        if (target === 'notifications') loadNotificationLogs();
-        if (target === 'integrations') { loadIntegrations(); loadPaymentProviders(); }
-        if (target === 'admin-tools') loadAdminTools();
+        if (target === 'notifications' && hasPermission('notifications.view')) loadNotificationLogs();
+        if (target === 'integrations' && hasPermission('integration.view')) loadIntegrations();
+        if (target === 'admin-tools' && hasPermission('audit.view')) loadAdminTools();
       });
     });
+    if (state.user) applySettingsAccess();
 
     document.querySelectorAll('[data-branding-field], [data-profile-field]').forEach((field) => {
       field.addEventListener('input', updateBrandingPreview);
@@ -3241,22 +3411,30 @@
         message.classList.remove('green');
       }
       try {
+        const canChangeCompany = hasPermission('company.settings.manage');
+        const canChangeBrand = hasPermission('company.branding.manage');
+        if (!canChangeCompany && !canChangeBrand) throw new Error('You do not have access to change company details.');
 
-        const logoInput = document.querySelector('[data-logo-input]');
-        if (logoInput && logoInput.files && logoInput.files[0]) {
-          state.branding = await uploadLogo(logoInput.files[0]);
-          const logoUrlField = document.querySelector('[data-branding-field="logoUrl"]');
-          if (logoUrlField) logoUrlField.value = state.branding.logoUrl || '';
+        if (canChangeBrand) {
+          const logoInput = document.querySelector('[data-logo-input]');
+          if (logoInput && logoInput.files && logoInput.files[0]) {
+            state.branding = await uploadLogo(logoInput.files[0]);
+            const logoUrlField = document.querySelector('[data-branding-field="logoUrl"]');
+            if (logoUrlField) logoUrlField.value = state.branding.logoUrl || '';
+          }
+          state.branding = await api('/company/branding', { method: 'PATCH', body: JSON.stringify(formPayload('[data-branding-field]')) });
         }
-        state.profile = await api('/company/profile', { method: 'PATCH', body: JSON.stringify(formPayload('[data-profile-field]')) });
-        state.branding = await api('/company/branding', { method: 'PATCH', body: JSON.stringify(formPayload('[data-branding-field]')) });
+        if (canChangeCompany) {
+          state.profile = await api('/company/profile', { method: 'PATCH', body: JSON.stringify(formPayload('[data-profile-field]')) });
+        }
         applyBranding();
+        const savedLabel = canChangeCompany && canChangeBrand ? 'Company details saved.' : canChangeBrand ? 'Brand saved.' : 'Company details saved.';
         if (message) {
-          message.textContent = 'Branding saved.';
+          message.textContent = savedLabel;
           message.classList.add('green');
           message.hidden = false;
         }
-        showToast('Branding saved.', true);
+        showToast(savedLabel, true);
       } catch (error) {
         if (message) {
           message.textContent = error.message;
@@ -3307,16 +3485,15 @@
       document.querySelectorAll('[data-account-initials]').forEach((node) => { node.textContent = String(state.user.name || state.user.email || 'FC').split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase(); });
       await loadCompanyBranding();
       applyRoleUi();
-      if (isWorker() && !['dashboard', 'jobs', 'schedule', 'map', 'settings'].includes(page)) {
-        renderWorkerAccessDenied();
-        setStatus('Restricted worker area', false);
-        return;
-      }
-      if (page === 'settings' && isWorker()) renderWorkerSettings();
-      if (page === 'settings' && !isWorker()) {
-        await loadSchedulingSettings();
-        await loadNotificationLogs();
-        await loadFinanceSettings();
+      const staffSettingsPermissions = ['company.settings.view', 'company.settings.manage', 'company.branding.manage', 'settings.finance.manage', 'finance.exports.manage', 'notifications.view', 'integration.view', 'integration.manage', 'audit.view'];
+      const usesSimpleWorkerSettings = page === 'settings' && isWorker() && !hasAnyPermission(staffSettingsPermissions);
+      if (usesSimpleWorkerSettings) {
+        renderWorkerSettings();
+      } else if (page === 'settings') {
+        applySettingsAccess();
+        if (hasPermission('company.settings.manage')) await loadSchedulingSettings();
+        if (hasPermission('notifications.view')) await loadNotificationLogs();
+        if (hasAnyPermission(['settings.finance.manage', 'finance.exports.manage'])) await loadFinanceSettings();
       }
     } catch (error) {
       setStatus('Log in to load company data.', false);

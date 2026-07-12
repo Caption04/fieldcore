@@ -281,11 +281,11 @@ async function seedCompany(config, passwordHash, includeSampleData) {
   const adminTemplate = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: null, key: 'general-manager', verticalKey: 'generic' } });
   const workerTemplate = await prisma.permissionRoleTemplate.findFirst({ where: { companyId: null, key: 'field-worker', verticalKey: 'generic' } });
   const owner = await upsertUser({ email: config.users.owner, name: config.people.owner, role: 'OWNER', companyId: company.id, passwordHash });
-  await prisma.user.update({ where: { id: owner.id }, data: { jobTitle: 'Company Owner', roleTemplateId: ownerTemplate && ownerTemplate.id, defaultScopeType: 'COMPANY' } });
+  await prisma.user.update({ where: { id: owner.id }, data: { jobTitle: 'Company Owner', roleTemplateId: ownerTemplate && ownerTemplate.id, defaultScopeType: 'COMPANY', fullBusinessAccess: true } });
   const adminUser = await upsertUser({ email: config.users.admin, name: config.people.admin, role: 'ADMIN', companyId: company.id, passwordHash });
-  await prisma.user.update({ where: { id: adminUser.id }, data: { jobTitle: 'General Manager', roleTemplateId: adminTemplate && adminTemplate.id, defaultScopeType: 'COMPANY' } });
+  await prisma.user.update({ where: { id: adminUser.id }, data: { jobTitle: 'General Manager', roleTemplateId: adminTemplate && adminTemplate.id, defaultScopeType: 'COMPANY', fullBusinessAccess: false } });
   const workerUser = await upsertUser({ email: config.users.worker, name: config.people.worker, role: 'WORKER', companyId: company.id, passwordHash });
-  await prisma.user.update({ where: { id: workerUser.id }, data: { jobTitle: 'Field Technician', roleTemplateId: workerTemplate && workerTemplate.id, defaultScopeType: 'SELF' } });
+  await prisma.user.update({ where: { id: workerUser.id }, data: { jobTitle: 'Field Technician', roleTemplateId: workerTemplate && workerTemplate.id, defaultScopeType: 'SELF', fullBusinessAccess: false } });
 
   const role = await prisma.workerRole.upsert({
     where: { companyId_name: { companyId: company.id, name: 'Field Technician' } },

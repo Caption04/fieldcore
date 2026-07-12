@@ -15,7 +15,7 @@ const { billingSummary, cancelSubscription, changePlan, createCheckout, selectMo
 const { reportCsv, reportData } = require('../services/reporting.service');
 const { analyticsCsv, buildExecutiveAnalytics } = require('../services/executiveAnalytics.service');
 const { billingCatalog, canUseFeature, getUsage, listPlans, requireFeature, requirePlanLimit } = require('../services/subscription.service');
-const { PERMISSION_GROUPS, defaultPermissionBundles, delegatablePermissionKeys, effectiveAccessForUser, isSubset, permissionKeys, scopeContains, uniquePermissions } = require('../services/accessControl.service');
+const { FULL_ACCESS_ONLY_PERMISSION_KEYS, PERMISSION_CATALOG, PERMISSION_DEPENDENCIES, PERMISSION_GROUPS, defaultPermissionBundles, delegatablePermissionKeys, effectiveAccessForUser, expandPermissionDependencies, hasFullBusinessAccess, isSubset, permissionKeys, scopeContains, uniquePermissions } = require('../services/accessControl.service');
 const { getStorageObjectForCompany, readStorageObject, storeUploadedFile } = require('../services/integrations/storage.service');
 const {
   disableIntegrationConnection,
@@ -157,7 +157,12 @@ async function publicStaffUser(user) {
   const safe = publicUser(user);
   if (!safe) return safe;
   const access = await effectiveAccessForUser(user, { companyId: user.companyId });
-  return { ...safe, effectivePermissions: access.permissions, accessScope: { type: access.scopeType, branchIds: access.branchIds, teamIds: access.teamIds } };
+  return {
+    ...safe,
+    effectivePermissions: access.permissions,
+    fullBusinessAccess: hasFullBusinessAccess(user, access),
+    accessScope: { type: access.scopeType, branchIds: access.branchIds, teamIds: access.teamIds }
+  };
 }
 
 function pagination(req) {
@@ -270,6 +275,14 @@ async function requirePermission(req, permissionKey, options = {}) {
   if (!(await hasPermission(req, permissionKey, options))) throw new AppError(403, 'Missing permission: ' + permissionKey);
 }
 
+async function requireAnyPermission(req, keys, options = {}) {
+  const requested = Array.isArray(keys) ? keys : [keys];
+  for (const key of requested) {
+    if (await hasPermission(req, key, options)) return key;
+  }
+  throw new AppError(403, 'You do not have access to this report.');
+}
+
 function requestedAccessBody(body = {}) {
   return {
     scopeType: body.scopeType || 'COMPANY',
@@ -282,7 +295,7 @@ async function resolveDelegatedPermissions(req, body = {}) {
   const actorAccess = req.effectiveAccess || await effectiveAccessForUser(req.user, { companyId: req.companyId });
   const requested = body.fullAccess
     ? (req.user.role === 'OWNER' ? delegatablePermissionKeys : delegatablePermissionKeys.filter((key) => actorAccess.permissions.includes(key)))
-    : uniquePermissions(body.permissions);
+    : expandPermissionDependencies(body.permissions).filter((key) => !FULL_ACCESS_ONLY_PERMISSION_KEYS.includes(key));
   if (req.user.role !== 'OWNER' && !isSubset(requested, actorAccess.permissions)) {
     throw new AppError(403, 'You cannot grant permissions that you do not have.');
   }
@@ -2123,7 +2136,8 @@ async function writeScheduleConflicts(tx, req, jobId, workerId, conflicts, resol
 
 async function scheduleJob(req, job, input, options = {}) {
   const result = await checkScheduleConflicts(req, { ...input, jobId: job.id }, { job, excludeScheduleId: options.excludeScheduleId });
-  const canOverride = adminRoles.includes(req.user.role) && (input.adminOverride || result.settings.allowOverbooking);
+  if (input.adminOverride) await requirePermission(req, 'schedule.override');
+  const canOverride = Boolean(result.settings.allowOverbooking || input.adminOverride);
   if (result.hasConflict && !canOverride) throw new AppError(409, 'Schedule conflict detected', { conflicts: result.conflicts });
   const conflictStatus = result.hasConflict ? 'OVERRIDE' : 'CLEAR';
   const data = await prisma.$transaction(async (tx) => {
@@ -2361,6 +2375,7 @@ router.post('/auth/register', validate(registerSchema), asyncHandler(async (req,
         jobTitle: 'Company Owner',
         roleTemplateId: ownerTemplate && ownerTemplate.id,
         defaultScopeType: 'COMPANY',
+        fullBusinessAccess: true,
         passwordHash: await hashPassword(req.body.password)
       },
       select: SAFE_LOGIN_USER_SELECT
@@ -2527,7 +2542,7 @@ router.patch('/users/:id/role', requireAuth, requireRole(...ownerRoles), validat
     const ownerCount = await prisma.user.count({ where: { companyId: req.companyId, role: 'OWNER', disabledAt: null } });
     if (ownerCount <= 1) throw new AppError(409, 'The final company owner cannot be demoted.');
   }
-  const data = await prisma.user.update({ where: { id: existing.id }, data: { role: req.body.role }, select: SAFE_LOGIN_USER_SELECT });
+  const data = await prisma.user.update({ where: { id: existing.id }, data: { role: req.body.role, fullBusinessAccess: req.body.role === 'OWNER' }, select: SAFE_LOGIN_USER_SELECT });
   if (prisma.userSession) await prisma.userSession.updateMany({ where: { companyId: req.companyId, userId: existing.id, revokedAt: null }, data: { revokedAt: new Date(), revokedById: req.user.id } });
   await audit(req, 'CHANGE_ROLE', 'User', existing.id, { fromRole: existing.role, toRole: req.body.role, sessionsRevoked: true });
   await recordSecurityEvent(req.companyId, 'ROLE_CHANGED', { userId: existing.id, severity: 'HIGH', req, metadata: { fromRole: existing.role, toRole: req.body.role } });
@@ -3366,7 +3381,7 @@ router.post('/public/member-invitations/accept', validate(invitationAcceptSchema
   const selected = uniquePermissions(invitation.permissions);
   const scope = invitation.scopeConfig || {};
   const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.user.create({ data: { companyId: invitation.companyId, email: invitation.email, name: req.body.name, passwordHash: await hashPassword(req.body.password), role: invitation.systemRole, jobTitle: invitation.jobTitle, roleTemplateId: invitation.roleTemplateId, defaultScopeType: invitation.scopeType }, select: SAFE_LOGIN_USER_SELECT });
+    const created = await tx.user.create({ data: { companyId: invitation.companyId, email: invitation.email, name: req.body.name, passwordHash: await hashPassword(req.body.password), role: invitation.systemRole, jobTitle: invitation.jobTitle, roleTemplateId: invitation.roleTemplateId, defaultScopeType: invitation.scopeType, fullBusinessAccess: invitation.fullAccess === true && invitation.scopeType === 'COMPANY' }, select: SAFE_LOGIN_USER_SELECT });
     for (const permissionKey of permissionKeys) await tx.userPermissionOverride.create({ data: { companyId: invitation.companyId, userId: created.id, permissionKey, allowed: selected.includes(permissionKey) } });
     for (const branchId of Array.isArray(scope.branchIds) ? scope.branchIds : []) await tx.userBranchAccess.create({ data: { companyId: invitation.companyId, userId: created.id, branchId, permissions: selected, active: true } });
     for (const teamId of Array.isArray(scope.teamIds) ? scope.teamIds : []) {
@@ -3394,6 +3409,7 @@ router.use(asyncHandler(async (req, res, next) => {
 const resourcePermissionRules = [
   // Put action-specific rules before broad resource rules.
   { method: 'POST', pattern: /^\/jobs\/[^/]+\/assign-worker$/, permission: 'jobs.assign' },
+  { method: 'POST', pattern: /^\/booking-requests\/[^/]+\/(?:review|decline|convert|create-quote)$/, permission: 'bookings.manage' },
   { method: 'POST', pattern: /^\/jobs\/[^/]+\/(?:schedule|reschedule|unschedule)$/, permission: 'schedule.manage' },
   { method: 'POST', pattern: /^\/quotes\/[^/]+\/send$/, permission: 'quotes.send' },
   { method: 'POST', pattern: /^\/quotes\/[^/]+\/(?:accept|reject)$/, permission: 'quotes.edit' },
@@ -3406,12 +3422,25 @@ const resourcePermissionRules = [
   { method: 'PATCH', pattern: /^\/schedule\/[^/]+$/, permission: 'schedule.manage' },
   { method: 'DELETE', pattern: /^\/schedule\/[^/]+$/, permission: 'schedule.manage' },
   { method: 'POST', pattern: /^\/schedule\/check-conflicts$/, permission: 'schedule.manage' },
-  { method: 'GET', pattern: /^\/reports(?:\/|$)/, permission: 'finance.reports.view' },
+  { method: 'GET', pattern: /^\/reports\/service-profitability$/, permission: 'reports.money.view' },
+  { method: 'GET', pattern: /^\/reports\/(?:purchase-spend|accounts-receivable-aging|contract-profitability)$/, permission: 'reports.money.view' },
+  { method: 'GET', pattern: /^\/reports\/technician-productivity$/, permission: 'reports.workers.view' },
+  { method: 'GET', pattern: /^\/reports\/sla-performance$/, permission: 'reports.work.view' },
+  { method: 'GET', pattern: /^\/reports\/branch-performance$/, anyPermissions: ['reports.money.view', 'reports.work.view'] },
+  { method: 'GET', pattern: /^\/reports\/(?:inventory-value|inventory\/|suppliers\/performance)/, permission: 'reports.stock.view' },
+  { method: 'GET', pattern: /^\/reports\/export$/, permission: 'finance.exports.manage' },
+  { method: 'GET', pattern: /^\/reports$/, anyPermissions: ['reports.money.view', 'reports.work.view', 'reports.workers.view', 'reports.sales.view', 'reports.stock.view'] },
+  { method: 'GET', pattern: /^\/finance\/export(?:\/|$)/, permission: 'finance.exports.manage' },
+  { method: 'POST', pattern: /^\/finance\/export(?:\/|$)/, permission: 'finance.exports.manage' },
+  { method: 'GET', pattern: /^\/finance\/integrations(?:\/|$)/, permission: 'finance.integrations.manage' },
+  { method: 'POST', pattern: /^\/finance\/integrations(?:\/|$)/, permission: 'finance.integrations.manage' },
+  { method: 'PATCH', pattern: /^\/finance\/integrations(?:\/|$)/, permission: 'finance.integrations.manage' },
+  { method: 'GET', pattern: /^\/notification-logs(?:\/|$)/, permission: 'notifications.view' },
   { method: 'GET', pattern: /^\/security(?:\/|$)/, permission: 'security.view' },
   { method: 'GET', pattern: /^\/audit-logs(?:\/|$)/, permission: 'audit.view' },
   { method: 'GET', pattern: /^\/admin\/data-export(?:\/|$)/, permission: 'finance.exports.manage' },
-  { method: 'GET', pattern: /^\/billing\/(?:catalog|plans|subscription|usage)$/, permission: 'subscription.view' },
-  { method: 'POST', pattern: /^\/billing\/(?:mock-select|checkout|change-plan|cancel)$/, permission: 'subscription.manage' },
+  { method: 'GET', pattern: /^\/billing\/(?:catalog|plans|subscription|usage)$/, fullAccessOnly: true },
+  { method: 'POST', pattern: /^\/billing\/(?:mock-select|checkout|change-plan|cancel)$/, fullAccessOnly: true },
 
   { method: 'POST', pattern: /^\/branches(?:\/|$)/, permission: 'branch.manage' },
   { method: 'PATCH', pattern: /^\/branches(?:\/|$)/, permission: 'branch.manage' },
@@ -3444,7 +3473,6 @@ const resourcePermissionRules = [
   { method: 'POST', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
   { method: 'PATCH', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
   { method: 'DELETE', pattern: /^\/purchase-orders(?:\/|$)/, permission: 'purchaseOrder.manage' },
-  { method: 'GET', pattern: /^\/analytics\/contracts-sla$/, permission: 'report.enterprise.view' },
   { method: 'POST', pattern: /^\/jobs\/[^/]+\/sla\/(?:evaluate|waive)$/, permission: 'contract.sla.override' },
 
   { method: 'GET', pattern: /^\/customers(?:\/|$)/, permission: 'customers.view' },
@@ -3479,13 +3507,23 @@ const resourcePermissionRules = [
   { method: 'PATCH', pattern: /^\/company\/(?:profile|scheduling-settings)/, permission: 'company.settings.manage' },
   { method: 'PATCH', pattern: /^\/company\/branding/, permission: 'company.branding.manage' },
   { method: 'PATCH', pattern: /^\/company\/finance-settings/, permission: 'settings.finance.manage' },
-  { method: 'GET', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.view' },
-  { method: 'POST', pattern: /^\/integrations(?:\/|$)/, permission: 'integration.manage' }
+  { method: 'GET', pattern: /^\/payment-providers(?:\/|$)/, permission: 'settings.finance.manage' },
+  { method: 'POST', pattern: /^\/payment-providers(?:\/|$)/, permission: 'settings.finance.manage' },
+  { method: 'PATCH', pattern: /^\/payment-providers(?:\/|$)/, permission: 'settings.finance.manage' },
+  { method: 'GET', pattern: /^\/(?:admin\/)?integrations(?:\/|$)/, permission: 'integration.view' },
+  { method: 'POST', pattern: /^\/(?:admin\/)?integrations(?:\/|$)/, permission: 'integration.manage' },
+  { method: 'PATCH', pattern: /^\/(?:admin\/)?integrations(?:\/|$)/, permission: 'integration.manage' }
 ];
 
 router.use(asyncHandler(async (req, res, next) => {
   const rule = resourcePermissionRules.find((item) => item.method === req.method && item.pattern.test(req.path));
-  if (rule) await requirePermission(req, rule.permission, { branchId: req.query && req.query.branchId || req.body && req.body.branchId });
+  if (rule) {
+    const options = { branchId: req.query && req.query.branchId || req.body && req.body.branchId };
+    if (rule.fullAccessOnly) {
+      if (!hasFullBusinessAccess(req.user, req.effectiveAccess)) throw new AppError(403, 'Full company access is required.');
+    } else if (rule.anyPermissions) await requireAnyPermission(req, rule.anyPermissions, options);
+    else await requirePermission(req, rule.permission, options);
+  }
   next();
 }));
 
@@ -4157,7 +4195,7 @@ router.post('/approvals/:id/execute', requireRole(...adminRoles), validate(idPar
 
 router.get('/permissions', asyncHandler(async (req, res) => {
   await requirePermission(req, 'members.view');
-  sendData(res, { keys: permissionKeys, groups: PERMISSION_GROUPS, bundles: defaultPermissionBundles });
+  sendData(res, { keys: delegatablePermissionKeys, groups: PERMISSION_GROUPS, catalog: PERMISSION_CATALOG, dependencies: PERMISSION_DEPENDENCIES, bundles: defaultPermissionBundles });
 }));
 
 function companyRoleKey(name) {
@@ -4278,7 +4316,7 @@ router.patch('/members/:id/access', validate(idParam, 'params'), validate(member
   const permissions = await resolveDelegatedPermissions(req, req.body);
   const template = await resolveCompanyRole(req, req.body, permissions);
   const updated = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.update({ where: { id: member.id }, data: { role: template.systemRole, jobTitle: req.body.jobTitle, roleTemplateId: template.id, defaultScopeType: req.body.scopeType } });
+    const user = await tx.user.update({ where: { id: member.id }, data: { role: template.systemRole, jobTitle: req.body.jobTitle, roleTemplateId: template.id, defaultScopeType: req.body.scopeType, fullBusinessAccess: req.body.fullAccess === true && req.body.scopeType === 'COMPANY' } });
     await tx.userPermissionOverride.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
     for (const permissionKey of permissionKeys) await tx.userPermissionOverride.create({ data: { companyId: req.companyId, userId: member.id, permissionKey, allowed: permissions.includes(permissionKey) } });
     await tx.userBranchAccess.deleteMany({ where: { companyId: req.companyId, userId: member.id } });
@@ -4711,13 +4749,98 @@ router.post('/billing/cancel', asyncHandler(async (req, res) => {
 
 function requireCompanyReportScope(req) {
   if (!req.effectiveAccess || req.effectiveAccess.scopeType !== 'COMPANY') {
-    throw new AppError(403, 'This report requires company-wide reporting scope.');
+    throw new AppError(403, 'This report needs access to the whole company.');
   }
 }
 
+function reportAreasForRequest(req) {
+  const permissions = new Set(req.effectiveAccess && req.effectiveAccess.permissions || []);
+  return {
+    money: permissions.has('reports.money.view'),
+    work: permissions.has('reports.work.view'),
+    workers: permissions.has('reports.workers.view'),
+    sales: permissions.has('reports.sales.view'),
+    stock: permissions.has('reports.stock.view'),
+    canExport: permissions.has('finance.exports.manage')
+  };
+}
+
+async function stockReportSummary(companyId) {
+  const stocks = await prisma.inventoryStock.findMany({
+    where: { companyId },
+    include: { item: true, location: true },
+    orderBy: { updatedAt: 'desc' }
+  });
+  const rows = stocks.map((stock) => {
+    const quantity = Number(stock.quantityOnHand || 0);
+    const unitCost = Number(stock.item && stock.item.unitCost || 0);
+    return {
+      itemName: stock.item && stock.item.name || 'Stock item',
+      locationName: stock.location && stock.location.name || 'No location',
+      quantity,
+      unitCost,
+      value: quantity * unitCost
+    };
+  });
+  return { totalValue: rows.reduce((sum, row) => sum + row.value, 0), rows };
+}
+
+function withoutMoneyFields(row, fields) {
+  const output = { ...(row || {}) };
+  for (const field of fields) delete output[field];
+  return output;
+}
+
+function allowedReportPayload(data, areas, stock) {
+  const output = {
+    filters: data.filters,
+    allowedReports: Object.entries(areas).filter(([key, allowed]) => key !== 'canExport' && allowed).map(([key]) => key),
+    canExport: areas.canExport,
+    options: {
+      services: areas.money || areas.work || areas.sales ? data.options.services : [],
+      workers: areas.work || areas.workers ? data.options.workers : [],
+      customers: areas.money || areas.work || areas.sales ? data.options.customers : []
+    }
+  };
+  if (areas.money) {
+    output.revenue = data.revenue;
+    output.invoices = data.invoices;
+  }
+  if (areas.work) output.jobs = data.jobs;
+  if (areas.workers) {
+    output.workers = areas.money
+      ? data.workers
+      : (data.workers || []).map((row) => withoutMoneyFields(row, ['revenueHandled']));
+  }
+  if (areas.sales) {
+    output.services = areas.money
+      ? data.services
+      : (data.services || []).map((row) => withoutMoneyFields(row, ['revenue', 'averageInvoiceValue']));
+    output.quotes = areas.money
+      ? data.quotes
+      : withoutMoneyFields(data.quotes, ['averageQuoteValue', 'acceptedQuoteValue']);
+    if (areas.money) output.customers = data.customers;
+    else {
+      output.customers = {
+        totalCustomers: data.customers.totalCustomers,
+        newCustomers: data.customers.newCustomers,
+        repeatCustomers: data.customers.repeatCustomers,
+        topCustomers: (data.customers.topCustomers || []).map((row) => withoutMoneyFields(row, ['revenue', 'unpaidTotal'])),
+        customerHistory: (data.customers.customerHistory || []).map((row) => withoutMoneyFields(row, ['revenue', 'unpaidTotal']))
+      };
+    }
+  }
+  if (areas.stock) output.stock = stock;
+  return output;
+}
+
+
 router.get('/reports', asyncHandler(async (req, res) => {
   requireCompanyReportScope(req);
-  sendData(res, normalize(await reportData(req.companyId, req.query)));
+  const areas = reportAreasForRequest(req);
+  const data = await reportData(req.companyId, req.query);
+  const stock = areas.stock ? await stockReportSummary(req.companyId) : null;
+  sendData(res, normalize(allowedReportPayload(data, areas, stock)));
 }));
 
 
@@ -4752,7 +4875,15 @@ router.get('/reports/branch-performance', asyncHandler(async (req, res) => {
   for (const job of jobs) { const row = byBranch.get(job.branchId || null) || byBranch.get(null); if (row) { row.jobs += 1; if (job.status === 'COMPLETED') row.completedJobs += 1; } }
   for (const invoice of invoices) { const row = byBranch.get(invoice.branchId || null) || byBranch.get(null); if (row) row.revenue += Number(invoice.total || invoice.amount || 0); }
   for (const payment of payments) { const row = byBranch.get(payment.branchId || null) || byBranch.get(null); if (row) row.payments += Number(payment.amount || 0); }
-  sendData(res, normalize(Array.from(byBranch.values()).filter((row) => req.query.branchId ? row.branch && row.branch.id === req.query.branchId : true)));
+  const areas = reportAreasForRequest(req);
+  const rows = Array.from(byBranch.values())
+    .filter((row) => req.query.branchId ? row.branch && row.branch.id === req.query.branchId : true)
+    .map((row) => ({
+      branch: row.branch,
+      ...(areas.work ? { jobs: row.jobs, completedJobs: row.completedJobs } : {}),
+      ...(areas.money ? { revenue: row.revenue, payments: row.payments } : {})
+    }));
+  sendData(res, normalize(rows));
 }));
 
 router.get('/reports/service-profitability', asyncHandler(async (req, res) => {
@@ -4781,7 +4912,9 @@ router.get('/reports/technician-productivity', asyncHandler(async (req, res) => 
     const row = rows.get(key) || { workerId: job.workerId, workerName: job.worker && job.worker.user ? job.worker.user.name : 'Unassigned', jobs: 0, completedJobs: 0, revenue: 0 };
     row.jobs += 1; if (job.status === 'COMPLETED') row.completedJobs += 1; row.revenue += Number(job.total || 0); rows.set(key, row);
   }
-  sendData(res, normalize(Array.from(rows.values())));
+  const canSeeMoney = reportAreasForRequest(req).money;
+  const output = Array.from(rows.values()).map((row) => canSeeMoney ? row : withoutMoneyFields(row, ['revenue']));
+  sendData(res, normalize(output));
 }));
 
 router.get('/reports/sla-performance', asyncHandler(async (req, res) => {
@@ -4849,29 +4982,35 @@ router.get('/reports/accounts-receivable-aging', asyncHandler(async (req, res) =
 }));
 
 
-async function analyticsBranchScope(req) {
+async function analyticsBranchScope(req, requiredPermissions) {
   const branchId = req.query && req.query.branchId ? String(req.query.branchId).trim() : '';
   const accessRecords = req.user.role === 'OWNER' ? [] : await prisma.userBranchAccess.findMany({ where: { companyId: req.companyId, userId: req.user.id, active: true } });
   const scopedBranchIds = accessRecords.map((record) => record.branchId);
   if (branchId) {
     await requireBranch(req, branchId);
-    if (scopedBranchIds.length && !scopedBranchIds.includes(branchId)) throw new AppError(403, 'Branch report access denied.');
-    await requirePermission(req, 'report.enterprise.view', { branchId });
+    if (scopedBranchIds.length && !scopedBranchIds.includes(branchId)) throw new AppError(403, 'You cannot view reports for this branch.');
+    await requireAnyPermission(req, requiredPermissions, { branchId });
     return [branchId];
   }
-  await requirePermission(req, 'report.enterprise.view');
+  await requireAnyPermission(req, requiredPermissions);
   return scopedBranchIds.length ? scopedBranchIds : null;
 }
 
-async function analyticsPayload(req) {
-  const branchIds = await analyticsBranchScope(req);
-  return buildExecutiveAnalytics(req.companyId, req.query, { branchIds });
+async function analyticsPayload(req, requiredPermissions) {
+  const branchIds = await analyticsBranchScope(req, requiredPermissions);
+  const [data, finance] = await Promise.all([
+    buildExecutiveAnalytics(req.companyId, req.query, { branchIds }),
+    getCompanyFinanceSettings(req.companyId)
+  ]);
+  return { ...data, currency: finance && finance.defaultCurrency || 'USD' };
 }
 
 router.get('/reports/export', asyncHandler(async (req, res) => {
   requireCompanyReportScope(req);
   const section = String(req.query.section || 'revenue');
-  if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'Unsupported report export section.');
+  if (!['revenue', 'invoices', 'jobs'].includes(section)) throw new AppError(400, 'That report cannot be downloaded.');
+  if (section === 'jobs') await requireAnyPermission(req, ['reports.work.view', 'reports.workers.view']);
+  else await requirePermission(req, 'reports.money.view');
   const data = await reportData(req.companyId, req.query);
   await audit(req, 'EXPORT', 'Report', section, { section, startDate: data.filters.startDate, endDate: data.filters.endDate });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -4880,40 +5019,48 @@ router.get('/reports/export', asyncHandler(async (req, res) => {
 }));
 
 
-router.get('/analytics/executive', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const data = await analyticsPayload(req);
-  sendData(res, normalize({ filters: data.filters, definitions: data.definitions, overview: data.overview, accountsReceivable: data.accountsReceivable, generatedAt: data.generatedAt }));
+router.get('/analytics/executive', asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req, ['dashboard.executive.view']);
+  sendData(res, normalize({ currency: data.currency, filters: data.filters, definitions: data.definitions, overview: data.overview, accountsReceivable: data.accountsReceivable, generatedAt: data.generatedAt }));
 }));
 
-router.get('/analytics/branches', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const data = await analyticsPayload(req);
-  sendData(res, normalize({ filters: data.filters, branchPerformance: data.branchPerformance, generatedAt: data.generatedAt }));
+router.get('/analytics/branches', asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req, ['dashboard.executive.view']);
+  sendData(res, normalize({ currency: data.currency, filters: data.filters, branchPerformance: data.branchPerformance, generatedAt: data.generatedAt }));
 }));
 
-router.get('/analytics/technicians', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const data = await analyticsPayload(req);
-  sendData(res, normalize({ filters: data.filters, technicianProductivity: data.technicianProductivity, generatedAt: data.generatedAt }));
+router.get('/analytics/technicians', asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req, ['dashboard.executive.view']);
+  sendData(res, normalize({ currency: data.currency, filters: data.filters, technicianProductivity: data.technicianProductivity, generatedAt: data.generatedAt }));
 }));
 
-router.get('/analytics/quote-to-cash', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const data = await analyticsPayload(req);
-  sendData(res, normalize({ filters: data.filters, quoteToCash: data.quoteToCash, generatedAt: data.generatedAt }));
+router.get('/analytics/quote-to-cash', asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req, ['dashboard.executive.view']);
+  sendData(res, normalize({ currency: data.currency, filters: data.filters, quoteToCash: data.quoteToCash, generatedAt: data.generatedAt }));
 }));
 
-router.get('/analytics/contracts-sla', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const data = await analyticsPayload(req);
-  sendData(res, normalize({ filters: data.filters, contractsSla: data.contractsSla, generatedAt: data.generatedAt }));
+router.get('/analytics/contracts-sla', asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req, ['dashboard.executive.view']);
+  sendData(res, normalize({ currency: data.currency, filters: data.filters, contractsSla: data.contractsSla, generatedAt: data.generatedAt }));
 }));
 
-router.get('/analytics/inventory-procurement', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  const data = await analyticsPayload(req);
-  sendData(res, normalize({ filters: data.filters, inventoryProcurement: data.inventoryProcurement, generatedAt: data.generatedAt }));
+router.get('/analytics/inventory-procurement', asyncHandler(async (req, res) => {
+  const data = await analyticsPayload(req, ['dashboard.executive.view']);
+  sendData(res, normalize({ currency: data.currency, filters: data.filters, inventoryProcurement: data.inventoryProcurement, generatedAt: data.generatedAt }));
 }));
 
 router.get('/analytics/export.csv', requireRole(...adminRoles), asyncHandler(async (req, res) => {
   const section = String(req.query.section || 'executive');
-  if (!['executive', 'branches', 'technicians', 'quote-to-cash', 'inventory'].includes(section)) throw new AppError(400, 'Unsupported analytics export section.');
-  const data = await analyticsPayload(req);
+  const permissionMap = {
+    executive: ['dashboard.executive.view'],
+    branches: ['dashboard.executive.view'],
+    technicians: ['dashboard.executive.view'],
+    'quote-to-cash': ['dashboard.executive.view'],
+    inventory: ['dashboard.executive.view']
+  };
+  if (!permissionMap[section]) throw new AppError(400, 'That report cannot be downloaded.');
+  await requirePermission(req, 'finance.exports.manage');
+  const data = await analyticsPayload(req, permissionMap[section]);
   await audit(req, 'EXPORT', 'EnterpriseAnalytics', section, { section, startDate: data.filters.startDate, endDate: data.filters.endDate, branchId: data.filters.branchId });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="fieldcore-${section}-analytics.csv"`);
@@ -4921,7 +5068,6 @@ router.get('/analytics/export.csv', requireRole(...adminRoles), asyncHandler(asy
 }));
 
 router.post('/analytics/report-schedules', requireRole(...adminRoles), asyncHandler(async (req, res) => {
-  await requirePermission(req, 'report.enterprise.view');
   const schedule = {
     id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
     companyId: req.companyId,
@@ -4933,8 +5079,17 @@ router.post('/analytics/report-schedules', requireRole(...adminRoles), asyncHand
     deliveryStatus: 'CONFIGURED_NOT_SENT',
     createdAt: new Date().toISOString()
   };
-  if (!['executive', 'branches', 'technicians', 'quote-to-cash', 'contracts-sla', 'inventory-procurement'].includes(schedule.reportKey)) throw new AppError(400, 'Unsupported scheduled report.');
-  if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(schedule.cadence)) throw new AppError(400, 'Unsupported report cadence.');
+  const permissionMap = {
+    executive: ['dashboard.executive.view'],
+    branches: ['dashboard.executive.view'],
+    technicians: ['dashboard.executive.view'],
+    'quote-to-cash': ['dashboard.executive.view'],
+    'contracts-sla': ['dashboard.executive.view'],
+    'inventory-procurement': ['dashboard.executive.view']
+  };
+  if (!permissionMap[schedule.reportKey]) throw new AppError(400, 'That report cannot be scheduled.');
+  await requireAnyPermission(req, permissionMap[schedule.reportKey]);
+  if (!['DAILY', 'WEEKLY', 'MONTHLY'].includes(schedule.cadence)) throw new AppError(400, 'Choose daily, weekly, or monthly.');
   await audit(req, 'CREATE', 'ReportSchedule', schedule.id, { reportKey: schedule.reportKey, cadence: schedule.cadence, recipients: schedule.recipients.length, filters: schedule.filters });
   sendData(res, normalize(schedule), 201);
 }));
@@ -6966,7 +7121,8 @@ router.post('/jobs', requireRole(...adminRoles), validate(jobSchema), asyncHandl
       { job: fakeJob }
     );
 
-    const canOverride = adminRoles.includes(req.user.role) && (req.body.adminOverride || conflictCheck.settings.allowOverbooking);
+    if (req.body.adminOverride) await requirePermission(req, 'schedule.override');
+    const canOverride = Boolean(conflictCheck.settings.allowOverbooking || req.body.adminOverride);
 
     if (conflictCheck.hasConflict && !canOverride) {
       throw new AppError(409, 'Schedule conflict detected', { conflicts: conflictCheck.conflicts });

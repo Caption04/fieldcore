@@ -35,6 +35,7 @@ const SAFE_USER_SELECT = {
   updatedAt: true,
   twoFactorEnabled: true,
   mustResetPassword: true,
+  fullBusinessAccess: true,
   disabledAt: true,
   lockedUntil: true,
   passwordChangedAt: true
