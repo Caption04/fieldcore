@@ -28,12 +28,99 @@
     return ({ COMPANY: 'Whole company', BRANCH: 'Selected branches', TEAM: 'Selected teams', SELF: 'Own work only' })[type] || 'Whole company';
   }
 
-  function appLabel(role) {
-    return role === 'WORKER' ? 'Field work' : 'Office work';
-  }
+  const permissionLabels = {
+    'dashboard.operational.view': 'View work summary',
+    'dashboard.financial.view': 'View money summary',
+    'dashboard.executive.view': 'View owner summary',
+    'customers.view': 'View customers',
+    'customers.create': 'Add customers',
+    'customers.edit': 'Edit customers',
+    'customers.delete': 'Delete customers',
+    'jobs.view': 'View jobs',
+    'jobs.create': 'Add jobs',
+    'jobs.edit': 'Edit jobs',
+    'jobs.assign': 'Assign jobs',
+    'jobs.cancel': 'Cancel jobs',
+    'jobs.review': 'Review jobs',
+    'job.reassign.after_dispatch': 'Move jobs after dispatch',
+    'schedule.view': 'View the schedule',
+    'schedule.manage': 'Change the schedule',
+    'schedule.override': 'Override schedule warnings',
+    'workers.view': 'View workers',
+    'workers.manage': 'Manage workers',
+    'workers.location.view': 'View worker locations',
+    'teams.manage': 'Manage teams',
+    'bookings.view': 'View booking requests',
+    'bookings.manage': 'Manage booking requests',
+    'quotes.view': 'View quotes',
+    'quotes.create': 'Create quotes',
+    'quotes.edit': 'Edit quotes',
+    'quotes.send': 'Send quotes',
+    'quote.discount.approve': 'Approve quote discounts',
+    'invoices.view': 'View invoices',
+    'invoices.create': 'Create invoices',
+    'invoices.edit': 'Edit invoices',
+    'invoices.send': 'Send invoices',
+    'invoice.void': 'Cancel invoices',
+    'invoice.discount.approve': 'Approve invoice discounts',
+    'payments.view': 'View payments',
+    'payments.manage': 'Manage payments',
+    'payment.refund': 'Approve refunds',
+    'finance.reports.view': 'View money reports',
+    'settings.finance.manage': 'Change money settings',
+    'finance.exports.manage': 'Download money reports',
+    'finance.integrations.manage': 'Manage accounting links',
+    'inventory.view': 'View stock',
+    'inventory.manage': 'Manage stock',
+    'stock.adjust': 'Change stock counts',
+    'purchaseRequest.create': 'Ask to buy stock',
+    'purchaseRequest.approve': 'Approve stock requests',
+    'purchaseOrder.manage': 'Manage purchase orders',
+    'purchaseOrder.send': 'Send purchase orders',
+    'purchaseOrder.approve': 'Approve purchase orders',
+    'company.settings.view': 'View company settings',
+    'company.settings.manage': 'Change company settings',
+    'company.branding.manage': 'Change company brand',
+    'members.view': 'View company members',
+    'members.invite': 'Invite members',
+    'members.manage': 'Manage members',
+    'roles.manage': 'Manage roles',
+    'permissions.manage': 'Change member access',
+    'subscription.view': 'View the FieldCore plan',
+    'subscription.manage': 'Change the FieldCore plan',
+    'security.view': 'View account security',
+    'security.manage': 'Change security settings',
+    'audit.view': 'View account activity',
+    'integration.view': 'View connected apps',
+    'integration.manage': 'Manage connected apps',
+    'branch.view': 'View branches',
+    'branch.manage': 'Manage branches',
+    'team.view': 'View teams',
+    'team.manage': 'Manage teams',
+    'approval.policy.manage': 'Set approval rules',
+    'approval.request.decide': 'Approve requests',
+    'report.enterprise.view': 'View advanced reports',
+    'mobile.sync.manage': 'Manage worker app sync',
+    'contract.automation.manage': 'Manage contract rules',
+    'contract.sla.override': 'Override service deadlines'
+  };
+
+  const permissionGroupLabels = {
+    Dashboard: 'Home',
+    Workforce: 'Workers',
+    Scheduling: 'Schedule',
+    Finance: 'Money',
+    Inventory: 'Stock',
+    Company: 'Company settings',
+    People: 'Team access',
+    Subscription: 'FieldCore plan',
+    Integrations: 'Connected apps',
+    Organization: 'Branches and teams',
+    Enterprise: 'Advanced tools'
+  };
 
   function permissionLabel(key) {
-    return key.split('.').slice(1).join(' ').replace(/\b\w/g, (char) => char.toUpperCase());
+    return permissionLabels[key] || key.split('.').slice(1).join(' ').replace(/\b\w/g, (char) => char.toUpperCase());
   }
 
   function selectedPermissions(root) {
@@ -42,7 +129,7 @@
 
   function permissionEditor(selected = []) {
     const selectedSet = new Set(selected);
-    return Object.entries(data.permissions.groups || {}).map(([group, keys]) => `<fieldset class="permission-group"><legend>${escapeHtml(group)} <button type="button" data-select-category>Select all</button></legend>${keys.map((key) => `<label><input type="checkbox" name="permissions" value="${escapeHtml(key)}"${selectedSet.has(key) ? ' checked' : ''}> ${escapeHtml(permissionLabel(key))}</label>`).join('')}</fieldset>`).join('');
+    return Object.entries(data.permissions.groups || {}).map(([group, keys]) => `<fieldset class="permission-group"><legend>${escapeHtml(permissionGroupLabels[group] || group)} <button type="button" data-select-category>Select all</button></legend>${keys.map((key) => `<label><input type="checkbox" name="permissions" value="${escapeHtml(key)}"${selectedSet.has(key) ? ' checked' : ''}> ${escapeHtml(permissionLabel(key))}</label>`).join('')}</fieldset>`).join('');
   }
 
   function bindCategoryButtons(root) {
@@ -66,7 +153,7 @@
   }
 
   function savedRoleOptions(selectedId = '') {
-    return `<option value="">Start from scratch</option>${data.templates.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === selectedId ? ' selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}`;
+    return `<option value="">Create a new role</option>${data.templates.map((item) => `<option value="${escapeHtml(item.id)}"${item.id === selectedId ? ' selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}`;
   }
 
   function setPermissionBoxes(permissionWrap, permissions) {
@@ -90,7 +177,7 @@
     function applyTemplate(template) {
       if (!template) return;
       form.roleName.value = template.name || '';
-      form.systemRole.value = template.systemRole === 'WORKER' ? 'WORKER' : 'ADMIN';
+      form.fieldWorker.checked = template.systemRole === 'WORKER';
       form.scopeType.value = template.defaultScopeType || 'COMPANY';
       fullAccess.checked = false;
       setPermissionBoxes(permissionWrap, template.defaultPermissions || []);
@@ -121,13 +208,12 @@
     document.querySelector('[data-members-body]').innerHTML = data.members.map((member) => `<tr>
       <td><strong>${escapeHtml(member.name)}</strong></td>
       <td>${escapeHtml(member.email)}</td>
-      <td>${escapeHtml(member.jobTitle || '—')}</td>
-      <td>${escapeHtml(member.role === 'OWNER' ? 'Owner' : member.roleTemplate && member.roleTemplate.name || member.jobTitle || 'Custom role')}</td>
+      <td>${escapeHtml(member.role === 'OWNER' ? 'Owner' : member.roleTemplate && member.roleTemplate.name || member.jobTitle || 'Team member')}</td>
       <td>${escapeHtml(accessLabel(member.accessScope && member.accessScope.type || member.defaultScopeType || 'COMPANY'))}</td>
       <td><span class="badge ${member.disabledAt ? 'orange' : 'green'}">${member.disabledAt ? 'Disabled' : 'Active'}</span></td>
       <td>${escapeHtml(formatDate(member.lastActivityAt))}</td>
       <td><div class="row-actions">${member.role === 'OWNER' ? '<span class="muted">Protected owner</span>' : `${can('permissions.manage') ? `<button class="secondary-button compact" type="button" data-edit-member="${escapeHtml(member.id)}">Edit</button>` : ''}${can('members.manage') ? `<button class="secondary-button compact${member.disabledAt ? '' : ' danger'}" type="button" data-toggle-member="${escapeHtml(member.id)}">${member.disabledAt ? 'Reactivate' : 'Disable'}</button>` : ''}`}</div></td>
-    </tr>`).join('') || '<tr><td colspan="8">No members found.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="7">No members found.</td></tr>';
 
     document.querySelectorAll('[data-edit-member]').forEach((button) => button.onclick = () => openMember(data.members.find((member) => member.id === button.dataset.editMember)));
     document.querySelectorAll('[data-toggle-member]').forEach((button) => button.onclick = () => toggleMember(data.members.find((member) => member.id === button.dataset.toggleMember)));
@@ -138,12 +224,11 @@
     document.querySelector('[data-invite-count]').textContent = pending.length;
     document.querySelector('[data-invites-body]').innerHTML = pending.map((invite) => `<tr>
       <td><strong>${escapeHtml(invite.email)}</strong></td>
-      <td>${escapeHtml(invite.jobTitle || '—')}</td>
-      <td>${escapeHtml(invite.roleTemplate && invite.roleTemplate.name || invite.jobTitle || 'Custom role')}</td>
+      <td>${escapeHtml(invite.roleTemplate && invite.roleTemplate.name || invite.jobTitle || 'Team member')}</td>
       <td>${escapeHtml(accessLabel(invite.scopeType))}</td>
       <td>${escapeHtml(formatDate(invite.expiresAt))}</td>
       <td><div class="row-actions"><button class="secondary-button compact" type="button" data-resend="${escapeHtml(invite.id)}">Resend</button><button class="secondary-button compact danger" type="button" data-revoke="${escapeHtml(invite.id)}">Revoke</button></div></td>
-    </tr>`).join('') || '<tr><td colspan="6">No pending invitations.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5">No pending invitations.</td></tr>';
     document.querySelectorAll('[data-resend]').forEach((button) => button.onclick = () => resendInvitation(data.invitations.find((invite) => invite.id === button.dataset.resend)));
     document.querySelectorAll('[data-revoke]').forEach((button) => button.onclick = async () => {
       const confirmed = await window.FieldCoreUI.confirm({
@@ -158,7 +243,7 @@
 
   function renderTemplates() {
     const target = document.querySelector('[data-role-template-grid]');
-    target.innerHTML = data.templates.map((template) => `<article class="mini-card role-template-card"><div><strong>${escapeHtml(template.name)}</strong><span>${escapeHtml(template.description || 'Saved company role')}</span></div><div><span class="badge blue">${escapeHtml(appLabel(template.systemRole))}</span><small>${escapeHtml(accessLabel(template.defaultScopeType))}</small></div></article>`).join('') || '<div class="empty-state compact-empty"><strong>No saved roles yet</strong><p>Create a role here or while inviting a member.</p></div>';
+    target.innerHTML = data.templates.map((template) => `<article class="mini-card role-template-card"><div><strong>${escapeHtml(template.name)}</strong><span>${escapeHtml(template.description || 'Saved role')}</span></div><div><small>${escapeHtml(accessLabel(template.defaultScopeType))} access</small></div></article>`).join('') || '<div class="empty-state compact-empty"><strong>No saved roles yet</strong><p>Create a role here or while inviting a member.</p></div>';
   }
 
   function renderTeams() {
@@ -209,19 +294,26 @@
   }
 
   function roleAndAccessFields() {
-    return `<div class="field span-2"><label>Use a saved role <span class="optional-label">Optional</span></label><select name="roleTemplateId">${savedRoleOptions()}</select></div>
-      <div class="field"><label>Role name</label><input name="roleName" required minlength="2" placeholder="e.g. Operations Manager"></div>
-      <div class="field"><label>Uses FieldCore for</label><select name="systemRole" required><option value="ADMIN">Office work</option><option value="WORKER">Field work</option></select></div>
-      <label class="checkbox-field span-2"><input name="fullAccess" type="checkbox"> Give access to all company tools <span class="muted">(not ownership)</span></label>
-      <div class="permission-help span-2"><strong>What can they do?</strong><span>Choose the parts of FieldCore they can use.</span></div>
+    return `<div class="field span-2"><label>Use a role template</label><select name="roleTemplateId">${savedRoleOptions()}</select><small>Pick a saved role, or create a new one.</small></div>
+      <div class="field span-2"><label>Role</label><input name="roleName" required minlength="2" placeholder="e.g. Operations Manager"></div>
+      <label class="member-choice span-2">
+        <input name="fieldWorker" type="checkbox">
+        <span class="member-choice-box" aria-hidden="true"></span>
+        <span class="member-choice-copy"><strong>Works in the field</strong><small>Turn this on if they will use the worker app to complete jobs.</small></span>
+      </label>
+      <label class="member-choice span-2">
+        <input name="fullAccess" type="checkbox">
+        <span class="member-choice-box" aria-hidden="true"></span>
+        <span class="member-choice-copy"><strong>Give access to all company tools</strong><small class="ownership-note"><em>*Not Ownership*</em></small></span>
+      </label>
+      <div class="permission-help span-2"><strong>Choose what they can use</strong><span>Select the tools this role needs.</span></div>
       <div class="permission-editor span-2" data-permission-editor></div>
-      <div class="field span-2 access-area-field"><label>Which work can they see?</label><select name="scopeType"><option value="COMPANY">All company work</option><option value="BRANCH">Work in selected branches</option><option value="TEAM">Work for selected teams</option><option value="SELF">Only work assigned to them</option></select><small>This does not add tools. It only limits which jobs, customers, and workers they can see.</small></div>
+      <div class="field span-2 access-area-field"><label>Which work can they see?</label><select name="scopeType"><option value="COMPANY">All company work</option><option value="BRANCH">Work in selected branches</option><option value="TEAM">Work for selected teams</option><option value="SELF">Only work assigned to them</option></select><small>This only limits the jobs, customers, and workers they can see.</small></div>
       <div class="field span-2" data-scope-picker hidden></div>`;
   }
 
   function accessFormHtml(submitLabel) {
     return `<form data-access-form class="form-grid">
-      <div class="field span-2"><label>Job title</label><input name="jobTitle" required minlength="2"></div>
       ${roleAndAccessFields()}
       <p class="fc-form-error span-2" data-form-error hidden></p>
       <div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">${escapeHtml(submitLabel)}</button></div>
@@ -231,10 +323,10 @@
   function readAccessBody(form) {
     const values = new FormData(form);
     return {
-      jobTitle: String(values.get('jobTitle') || '').trim(),
+      jobTitle: String(values.get('roleName') || '').trim(),
       roleName: String(values.get('roleName') || '').trim(),
       roleTemplateId: values.get('roleTemplateId') || undefined,
-      systemRole: values.get('systemRole') || 'ADMIN',
+      systemRole: values.get('fieldWorker') === 'on' ? 'WORKER' : 'ADMIN',
       fullAccess: values.get('fullAccess') === 'on',
       permissions: selectedPermissions(form),
       scopeType: values.get('scopeType'),
@@ -262,9 +354,8 @@
   }
 
   function openInvite() {
-    const { modal, close } = modalShell('Invite member', 'They will receive a secure link to set their password.', `<form data-invite-member-form class="form-grid">
-      <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required></div>
-      <div class="field"><label>Job title</label><input name="jobTitle" required minlength="2" placeholder="e.g. Operations Manager"></div>
+    const { modal, close } = modalShell('Invite member', 'They will get a secure link to set their password.', `<form data-invite-member-form class="form-grid">
+      <div class="field span-2"><label>Email</label><input name="email" type="email" autocomplete="email" required></div>
       ${roleAndAccessFields()}
       <p class="fc-form-error span-2" data-form-error hidden></p>
       <div class="fc-form-actions span-2"><button class="secondary-button" type="button" data-close>Cancel</button><button class="primary-button" type="submit">Send invitation</button></div>
@@ -293,11 +384,10 @@
     if (!member || member.role === 'OWNER') return;
     const { modal, close } = modalShell(`Edit ${member.name}`, 'Change what this person can use.', accessFormHtml('Save changes'));
     const form = modal.querySelector('form');
-    form.jobTitle.value = member.jobTitle || '';
     const companyTemplate = data.templates.find((template) => member.roleTemplate && template.id === member.roleTemplate.id);
     form.roleTemplateId.value = companyTemplate ? companyTemplate.id : '';
     form.roleName.value = member.roleTemplate && member.roleTemplate.name || member.jobTitle || 'Team member';
-    form.systemRole.value = member.role === 'WORKER' ? 'WORKER' : 'ADMIN';
+    form.fieldWorker.checked = member.role === 'WORKER';
     form.scopeType.value = member.accessScope && member.accessScope.type || member.defaultScopeType || 'COMPANY';
     const scopeIds = form.scopeType.value === 'BRANCH' ? member.accessScope && member.accessScope.branchIds || [] : form.scopeType.value === 'TEAM' ? member.accessScope && member.accessScope.teamIds || [] : [];
     bindAccessForm(modal, form, { permissions: member.effectivePermissions || [], scopeIds });
@@ -339,9 +429,13 @@
 
   function openRole() {
     const { modal, close } = modalShell('Create role', 'Save a role your company can use again.', `<form class="form-grid" data-role-form>
-      <div class="field"><label>Role name</label><input name="name" required minlength="2" placeholder="e.g. Night Shift Supervisor"></div>
-      <div class="field"><label>Uses FieldCore for</label><select name="systemRole"><option value="ADMIN">Office work</option><option value="WORKER">Field work</option></select></div>
-      <div class="field span-2"><label>Short description <span class="optional-label">Optional</span></label><input name="description" maxlength="500" placeholder="What this role is responsible for"></div>
+      <div class="field span-2"><label>Role</label><input name="name" required minlength="2" placeholder="e.g. Night Shift Supervisor"></div>
+      <label class="member-choice span-2">
+        <input name="fieldWorker" type="checkbox">
+        <span class="member-choice-box" aria-hidden="true"></span>
+        <span class="member-choice-copy"><strong>Works in the field</strong><small>Turn this on if this role will use the worker app to complete jobs.</small></span>
+      </label>
+      <div class="field span-2"><label>Short note <span class="optional-label">Optional</span></label><input name="description" maxlength="500" placeholder="What this role does"></div>
       <div class="field span-2"><label>Access area</label><select name="defaultScopeType"><option value="COMPANY">Whole company</option><option value="BRANCH">Selected branches</option><option value="TEAM">Selected teams</option><option value="SELF">Only their own work</option></select></div>
       <div class="permission-help span-2"><strong>Choose what they can do</strong></div>
       <div class="span-2 permission-editor" data-permission-editor>${permissionEditor([])}</div>
@@ -355,7 +449,7 @@
       const errorNode = modal.querySelector('[data-form-error]');
       errorNode.hidden = true;
       if (!validateForm(form)) return;
-      const body = { name: form.name.value.trim(), description: form.description.value.trim() || undefined, systemRole: form.systemRole.value, defaultScopeType: form.defaultScopeType.value, permissions: selectedPermissions(form) };
+      const body = { name: form.name.value.trim(), description: form.description.value.trim() || undefined, systemRole: form.fieldWorker.checked ? 'WORKER' : 'ADMIN', defaultScopeType: form.defaultScopeType.value, permissions: selectedPermissions(form) };
       try {
         await api('/role-templates', { method: 'POST', body: JSON.stringify(body) });
         close();

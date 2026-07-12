@@ -118,6 +118,8 @@ FieldCore is built for busy field-service businesses, not software engineers.
 
 Assume many users have ordinary everyday computer skills and little patience for technical language. User-facing copy should usually be understandable at roughly a Grade 5 reading level.
 
+Do not ask for two fields that mean the same thing to the user. For company members, use one clear **Role** field instead of separate **Job title** and **Role name** fields. Hide internal account classifications behind plain questions tied to a real task, such as whether the person completes jobs in the field.
+
 Do not expose backend or infrastructure concepts merely because they exist. Keep technical implementation details in the backend, logs, support tools, or a deliberately hidden advanced/internal area.
 
 Avoid normal customer-facing labels or panels such as:
