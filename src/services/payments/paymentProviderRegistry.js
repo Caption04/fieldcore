@@ -35,20 +35,12 @@ function verifySharedSecretWebhook(connection, req) {
 
 function safePaymentProviderConnection(connection) {
   if (!connection) return connection;
-  const config = { ...(connection.config || {}) };
-  for (const key of Object.keys(config)) if (/secret|token|key|password/i.test(key)) config[key] = '[redacted]';
   return {
     id: connection.id,
-    companyId: connection.companyId,
     provider: connection.provider,
-    displayName: connection.displayName || null,
     status: connection.status,
-    config,
     lastTestedAt: connection.lastTestedAt || null,
-    lastTestStatus: connection.lastTestStatus || null,
-    lastTestError: connection.lastTestError || null,
-    createdAt: connection.createdAt,
-    updatedAt: connection.updatedAt
+    summary: connection.status === 'ACTIVE' ? 'Ready' : connection.status === 'CONFIGURED' ? 'Details saved' : connection.status === 'ERROR' ? 'Needs attention' : 'Not set up'
   };
 }
 

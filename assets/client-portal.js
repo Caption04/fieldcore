@@ -55,8 +55,8 @@ function statusClass(status) {
   return "gray";
 }
 
-function badge(status) {
-  return '<span class="status-pill ' + statusClass(status) + '">' + (status || "NEW").replace(/_/g, " ") + "</span>";
+function badge(status, label) {
+  return '<span class="status-pill ' + statusClass(status) + '">' + escapeHtml(label || (status || "NEW").replace(/_/g, " ")) + "</span>";
 }
 
 function escapeHtml(value) {
@@ -327,7 +327,7 @@ function invoicePaymentOptionsHtml(item) {
 }
 
 function invoiceDetail(item) {
-  return '<div class="client-detail-stack">' + badge(item.status) + lineItemsHtml(item.lineItems) + '<div class="client-total-row"><span>Total</span><strong>' + money(item.total) + '</strong></div><div class="client-total-row"><span>Paid</span><strong>' + money(item.amountPaid) + '</strong></div><div class="client-total-row"><span>Due</span><strong>' + money(item.amountDue) + '</strong></div>' + invoicePaymentOptionsHtml(item) + '<h3>Payments</h3>' + (item.payments && item.payments.length ? item.payments.map(function(payment) { return listCard({ title: money(payment.amount), meta: [payment.method, date(payment.receivedAt || payment.createdAt)].filter(Boolean).join(" - "), badge: badge(payment.status) }); }).join("") : empty("No payments recorded yet.")) + '<h3>Receipts</h3>' + (item.receipts && item.receipts.length ? item.receipts.map(function(receipt) { return listCard({ id: receipt.id, title: receipt.receiptNumber || "Receipt", meta: money(receipt.amount), badge: badge("PAID"), action: "receipt-detail" }); }).join("") : empty("No receipts yet.")) + "</div>";
+  return '<div class="client-detail-stack">' + badge(item.status) + lineItemsHtml(item.lineItems) + '<div class="client-total-row"><span>Total</span><strong>' + money(item.total) + '</strong></div><div class="client-total-row"><span>Paid</span><strong>' + money(item.amountPaid) + '</strong></div><div class="client-total-row"><span>Due</span><strong>' + money(item.amountDue) + '</strong></div>' + invoicePaymentOptionsHtml(item) + '<h3>Payments</h3>' + (item.payments && item.payments.length ? item.payments.map(function(payment) { return listCard({ title: money(payment.amount), meta: [payment.method, payment.refundedAmount ? "Refunded " + money(payment.refundedAmount) : null, date(payment.receivedAt || payment.createdAt)].filter(Boolean).join(" - "), badge: badge(payment.status, payment.statusLabel) }); }).join("") : empty("No payments recorded yet.")) + '<h3>Receipts</h3>' + (item.receipts && item.receipts.length ? item.receipts.map(function(receipt) { return listCard({ id: receipt.id, title: receipt.receiptNumber || "Receipt", meta: money(receipt.amount), badge: badge("PAID"), action: "receipt-detail" }); }).join("") : empty("No receipts yet.")) + "</div>";
 }
 
 function jobDetail(item) {
@@ -534,7 +534,10 @@ document.addEventListener("click", async function(event) {
       button.disabled = true;
       try {
         const result = await api("/client/invoices/" + id + "/pay-online", { method: "POST", body: JSON.stringify({}) });
-        if (!result.checkoutUrl) throw new Error("Payment link was not returned.");
+        if (result.pending || !result.checkoutUrl) {
+          notify(result.message || "We are still preparing this payment. Please try again shortly.", "info");
+          return;
+        }
         window.location.href = result.checkoutUrl;
       } catch (error) {
         button.disabled = false;

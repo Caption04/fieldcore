@@ -9,6 +9,7 @@ process.env.JWT_SECRET = 'test-secret-that-is-not-the-dev-fallback';
 process.env.NODE_ENV = 'test';
 process.env.NOTIFICATION_CHANNELS = 'EMAIL,WHATSAPP';
 process.env.WHATSAPP_DEFAULT_COUNTRY_CODE = '1';
+process.env.INTEGRATION_SECRET_MASTER_KEY_BASE64 = Buffer.alloc(32, 7).toString('base64');
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value, (key, item) => typeof item === 'bigint' ? Number(item) : item));
@@ -309,6 +310,14 @@ function createMockPrisma(seed) {
     return result;
   }
 
+  function enrichPaymentLink(link, include) {
+    if (!link) return null;
+    const result = { ...link };
+    if (include && include.invoice) result.invoice = enrichInvoice(invoiceById(link.invoiceId), include.invoice.include || include.invoice);
+    if (include && include.providerConnection) result.providerConnection = clone(db.paymentProviderConnections.find((item) => item.id === link.providerConnectionId)) || null;
+    return result;
+  }
+
   function enrichBookingRequest(request, include) {
     if (!request) return null;
     const result = { ...request };
@@ -431,6 +440,31 @@ function createMockPrisma(seed) {
     };
   }
 
+  const paymentModel = makeModel('payments', enrichPayment);
+  const paymentCreate = paymentModel.create;
+  paymentModel.create = (args) => {
+    const data = args.data || {};
+    if (data.paymentLinkId && db.payments.some((item) => item.companyId === data.companyId && item.paymentLinkId === data.paymentLinkId)) {
+      const error = new Error('Unique constraint failed on payment link');
+      error.code = 'P2002';
+      error.meta = { target: ['companyId', 'paymentLinkId'] };
+      return Promise.reject(error);
+    }
+    return paymentCreate(args);
+  };
+  const providerEventModel = makeModel('paymentProviderEvents');
+  const providerEventCreate = providerEventModel.create;
+  providerEventModel.create = (args) => {
+    const data = args.data || {};
+    if (data.eventId && db.paymentProviderEvents.some((item) => item.companyId === data.companyId && item.provider === data.provider && item.eventId === data.eventId)) {
+      const error = new Error('Unique constraint failed on provider event');
+      error.code = 'P2002';
+      error.meta = { target: ['companyId', 'provider', 'eventId'] };
+      return Promise.reject(error);
+    }
+    return providerEventCreate(args);
+  };
+
   return {
     user: {
       findMany: (args = {}) => Promise.resolve(list('users', args, (user) => args.select ? applySelect(enrichUser(user), args.select) : enrichUser(user))),
@@ -505,8 +539,8 @@ function createMockPrisma(seed) {
     financeExportLog: makeModel('financeExportLogs'),
     paymentProviderConnection: makeModel('paymentProviderConnections'),
     paymentProviderSecret: makeModel('paymentProviderSecrets'),
-    paymentLink: makeModel('paymentLinks'),
-    paymentProviderEvent: makeModel('paymentProviderEvents'),
+    paymentLink: makeModel('paymentLinks', enrichPaymentLink),
+    paymentProviderEvent: providerEventModel,
     paymentReconciliationItem: makeModel('paymentReconciliationItems'),
     paymentRefund: makeModel('paymentRefunds'),
     creditNote: makeModel('creditNotes'),
@@ -568,7 +602,7 @@ function createMockPrisma(seed) {
     invoiceStatusHistory: makeModel('invoiceStatusHistories'),
     receipt: makeModel('receipts', enrichReceipt),
     scheduleItem: makeModel('scheduleItems'),
-    payment: makeModel('payments', enrichPayment),
+    payment: paymentModel,
     workerLocation: makeModel('workerLocations'),
     jobProofPhoto: makeModel('jobProofPhotos'),
     jobCompletionLocation: makeModel('jobCompletionLocations'),
@@ -3607,12 +3641,10 @@ test('task9 payment link webhook confirms trusted provider payment idempotently'
   const admin = await login(app, 'admin-a@test.local');
   const client = await loginClient(app);
 
-  const provider = await admin.post('/api/payment-providers').send({ provider: 'MOCK', status: 'ACTIVE', displayName: 'Mock collections', config: { mockMode: true, webhookSecret: 'pay-whsec' }, secrets: { apiKey: 'pay-secret' } });
-  assert.equal(provider.status, 201);
-  assert.equal(JSON.stringify(provider.body).includes('pay-secret'), false);
-  assert.equal(JSON.stringify(provider.body).includes('pay-whsec'), false);
+  const providerId = 'mock-provider-webhook';
+  app.locals.testDb.paymentProviderConnections.push({ id: providerId, companyId: 'company-a', provider: 'MOCK', status: 'ACTIVE', config: { mockMode: true, webhookSecret: 'pay-whsec' }, createdAt: new Date().toISOString() });
 
-  const link = await admin.post('/api/invoices/invoice-a/payment-links').send({ providerConnectionId: provider.body.data.id, amount: 40, currency: 'USD', sendNow: true });
+  const link = await admin.post('/api/invoices/invoice-a/payment-links').send({ providerConnectionId: providerId, amount: 40, currency: 'USD', sendNow: true });
   assert.equal(link.status, 201);
   assert.equal(link.body.data.status, 'SENT');
   assert.equal(link.body.data.checkoutUrl.includes(link.body.data.reference), true);
@@ -3626,7 +3658,7 @@ test('task9 payment link webhook confirms trusted provider payment idempotently'
   assert.equal(good.status, 200);
   assert.equal(app.locals.testDb.payments.filter((payment) => payment.providerPaymentId === 'pp-good').length, 1);
   assert.equal(app.locals.testDb.receipts.some((receipt) => receipt.paymentId === app.locals.testDb.payments.find((payment) => payment.providerPaymentId === 'pp-good').id), true);
-  assert.equal(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue, 60);
+  assert.equal(Number(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue), 60);
 
   const duplicate = await request(app).post('/api/payment-webhooks/MOCK/company-a').set('x-fieldcore-payment-signature', signature).send(payload);
   assert.equal(duplicate.status, 200);
@@ -3636,6 +3668,134 @@ test('task9 payment link webhook confirms trusted provider payment idempotently'
   const clientInvoice = await client.get('/api/client/invoices/invoice-a');
   assert.equal(clientInvoice.status, 200);
   assert.equal(clientInvoice.body.data.paymentLinks.some((item) => item.status === 'PAID'), true);
+});
+
+test('regional payment connection API rejects technical config and requires complete credentials', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+
+  const malicious = await admin.post('/api/payment-providers').send({ provider: 'PAYNOW', config: { endpoint: 'http://127.0.0.1/steal' }, secrets: { integrationId: 'merchant-a', integrationKey: 'key-a' } });
+  assert.equal(malicious.status, 400);
+  assert.equal(app.locals.testDb.paymentProviderConnections.length, 0);
+
+  const empty = await admin.post('/api/payment-providers').send({ provider: 'PAYNOW', secrets: {} });
+  assert.equal(empty.status, 422);
+  const partial = await admin.post('/api/payment-providers').send({ provider: 'PAYNOW', secrets: { integrationId: 'merchant-a' } });
+  assert.equal(partial.status, 422);
+
+  const saved = await admin.post('/api/payment-providers').send({ provider: 'PAYNOW', secrets: { integrationId: 'merchant-a', integrationKey: 'key-a' } });
+  assert.equal(saved.status, 201);
+  assert.equal(saved.body.data.provider, 'PAYNOW');
+  assert.equal(saved.body.data.status, 'CONFIGURED');
+  for (const field of ['config', 'companyId', 'displayName', 'lastTestStatus', 'lastTestError', 'mode', 'endpoint']) assert.equal(field in saved.body.data, false);
+
+  const updated = await admin.patch(`/api/payment-providers/${saved.body.data.id}`).send({ secrets: { integrationId: '', integrationKey: 'key-b' } });
+  assert.equal(updated.status, 200);
+  assert.equal(Object.keys(updated.body.data.secretMasks).sort().join(','), 'INTEGRATIONID,INTEGRATIONKEY');
+});
+
+test('expired Ozow payment redirect stops before provider form generation', async () => {
+  const app = await buildApp();
+  app.locals.testDb.paymentProviderConnections.push({ id: 'ozow-expired', companyId: 'company-a', provider: 'OZOW', status: 'CONFIGURED' });
+  app.locals.testDb.paymentLinks.push({ id: 'expired-link', companyId: 'company-a', invoiceId: 'invoice-a', providerConnectionId: 'ozow-expired', provider: 'OZOW', status: 'PENDING', amount: 10, currency: 'ZAR', reference: 'EXPIRED-OZOW', expiresAt: new Date(Date.now() - 60000).toISOString() });
+  const response = await request(app).get('/api/public/payments/EXPIRED-OZOW/ozow/redirect');
+  assert.equal(response.status, 410);
+  assert.match(response.text, /payment link has expired/i);
+  assert.equal(app.locals.testDb.paymentLinks.find((item) => item.id === 'expired-link').status, 'EXPIRED');
+});
+
+test('Paynow refunded state blocks a stale paid update and keeps one financial credit', async () => {
+  const app = await buildApp();
+  const connection = { id: 'paynow-state', companyId: 'company-a', provider: 'PAYNOW', status: 'CONFIGURED' };
+  app.locals.testDb.paymentProviderConnections.push(connection);
+  app.locals.testDb.paymentLinks.push({ id: 'state-link', companyId: 'company-a', invoiceId: 'invoice-a', providerConnectionId: connection.id, provider: 'PAYNOW', status: 'PENDING', amount: 40, currency: 'USD', reference: 'STATE-LINK', providerStatus: 'CREATED' });
+  const { paymentProviderTestHooks } = require('../src/routes/api');
+
+  await paymentProviderTestHooks.applyPaymentProviderUpdate({ connection, parsed: { eventId: 'state-paid', reference: 'STATE-LINK', providerPaymentId: 'state-payment', amount: 40, currency: 'USD', providerStatus: 'PAID' }, eventId: 'state-paid', database: require('../src/db').prisma });
+  await paymentProviderTestHooks.applyPaymentProviderUpdate({ connection, parsed: { eventId: 'state-refunded', reference: 'STATE-LINK', providerPaymentId: 'state-payment', amount: 40, currency: 'USD', providerStatus: 'REFUNDED' }, eventId: 'state-refunded', database: require('../src/db').prisma });
+  const stale = await paymentProviderTestHooks.applyPaymentProviderUpdate({ connection, parsed: { eventId: 'state-stale-paid', reference: 'STATE-LINK', providerPaymentId: 'state-payment', amount: 40, currency: 'USD', providerStatus: 'PAID' }, eventId: 'state-stale-paid', database: require('../src/db').prisma });
+
+  assert.equal(stale.ignored, true);
+  assert.equal(app.locals.testDb.payments.filter((item) => item.paymentLinkId === 'state-link').length, 1);
+  assert.equal(app.locals.testDb.payments.find((item) => item.paymentLinkId === 'state-link').status, 'REFUNDED');
+  assert.equal(app.locals.testDb.paymentRefunds.filter((item) => item.paymentId === app.locals.testDb.payments.find((payment) => payment.paymentLinkId === 'state-link').id).length, 1);
+  assert.equal(app.locals.testDb.paymentLinks.find((item) => item.id === 'state-link').status, 'REFUNDED');
+  assert.equal(app.locals.testDb.paymentLinks.find((item) => item.id === 'state-link').providerStatus, 'REFUNDED');
+  assert.equal(Number(app.locals.testDb.invoices.find((item) => item.id === 'invoice-a').balanceDue), 100);
+});
+
+test('authoritative settled and disputed updates keep explicit payment and link states', async () => {
+  const app = await buildApp();
+  const paynow = { id: 'paynow-final-state', companyId: 'company-a', provider: 'PAYNOW', status: 'CONFIGURED' };
+  const ozow = { id: 'ozow-final-state', companyId: 'company-a', provider: 'OZOW', status: 'CONFIGURED' };
+  app.locals.testDb.paymentProviderConnections.push(paynow, ozow);
+  app.locals.testDb.paymentLinks.push(
+    { id: 'delivered-link', companyId: 'company-a', invoiceId: 'invoice-a', providerConnectionId: paynow.id, provider: 'PAYNOW', status: 'PENDING', amount: 10, currency: 'USD', reference: 'DELIVERED-LINK', providerStatus: 'CREATED' },
+    { id: 'dispute-first-link', companyId: 'company-a', invoiceId: 'invoice-a', providerConnectionId: paynow.id, provider: 'PAYNOW', status: 'PENDING', amount: 10, currency: 'USD', reference: 'DISPUTE-FIRST', providerStatus: 'CREATED' },
+    { id: 'ozow-complete-link', companyId: 'company-a', invoiceId: 'invoice-a', providerConnectionId: ozow.id, provider: 'OZOW', status: 'PENDING', amount: 10, currency: 'ZAR', reference: 'OZOW-COMPLETE', providerStatus: 'PENDING' }
+  );
+  const { paymentProviderTestHooks } = require('../src/routes/api');
+  const apply = (connection, parsed) => paymentProviderTestHooks.applyPaymentProviderUpdate({ connection, parsed, eventId: parsed.eventId, database: require('../src/db').prisma });
+
+  const delivered = await apply(paynow, { eventId: 'delivered-event', reference: 'DELIVERED-LINK', providerPaymentId: 'delivered-payment', amount: 10, currency: 'USD', providerStatus: 'DELIVERED' });
+  assert.equal(delivered.link.status, 'PAID');
+  assert.equal(app.locals.testDb.payments.find((item) => item.paymentLinkId === 'delivered-link').status, 'CONFIRMED');
+
+  const disputed = await apply(paynow, { eventId: 'delivered-disputed', reference: 'DELIVERED-LINK', providerPaymentId: 'delivered-payment', amount: 10, currency: 'USD', providerStatus: 'DISPUTED' });
+  assert.equal(disputed.link.status, 'DISPUTED');
+  assert.equal(app.locals.testDb.payments.find((item) => item.paymentLinkId === 'delivered-link').status, 'DISPUTED');
+
+  const disputeFirst = await apply(paynow, { eventId: 'dispute-first-event', reference: 'DISPUTE-FIRST', providerPaymentId: 'dispute-first-payment', amount: 10, currency: 'USD', providerStatus: 'DISPUTED' });
+  assert.equal(disputeFirst.link.status, 'DISPUTED');
+  assert.equal(app.locals.testDb.payments.some((item) => item.paymentLinkId === 'dispute-first-link'), false);
+  const stalePaid = await apply(paynow, { eventId: 'dispute-first-stale-paid', reference: 'DISPUTE-FIRST', providerPaymentId: 'dispute-first-payment', amount: 10, currency: 'USD', providerStatus: 'PAID' });
+  assert.equal(stalePaid.ignored, true);
+  assert.equal(stalePaid.link.status, 'DISPUTED');
+
+  const complete = await apply(ozow, { eventId: 'ozow-complete-event', reference: 'OZOW-COMPLETE', providerPaymentId: 'ozow-payment', amount: 10, currency: 'ZAR', providerStatus: 'COMPLETE' });
+  assert.equal(complete.link.status, 'PAID');
+  assert.equal(app.locals.testDb.receipts.filter((item) => ['delivered-link', 'ozow-complete-link'].includes(app.locals.testDb.payments.find((payment) => payment.id === item.paymentId).paymentLinkId)).length, 2);
+});
+
+test('payment P2002 recovery recognizes only expected event and linked-payment constraints', async () => {
+  await buildApp();
+  const { paymentProviderTestHooks } = require('../src/routes/api');
+  assert.equal(paymentProviderTestHooks.expectedPaymentUniqueRace({ code: 'P2002', meta: { target: ['companyId', 'provider', 'eventId'] } }), true);
+  assert.equal(paymentProviderTestHooks.expectedPaymentUniqueRace({ code: 'P2002', meta: { target: ['companyId', 'paymentLinkId'] } }), true);
+  assert.equal(paymentProviderTestHooks.expectedPaymentUniqueRace({ code: 'P2002', meta: { target: ['companyId', 'providerConnectionId', 'providerRefundId'] } }), true);
+  assert.equal(paymentProviderTestHooks.expectedPaymentUniqueRace({ code: 'P2002', meta: { target: ['receiptNumber'] } }), false);
+  assert.equal(paymentProviderTestHooks.expectedPaymentUniqueRace({ code: 'P2002' }), false);
+});
+
+test('payment provider FAILED event resumes and completes on a valid retry', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const providerId = 'mock-provider-retry';
+  app.locals.testDb.paymentProviderConnections.push({ id: providerId, companyId: 'company-a', provider: 'MOCK', status: 'ACTIVE', config: { mockMode: true, webhookSecret: 'retry-secret' }, createdAt: new Date().toISOString() });
+  const link = await admin.post('/api/invoices/invoice-a/payment-links').send({ providerConnectionId: providerId, amount: 40, currency: 'USD', sendNow: true });
+  const payload = { eventId: 'retry-event', eventType: 'payment.succeeded', reference: link.body.data.reference, providerPaymentId: 'retry-payment', amount: 40, currency: 'USD', status: 'CONFIRMED' };
+  app.locals.testDb.paymentProviderEvents.push({ id: 'failed-event', companyId: 'company-a', providerConnectionId: providerId, provider: 'MOCK', eventId: payload.eventId, status: 'FAILED', signatureValid: true, errorMessage: 'Earlier processing failed' });
+  const signature = crypto.createHmac('sha256', 'retry-secret').update(JSON.stringify(payload)).digest('hex');
+  const response = await request(app).post('/api/payment-webhooks/MOCK/company-a').set('x-fieldcore-payment-signature', signature).send(payload);
+  assert.equal(response.status, 200);
+  assert.equal(app.locals.testDb.paymentProviderEvents.find((event) => event.id === 'failed-event').status, 'PROCESSED');
+  assert.equal(app.locals.testDb.payments.filter((payment) => payment.paymentLinkId === link.body.data.id).length, 1);
+});
+
+test('concurrent exact payment callbacks create one event and one payment credit', async () => {
+  const app = await buildApp();
+  const admin = await login(app, 'admin-a@test.local');
+  const providerId = 'mock-provider-race';
+  app.locals.testDb.paymentProviderConnections.push({ id: providerId, companyId: 'company-a', provider: 'MOCK', status: 'ACTIVE', config: { mockMode: true, webhookSecret: 'race-secret' }, createdAt: new Date().toISOString() });
+  const link = await admin.post('/api/invoices/invoice-a/payment-links').send({ providerConnectionId: providerId, amount: 40, currency: 'USD', sendNow: true });
+  const payload = { eventId: 'race-event', eventType: 'payment.succeeded', reference: link.body.data.reference, providerPaymentId: 'race-payment', amount: 40, currency: 'USD', status: 'CONFIRMED' };
+  const signature = crypto.createHmac('sha256', 'race-secret').update(JSON.stringify(payload)).digest('hex');
+  const send = () => request(app).post('/api/payment-webhooks/MOCK/company-a').set('x-fieldcore-payment-signature', signature).send(payload);
+  const responses = await Promise.all([send(), send()]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.equal(app.locals.testDb.paymentProviderEvents.filter((event) => event.eventId === payload.eventId).length, 1);
+  assert.equal(app.locals.testDb.payments.filter((payment) => payment.paymentLinkId === link.body.data.id).length, 1);
+  assert.equal(Number(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue), 60);
 });
 
 test('task9 reconciliation reminders and deposit schedule gate are safe', async () => {
@@ -3656,7 +3816,7 @@ test('task9 reconciliation reminders and deposit schedule gate are safe', async 
   const matched = await admin.post('/api/reconciliation/items/' + imported.body.data.id + '/match').send({ invoiceId: 'invoice-a', method: 'BANK_TRANSFER' });
   assert.equal(matched.status, 200);
   assert.equal(matched.body.data.item.status, 'MATCHED');
-  assert.equal(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue, 70);
+  assert.equal(Number(app.locals.testDb.invoices.find((invoice) => invoice.id === 'invoice-a').balanceDue), 70);
   assert.equal((await admin.post('/api/reconciliation/items/' + imported.body.data.id + '/match').send({ invoiceId: 'invoice-a', method: 'BANK_TRANSFER' })).status, 409);
 
   const reminder = await admin.post('/api/collections/invoices/invoice-a/reminders').send({ channel: 'EMAIL' });
@@ -3686,9 +3846,12 @@ test('task9 refunds create approval-gated refund records and credit notes', asyn
   assert.equal(app.locals.testDb.paymentRefunds.some((refund) => refund.paymentId === paymentId && refund.status === 'APPROVAL_REQUIRED'), true);
 
   app.locals.testDb.approvalPolicies = [];
-  const provider = await owner.post('/api/payment-providers').send({ provider: 'MOCK', status: 'ACTIVE', config: { mockMode: true } });
-  assert.equal(provider.status, 201);
-  const refund = await owner.post('/api/payments/' + paymentId + '/refund').send({ amount: 10, reason: 'Approved refund', providerConnectionId: provider.body.data.id });
+  const directPayment = await owner.post('/api/invoices/invoice-a/payments').send({ amount: 10, method: 'CASH', status: 'CONFIRMED', reference: 'cash-refund-direct' });
+  assert.equal(directPayment.status, 201);
+  const directPaymentId = app.locals.testDb.payments.find((item) => item.reference === 'cash-refund-direct').id;
+  const providerId = 'mock-provider-refund';
+  app.locals.testDb.paymentProviderConnections.push({ id: providerId, companyId: 'company-a', provider: 'MOCK', status: 'ACTIVE', config: { mockMode: true }, createdAt: new Date().toISOString() });
+  const refund = await owner.post('/api/payments/' + directPaymentId + '/refund').send({ amount: 10, reason: 'Approved refund', providerConnectionId: providerId });
   assert.equal(refund.status, 200);
   assert.equal(refund.body.data.status, 'REFUNDED');
   assert.equal(app.locals.testDb.creditNotes.some((note) => note.invoiceId === 'invoice-a' && note.status === 'ISSUED'), true);

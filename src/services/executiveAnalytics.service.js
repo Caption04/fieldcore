@@ -211,11 +211,13 @@ async function buildExecutiveAnalytics(companyId, query = {}, options = {}) {
   const where = { companyId };
   const now = new Date();
 
-  const [branches, jobsRaw, invoicesRaw, paymentsRaw, quotesRaw, bookingsRaw, workers, approvals, items, stocks, purchaseRequests, purchaseOrders, contracts, jobParts, proofPhotos, signatures, completionLocations] = await Promise.all([
+  const [branches, jobsRaw, invoicesRaw, paymentsRaw, refundsRaw, unappliedCreditsRaw, quotesRaw, bookingsRaw, workers, approvals, items, stocks, purchaseRequests, purchaseOrders, contracts, jobParts, proofPhotos, signatures, completionLocations] = await Promise.all([
     prisma.branch.findMany({ where, orderBy: { createdAt: 'desc' } }),
     prisma.job.findMany({ where, include: { customer: true, service: true, worker: { include: { user: { select: { id: true, name: true, email: true, role: true } } } }, proofPhotos: true, signature: true, completionLocation: true }, orderBy: { createdAt: 'desc' }, take: 2000 }),
     prisma.invoice.findMany({ where, include: { customer: true, service: true, payments: true }, orderBy: { createdAt: 'desc' }, take: 2000 }),
     prisma.payment.findMany({ where, orderBy: { createdAt: 'desc' }, take: 2000 }),
+    prisma.paymentRefund.findMany({ where: { companyId, status: 'REFUNDED' }, orderBy: { createdAt: 'desc' }, take: 5000 }),
+    prisma.unappliedCustomerCredit ? prisma.unappliedCustomerCredit.findMany({ where: { companyId, status: { in: ['OPEN', 'LOCKED'] } }, orderBy: { createdAt: 'desc' }, take: 5000 }) : Promise.resolve([]),
     prisma.quote.findMany({ where: { companyId, deletedAt: null }, include: { customer: true, service: true }, orderBy: { createdAt: 'desc' }, take: 2000 }),
     prisma.bookingRequest.findMany({ where, orderBy: { createdAt: 'desc' }, take: 2000 }),
     prisma.workerProfile.findMany({ where, include: { user: { select: { id: true, name: true, email: true, role: true } }, branch: true }, orderBy: { createdAt: 'desc' } }),
@@ -254,7 +256,20 @@ async function buildExecutiveAnalytics(companyId, query = {}, options = {}) {
   const branchScopedContracts = contracts.filter(branchAllowed);
   const branchScopedJobParts = jobParts.filter((part) => jobs.some((job) => job.id === part.jobId));
 
-  const confirmedPayments = payments.filter(isConfirmedPayment);
+  const completedRefundsByPayment = refundsRaw.reduce((map, refund) => {
+    map.set(refund.paymentId, (map.get(refund.paymentId) || 0) + number(refund.amount));
+    return map;
+  }, new Map());
+  const unappliedByPayment = unappliedCreditsRaw.reduce((map, credit) => {
+    map.set(credit.paymentId, (map.get(credit.paymentId) || 0) + number(credit.amount));
+    return map;
+  }, new Map());
+  const netPaymentAmount = (payment) => isConfirmedPayment(payment)
+    ? Math.max(0, number(payment.amount)
+      - (completedRefundsByPayment.get(payment.id) || 0)
+      - (unappliedByPayment.get(payment.id) || 0))
+    : 0;
+  const confirmedPayments = payments.filter((payment) => netPaymentAmount(payment) > 0);
   const rangePayments = confirmedPayments.filter((payment) => inRange(paymentDate(payment), range));
   const periodJobs = jobs.filter((job) => inRange(jobCompletedDate(job), range) || inRange(job.scheduledStart, range));
   const completedJobs = jobs.filter((job) => String(job.status || '').toUpperCase() === 'COMPLETED' && inRange(job.completedAt || job.updatedAt || job.createdAt, range));
@@ -306,7 +321,7 @@ async function buildExecutiveAnalytics(companyId, query = {}, options = {}) {
     return {
       branchId,
       branchName: branchName(branchMap.get(branchId)),
-      revenue: sum(branchPayments.filter((payment) => inRange(paymentDate(payment), range)).map((payment) => payment.amount)),
+      revenue: sum(branchPayments.filter((payment) => inRange(paymentDate(payment), range)).map((payment) => netPaymentAmount(payment))),
       completedJobs: branchJobs.filter((job) => String(job.status || '').toUpperCase() === 'COMPLETED' && inRange(job.completedAt || job.updatedAt || job.createdAt, range)).length,
       overdueJobs: branchJobs.filter((job) => !['COMPLETED', 'CANCELLED'].includes(String(job.status || '').toUpperCase()) && job.scheduledEnd && date(job.scheduledEnd) < now).length,
       slaBreaches: branchJobs.filter((job) => String(job.slaStatus || '').toUpperCase() === 'BREACHED').length,
@@ -375,7 +390,7 @@ async function buildExecutiveAnalytics(companyId, query = {}, options = {}) {
       return invoice && contractJobs.some((job) => job.id === invoice.jobId);
     });
     const partsCost = branchScopedJobParts.filter((part) => contractJobs.some((job) => job.id === part.jobId)).reduce((total, part) => total + number(part.unitCost || part.item && part.item.unitCost) * number(part.quantityUsed || part.quantity || 0), 0);
-    const revenue = sum(contractPayments.map((payment) => payment.amount));
+    const revenue = sum(contractPayments.map((payment) => netPaymentAmount(payment)));
     return { contractId: contract.id, contractNumber: contract.contractNumber || contract.name, revenue, partsCost, grossMarginEstimate: revenue - partsCost };
   });
 
@@ -407,8 +422,8 @@ async function buildExecutiveAnalytics(companyId, query = {}, options = {}) {
     mtdRevenue: sum(confirmedPayments.filter((payment) => {
       const paid = date(paymentDate(payment));
       return paid && paid.getMonth() === now.getMonth() && paid.getFullYear() === now.getFullYear();
-    }).map((payment) => payment.amount)),
-    periodRevenue: sum(rangePayments.map((payment) => payment.amount)),
+    }).map((payment) => netPaymentAmount(payment))),
+    periodRevenue: sum(rangePayments.map((payment) => netPaymentAmount(payment))),
     outstandingInvoices: outstandingInvoices.length,
     outstandingInvoiceTotal: sum(outstandingInvoices.map(invoiceBalance)),
     overdueInvoices: overdueInvoices.length,

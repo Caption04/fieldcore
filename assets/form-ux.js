@@ -92,6 +92,8 @@
     if (processedPasswordInputs.has(input)) return;
     processedPasswordInputs.add(input);
 
+    if (input.dataset.noPasswordToggle === 'true' || input.dataset.secretInput === 'true') return;
+
     if (input.autocomplete === 'new-password') input.minLength = Math.max(input.minLength || 0, NEW_PASSWORD_MIN_LENGTH);
 
     let shell = input.closest('.password-input-shell');

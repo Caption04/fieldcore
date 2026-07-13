@@ -18,7 +18,10 @@
         "db:reset:sa": "node scripts/full-system-reset.js SA --yes",
         "dev:zw": "node scripts/run-region-server.js ZW",
         "dev:sa": "node scripts/run-region-server.js SA",
-        "db:baseline:migrations": "node scripts/baseline-prisma-migrations.js"
+        "db:baseline:migrations": "node scripts/baseline-prisma-migrations.js",
+        "payments:migration-preflight": "node scripts/preflight-regional-payment-migration.js",
+        "package:safe": "node scripts/package-safe-source.js",
+        "test:payments:postgres": "node scripts/run-payment-postgres-tests.js"
     },
     "dependencies": {
         "@prisma/client": "^5.22.0",

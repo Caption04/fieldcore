@@ -40,6 +40,22 @@ app.use(
 );
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(cors({ origin: clientOrigin, credentials: true }));
+app.use((req, res, next) => {
+  if (/^\/api\/(payment-webhooks|payment-return)\//.test(req.path)) {
+    const length = Number(req.headers['content-length'] || 0);
+    if (Number.isFinite(length) && length > 32 * 1024) {
+      return res.status(413).json({ ok: false, error: { message: 'Payment response is too large.' } });
+    }
+  }
+  return next();
+});
+const paymentFormParser = express.urlencoded({
+  extended: false,
+  limit: '32kb',
+  parameterLimit: 64,
+  verify: (req, _res, buffer) => { req.rawFormBody = buffer.toString('utf8'); }
+});
+app.use((req, res, next) => /^\/api\/(payment-webhooks|payment-return)\//.test(req.path) ? paymentFormParser(req, res, next) : next());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(cookieParser());
@@ -57,6 +73,7 @@ const authLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDO
 const publicBookingLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_PUBLIC_WINDOW_MS || 15 * 60 * 1000), limit: Number(process.env.RATE_LIMIT_PUBLIC_BOOKING_MAX || 30), message: 'Too many public requests. Try again later.' });
 const trackingLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_TRACKING_WINDOW_MS || 15 * 60 * 1000), limit: Number(process.env.RATE_LIMIT_TRACKING_MAX || 20), message: 'Too many tracking attempts. Try again later.' });
 const uploadLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_UPLOAD_WINDOW_MS || 15 * 60 * 1000), limit: Number(process.env.RATE_LIMIT_UPLOAD_MAX || 60), message: 'Too many uploads. Try again later.' });
+const paymentCallbackLimiter = limiter({ windowMs: Number(process.env.RATE_LIMIT_PAYMENT_CALLBACK_WINDOW_MS || 60 * 1000), limit: Number(process.env.RATE_LIMIT_PAYMENT_CALLBACK_MAX || 180), message: 'Too many payment updates. Try again shortly.' });
 
 const publicHtmlPages = new Set([
   'login.html',
@@ -229,6 +246,8 @@ app.use('/api/client/auth/register', authLimiter);
 app.use('/api/client/auth/forgot-password', authLimiter);
 app.use('/api/public/booking-requests/track', trackingLimiter);
 app.use('/api/public/booking-requests', publicBookingLimiter);
+app.use('/api/payment-webhooks', paymentCallbackLimiter);
+app.use('/api/payment-return', paymentCallbackLimiter);
 app.use('/api/jobs', (req, res, next) => {
   if (req.method === 'POST' && /\/(proof-photos|signature|completion-location)$/.test(req.path)) return uploadLimiter(req, res, next);
   return next();

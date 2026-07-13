@@ -109,6 +109,7 @@ enum PaymentStatus {
   PENDING
   CONFIRMED
   FAILED
+  DISPUTED
   REFUNDED
 }
 
@@ -139,6 +140,8 @@ enum PaymentLinkStatus {
   OPENED
   PENDING
   PAID
+  REFUNDED
+  DISPUTED
   EXPIRED
   CANCELLED
   FAILED
@@ -496,121 +499,124 @@ enum ApprovalStatus {
 }
 
 model Company {
-  id                     String                     @id @default(cuid())
-  name                   String
-  legalName              String?
-  tradingName            String?
-  registrationNumber     String?
-  taxNumber              String?
-  address                String?
-  phone                  String?
-  email                  String?
-  createdAt              DateTime                   @default(now())
-  updatedAt              DateTime                   @updatedAt
-  allowNegativeStock     Boolean                    @default(false)
-  purchaseRequestApprovalThreshold Decimal          @default(1000) @db.Decimal(12, 2)
-  purchaseOrderApprovalThreshold Decimal            @default(2500) @db.Decimal(12, 2)
-  stockAdjustmentApprovalThreshold Decimal          @default(500) @db.Decimal(12, 2)
-  market                 String?
-  verticalKey            String                     @default("generic")
-  teamSizeBand           String?
-  onboardingState        OnboardingState            @default(COMPLETED)
-  users                  User[]
-  customers              Customer[]
-  workers                WorkerProfile[]
-  workerRoles            WorkerRole[]
-  services               Service[]
-  jobs                   Job[]
-  scheduleItems          ScheduleItem[]
-  quotes                 Quote[]
-  invoices               Invoice[]
-  quoteLineItems         QuoteLineItem[]
-  invoiceLineItems       InvoiceLineItem[]
-  payments               Payment[]
-  receipts               Receipt[]
-  paymentProviderConnections PaymentProviderConnection[]
-  paymentProviderSecrets PaymentProviderSecret[]
-  paymentLinks           PaymentLink[]
-  paymentProviderEvents  PaymentProviderEvent[]
-  paymentReconciliationItems PaymentReconciliationItem[]
-  paymentRefunds         PaymentRefund[]
-  creditNotes            CreditNote[]
-  collectionReminderRules CollectionReminderRule[]
-  collectionReminderLogs CollectionReminderLog[]
-  invoiceCounter         CompanyInvoiceCounter?
-  workerLocations        WorkerLocation[]
-  jobProofPhotos         JobProofPhoto[]
-  jobCompletionLocations JobCompletionLocation[]
-  jobSignatures          JobSignature[]
-  auditLogs              AuditLog[]
-  jobActivities          JobActivity[]
-  quoteStatusHistory     QuoteStatusHistory[]
-  invoiceStatusHistory   InvoiceStatusHistory[]
-  branding               CompanyBranding?
-  schedulingSettings     CompanySchedulingSettings?
-  workerAvailabilities   WorkerAvailability[]
-  roleAvailabilities     RoleAvailability[]
-  workerTimeOff          WorkerTimeOff[]
-  scheduleConflicts      ScheduleConflict[]
-  recurringJobRules      RecurringJobRule[]
-  bookingRequests        BookingRequest[]
-  bookingRequestPhotos   BookingRequestPhoto[]
-  clientAccounts         ClientAccount[]
-  customerProperties     CustomerProperty[]
-  notificationLogs       NotificationLog[]
-  integrationConnections IntegrationConnection[]
-  integrationSecrets     IntegrationSecret[]
-  messageLogs            MessageLog[]
-  storageObjects         StorageObject[]
-  storageUsageMonthly    StorageUsageMonthly[]
-  securitySettings       CompanySecuritySettings?
-  userSessions           UserSession[]
-  identityProviderConfigs IdentityProviderConfig[]
-  securityEvents         SecurityEvent[]
-  subscription           CompanySubscription?
-  saasBillingEvents      SaaSBillingEvent[]
-  assets                 Asset[]
-  jobAssets              JobAsset[]
-  serviceContracts       ServiceContract[]
-  serviceContractAssets  ServiceContractAsset[]
-  contractServiceLines   ContractServiceLine[]
-  suppliers              Supplier[]
-  stockLocations         StockLocation[]
-  inventoryItems         InventoryItem[]
-  inventoryStocks        InventoryStock[]
-  stockMovements         StockMovement[]
-  jobPartUsages          JobPartUsage[]
-  purchaseRequests       PurchaseRequest[]
-  purchaseRequestLines   PurchaseRequestLine[]
-  purchaseOrders         PurchaseOrder[]
-  purchaseOrderLines     PurchaseOrderLine[]
-  financeSettings        CompanyFinanceSettings?
-  financeIntegrations    FinanceIntegration[]
-  financeIntegrationSecrets FinanceIntegrationSecret[]
-  financeMappings        FinanceMapping[]
-  financeSyncLogs        FinanceSyncLog[]
-  financeWebhookEvents   FinanceWebhookEvent[]
-  externalRecordLinks    ExternalRecordLink[]
-  financeExportLogs      FinanceExportLog[]
-  workerDevices          WorkerDevice[]
-  offlineActionQueues    OfflineActionQueue[]
-  jobChecklistTemplates JobChecklistTemplate[]
-  jobChecklistItems     JobChecklistItem[]
-  jobChecklistAnswers   JobChecklistAnswer[]
-  branches               Branch[]
-  approvalPolicies       ApprovalPolicy[]
-  approvalRequests       ApprovalRequest[]
-  permissionRoleTemplates PermissionRoleTemplate[]
-  userPermissionOverrides UserPermissionOverride[]
-  userBranchAccesses      UserBranchAccess[]
-  userAccessGrants        UserAccessGrant[]
-  teams                   Team[]
-  teamMemberships         TeamMembership[]
-  memberInvitations       MemberInvitation[]
-  implementationSettings  CompanyImplementationSettings?
-  onboardingPackages      CompanyOnboardingPackage[]
-  dataImportJobs          DataImportJob[]
-  dataImportRowErrors     DataImportRowError[]
+  id                                String                             @id @default(cuid())
+  name                              String
+  legalName                         String?
+  tradingName                       String?
+  registrationNumber                String?
+  taxNumber                         String?
+  address                           String?
+  phone                             String?
+  email                             String?
+  createdAt                         DateTime                           @default(now())
+  updatedAt                         DateTime                           @updatedAt
+  allowNegativeStock                Boolean                            @default(false)
+  purchaseRequestApprovalThreshold  Decimal                            @default(1000) @db.Decimal(12, 2)
+  purchaseOrderApprovalThreshold    Decimal                            @default(2500) @db.Decimal(12, 2)
+  stockAdjustmentApprovalThreshold  Decimal                            @default(500) @db.Decimal(12, 2)
+  market                            String?
+  verticalKey                       String                             @default("generic")
+  teamSizeBand                      String?
+  onboardingState                   OnboardingState                    @default(COMPLETED)
+  users                             User[]
+  customers                         Customer[]
+  workers                           WorkerProfile[]
+  workerRoles                       WorkerRole[]
+  services                          Service[]
+  jobs                              Job[]
+  scheduleItems                     ScheduleItem[]
+  quotes                            Quote[]
+  invoices                          Invoice[]
+  quoteLineItems                    QuoteLineItem[]
+  invoiceLineItems                  InvoiceLineItem[]
+  payments                          Payment[]
+  receipts                          Receipt[]
+  paymentProviderConnections        PaymentProviderConnection[]
+  paymentProviderSecrets            PaymentProviderSecret[]
+  paymentProviderCredentialVersions PaymentProviderCredentialVersion[]
+  paymentLinks                      PaymentLink[]
+  paymentProviderEvents             PaymentProviderEvent[]
+  paymentReconciliationItems        PaymentReconciliationItem[]
+  paymentRefunds                    PaymentRefund[]
+  creditNotes                       CreditNote[]
+  unappliedCustomerCredits          UnappliedCustomerCredit[]
+  paymentNotificationOutbox         PaymentNotificationOutbox[]
+  collectionReminderRules           CollectionReminderRule[]
+  collectionReminderLogs            CollectionReminderLog[]
+  invoiceCounter                    CompanyInvoiceCounter?
+  workerLocations                   WorkerLocation[]
+  jobProofPhotos                    JobProofPhoto[]
+  jobCompletionLocations            JobCompletionLocation[]
+  jobSignatures                     JobSignature[]
+  auditLogs                         AuditLog[]
+  jobActivities                     JobActivity[]
+  quoteStatusHistory                QuoteStatusHistory[]
+  invoiceStatusHistory              InvoiceStatusHistory[]
+  branding                          CompanyBranding?
+  schedulingSettings                CompanySchedulingSettings?
+  workerAvailabilities              WorkerAvailability[]
+  roleAvailabilities                RoleAvailability[]
+  workerTimeOff                     WorkerTimeOff[]
+  scheduleConflicts                 ScheduleConflict[]
+  recurringJobRules                 RecurringJobRule[]
+  bookingRequests                   BookingRequest[]
+  bookingRequestPhotos              BookingRequestPhoto[]
+  clientAccounts                    ClientAccount[]
+  customerProperties                CustomerProperty[]
+  notificationLogs                  NotificationLog[]
+  integrationConnections            IntegrationConnection[]
+  integrationSecrets                IntegrationSecret[]
+  messageLogs                       MessageLog[]
+  storageObjects                    StorageObject[]
+  storageUsageMonthly               StorageUsageMonthly[]
+  securitySettings                  CompanySecuritySettings?
+  userSessions                      UserSession[]
+  identityProviderConfigs           IdentityProviderConfig[]
+  securityEvents                    SecurityEvent[]
+  subscription                      CompanySubscription?
+  saasBillingEvents                 SaaSBillingEvent[]
+  assets                            Asset[]
+  jobAssets                         JobAsset[]
+  serviceContracts                  ServiceContract[]
+  serviceContractAssets             ServiceContractAsset[]
+  contractServiceLines              ContractServiceLine[]
+  suppliers                         Supplier[]
+  stockLocations                    StockLocation[]
+  inventoryItems                    InventoryItem[]
+  inventoryStocks                   InventoryStock[]
+  stockMovements                    StockMovement[]
+  jobPartUsages                     JobPartUsage[]
+  purchaseRequests                  PurchaseRequest[]
+  purchaseRequestLines              PurchaseRequestLine[]
+  purchaseOrders                    PurchaseOrder[]
+  purchaseOrderLines                PurchaseOrderLine[]
+  financeSettings                   CompanyFinanceSettings?
+  financeIntegrations               FinanceIntegration[]
+  financeIntegrationSecrets         FinanceIntegrationSecret[]
+  financeMappings                   FinanceMapping[]
+  financeSyncLogs                   FinanceSyncLog[]
+  financeWebhookEvents              FinanceWebhookEvent[]
+  externalRecordLinks               ExternalRecordLink[]
+  financeExportLogs                 FinanceExportLog[]
+  workerDevices                     WorkerDevice[]
+  offlineActionQueues               OfflineActionQueue[]
+  jobChecklistTemplates             JobChecklistTemplate[]
+  jobChecklistItems                 JobChecklistItem[]
+  jobChecklistAnswers               JobChecklistAnswer[]
+  branches                          Branch[]
+  approvalPolicies                  ApprovalPolicy[]
+  approvalRequests                  ApprovalRequest[]
+  permissionRoleTemplates           PermissionRoleTemplate[]
+  userPermissionOverrides           UserPermissionOverride[]
+  userBranchAccesses                UserBranchAccess[]
+  userAccessGrants                  UserAccessGrant[]
+  teams                             Team[]
+  teamMemberships                   TeamMembership[]
+  memberInvitations                 MemberInvitation[]
+  implementationSettings            CompanyImplementationSettings?
+  onboardingPackages                CompanyOnboardingPackage[]
+  dataImportJobs                    DataImportJob[]
+  dataImportRowErrors               DataImportRowError[]
 }
 
 model SaaSPlan {
@@ -695,58 +701,58 @@ model CompanyBranding {
 }
 
 model User {
-  id                          String                  @id @default(cuid())
+  id                          String                   @id @default(cuid())
   companyId                   String
-  email                       String                  @unique
+  email                       String                   @unique
   name                        String
   phone                       String?
   passwordHash                String
-  role                        Role                    @default(WORKER)
+  role                        Role                     @default(WORKER)
   jobTitle                    String?
   roleTemplateId              String?
-  defaultScopeType            AccessScopeType         @default(COMPANY)
-  createdAt                   DateTime                @default(now())
-  updatedAt                   DateTime                @updatedAt
-  company                     Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  roleTemplate                PermissionRoleTemplate? @relation(fields: [roleTemplateId], references: [id], onDelete: SetNull)
+  defaultScopeType            AccessScopeType          @default(COMPANY)
+  createdAt                   DateTime                 @default(now())
+  updatedAt                   DateTime                 @updatedAt
+  company                     Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  roleTemplate                PermissionRoleTemplate?  @relation(fields: [roleTemplateId], references: [id], onDelete: SetNull)
   worker                      WorkerProfile?
   auditLogs                   AuditLog[]
   quoteStatusChanges          QuoteStatusHistory[]
   invoiceStatusChanges        InvoiceStatusHistory[]
   paymentsCreated             Payment[]
   jobActivities               JobActivity[]
-  proofPhotosUploaded         JobProofPhoto[]         @relation("JobProofPhotoUploadedBy")
-  signaturesCaptured          JobSignature[]          @relation("JobSignatureCapturedBy")
-  jobsCompleted               Job[]                   @relation("JobCompletedBy")
+  proofPhotosUploaded         JobProofPhoto[]          @relation("JobProofPhotoUploadedBy")
+  signaturesCaptured          JobSignature[]           @relation("JobSignatureCapturedBy")
+  jobsCompleted               Job[]                    @relation("JobCompletedBy")
   completionLocationsCaptured JobCompletionLocation[]
   storageObjectsUploaded      StorageObject[]
-  stockMovementsCreated       StockMovement[]         @relation("StockMovementCreatedBy")
-  purchaseRequestsCreated     PurchaseRequest[]       @relation("PurchaseRequestRequestedBy")
-  purchaseRequestsApproved    PurchaseRequest[]       @relation("PurchaseRequestApprovedBy")
-  purchaseRequestsRejected    PurchaseRequest[]       @relation("PurchaseRequestRejectedBy")
-  purchaseOrdersApproved      PurchaseOrder[]         @relation("PurchaseOrderApprovedBy")
-  financeExportLogsCreated    FinanceExportLog[]      @relation("FinanceExportLogCreatedBy")
-  financeSyncLogsCreated      FinanceSyncLog[]        @relation("FinanceSyncLogCreatedBy")
+  stockMovementsCreated       StockMovement[]          @relation("StockMovementCreatedBy")
+  purchaseRequestsCreated     PurchaseRequest[]        @relation("PurchaseRequestRequestedBy")
+  purchaseRequestsApproved    PurchaseRequest[]        @relation("PurchaseRequestApprovedBy")
+  purchaseRequestsRejected    PurchaseRequest[]        @relation("PurchaseRequestRejectedBy")
+  purchaseOrdersApproved      PurchaseOrder[]          @relation("PurchaseOrderApprovedBy")
+  financeExportLogsCreated    FinanceExportLog[]       @relation("FinanceExportLogCreatedBy")
+  financeSyncLogsCreated      FinanceSyncLog[]         @relation("FinanceSyncLogCreatedBy")
   workerDevices               WorkerDevice[]
   offlineActionQueues         OfflineActionQueue[]
-  workerDevicesRevoked        WorkerDevice[]          @relation("WorkerDeviceRevokedBy")
-  checklistAnswersCaptured    JobChecklistAnswer[]    @relation("ChecklistAnswerCapturedBy")
-  approvalRequestsMade        ApprovalRequest[]       @relation("ApprovalRequestRequestedBy")
-  approvalRequestsDecided     ApprovalRequest[]       @relation("ApprovalRequestDecidedBy")
+  workerDevicesRevoked        WorkerDevice[]           @relation("WorkerDeviceRevokedBy")
+  checklistAnswersCaptured    JobChecklistAnswer[]     @relation("ChecklistAnswerCapturedBy")
+  approvalRequestsMade        ApprovalRequest[]        @relation("ApprovalRequestRequestedBy")
+  approvalRequestsDecided     ApprovalRequest[]        @relation("ApprovalRequestDecidedBy")
   permissionOverrides         UserPermissionOverride[]
   branchAccesses              UserBranchAccess[]
   accessGrants                UserAccessGrant[]
   teamMemberships             TeamMembership[]
-  invitationsSent             MemberInvitation[]      @relation("MemberInvitationInvitedBy")
-  invitationsAccepted         MemberInvitation[]      @relation("MemberInvitationAcceptedBy")
-  twoFactorEnabled            Boolean                 @default(false)
+  invitationsSent             MemberInvitation[]       @relation("MemberInvitationInvitedBy")
+  invitationsAccepted         MemberInvitation[]       @relation("MemberInvitationAcceptedBy")
+  twoFactorEnabled            Boolean                  @default(false)
   twoFactorSecretHash         String?
   twoFactorRecoveryCodes      Json?
-  failedLoginCount            Int                     @default(0)
+  failedLoginCount            Int                      @default(0)
   lockedUntil                 DateTime?
   disabledAt                  DateTime?
-  mustResetPassword           Boolean                 @default(false)
-  fullBusinessAccess          Boolean                 @default(false)
+  mustResetPassword           Boolean                  @default(false)
+  fullBusinessAccess          Boolean                  @default(false)
   passwordChangedAt           DateTime?
   sessions                    UserSession[]
   securityEvents              SecurityEvent[]
@@ -758,37 +764,37 @@ model User {
 }
 
 model Branch {
-  id               String            @id @default(cuid())
-  companyId        String
-  name             String
-  code             String?
-  country          String?
-  city             String?
-  address          String?
-  timezone         String?
-  active           Boolean           @default(true)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  company          Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  customers        Customer[]
-  properties       CustomerProperty[]
-  workers          WorkerProfile[]
-  jobs             Job[]
-  quotes           Quote[]
-  invoices         Invoice[]
-  payments         Payment[]
-  receipts         Receipt[]
-  assets           Asset[]
-  serviceContracts ServiceContract[]
-  stockLocations   StockLocation[]
-  purchaseRequests PurchaseRequest[]
+  id                   String                @id @default(cuid())
+  companyId            String
+  name                 String
+  code                 String?
+  country              String?
+  city                 String?
+  address              String?
+  timezone             String?
+  active               Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customers            Customer[]
+  properties           CustomerProperty[]
+  workers              WorkerProfile[]
+  jobs                 Job[]
+  quotes               Quote[]
+  invoices             Invoice[]
+  payments             Payment[]
+  receipts             Receipt[]
+  assets               Asset[]
+  serviceContracts     ServiceContract[]
+  stockLocations       StockLocation[]
+  purchaseRequests     PurchaseRequest[]
   purchaseRequestLines PurchaseRequestLine[]
-  purchaseOrders   PurchaseOrder[]
-  approvalPolicies ApprovalPolicy[]
-  approvalRequests ApprovalRequest[]
-  userBranchAccesses UserBranchAccess[]
-  accessGrants       UserAccessGrant[]
-  teams              Team[]
+  purchaseOrders       PurchaseOrder[]
+  approvalPolicies     ApprovalPolicy[]
+  approvalRequests     ApprovalRequest[]
+  userBranchAccesses   UserBranchAccess[]
+  accessGrants         UserAccessGrant[]
+  teams                Team[]
 
   @@unique([companyId, code])
   @@index([companyId, active])
@@ -852,23 +858,22 @@ model ApprovalRequest {
   @@index([companyId, actionKey, status])
 }
 
-
 model PermissionRoleTemplate {
-  id                 String          @id @default(cuid())
+  id                 String             @id @default(cuid())
   companyId          String?
   key                String
   name               String
   description        String?
-  verticalKey        String          @default("generic")
-  systemRole          Role            @default(ADMIN)
-  isSystemTemplate   Boolean         @default(false)
-  isCustom           Boolean         @default(false)
+  verticalKey        String             @default("generic")
+  systemRole         Role               @default(ADMIN)
+  isSystemTemplate   Boolean            @default(false)
+  isCustom           Boolean            @default(false)
   defaultPermissions Json
-  defaultScopeType   AccessScopeType @default(COMPANY)
-  active             Boolean         @default(true)
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  company            Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  defaultScopeType   AccessScopeType    @default(COMPANY)
+  active             Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  company            Company?           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   users              User[]
   invitations        MemberInvitation[]
 
@@ -913,19 +918,19 @@ model UserBranchAccess {
 }
 
 model Team {
-  id          String   @id @default(cuid())
-  companyId   String
-  branchId    String?
-  name        String
-  description String?
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  memberships TeamMembership[]
+  id           String            @id @default(cuid())
+  companyId    String
+  branchId     String?
+  name         String
+  description  String?
+  active       Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  company      Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch       Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  memberships  TeamMembership[]
   accessGrants UserAccessGrant[]
-  jobs        Job[]
+  jobs         Job[]
 
   @@unique([companyId, name])
   @@index([companyId, branchId, active])
@@ -970,36 +975,36 @@ model UserAccessGrant {
 }
 
 model MemberInvitation {
-  id                 String           @id @default(cuid())
-  companyId          String
-  email              String
-  invitedByUserId    String
-  acceptedByUserId   String?
-  roleTemplateId     String?
-  systemRole         Role             @default(ADMIN)
-  jobTitle           String?
-  permissions        Json?
-  fullAccess         Boolean          @default(false)
-  scopeType          AccessScopeType  @default(COMPANY)
-  scopeConfig        Json?
-  tokenHash          String           @unique
-  status             InvitationStatus @default(PENDING)
-  expiresAt          DateTime
-  acceptedAt         DateTime?
-  revokedAt          DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
-  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  invitedBy          User             @relation("MemberInvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
-  acceptedBy         User?            @relation("MemberInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
-  roleTemplate       PermissionRoleTemplate? @relation(fields: [roleTemplateId], references: [id], onDelete: SetNull)
+  id               String                  @id @default(cuid())
+  companyId        String
+  email            String
+  invitedByUserId  String
+  acceptedByUserId String?
+  roleTemplateId   String?
+  systemRole       Role                    @default(ADMIN)
+  jobTitle         String?
+  permissions      Json?
+  fullAccess       Boolean                 @default(false)
+  scopeType        AccessScopeType         @default(COMPANY)
+  scopeConfig      Json?
+  tokenHash        String                  @unique
+  status           InvitationStatus        @default(PENDING)
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  company          Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invitedBy        User                    @relation("MemberInvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+  acceptedBy       User?                   @relation("MemberInvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  roleTemplate     PermissionRoleTemplate? @relation(fields: [roleTemplateId], references: [id], onDelete: SetNull)
 
   @@index([companyId, email, status])
   @@index([companyId, status, expiresAt])
 }
 
 model Customer {
-  id                String             @id @default(cuid())
+  id                String                    @id @default(cuid())
   companyId         String
   branchId          String?
   name              String
@@ -1007,10 +1012,10 @@ model Customer {
   phone             String?
   address           String?
   notes             String?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch            Branch?            @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  company           Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch            Branch?                   @relation(fields: [branchId], references: [id], onDelete: SetNull)
   jobs              Job[]
   quotes            Quote[]
   invoices          Invoice[]
@@ -1022,6 +1027,7 @@ model Customer {
   storageObjects    StorageObject[]
   assets            Asset[]
   serviceContracts  ServiceContract[]
+  unappliedCredits  UnappliedCustomerCredit[]
 
   @@index([companyId])
   @@index([companyId, branchId])
@@ -1092,33 +1098,33 @@ model WorkerRole {
 }
 
 model WorkerProfile {
-  id              String               @id @default(cuid())
-  companyId       String
-  branchId        String?
-  userId          String               @unique
-  roleId          String?
-  title           String?
-  phone           String?
-  active          Boolean              @default(true)
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch          Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role            WorkerRole?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
-  jobs            Job[]
-  jobActivities   JobActivity[]
-  proofPhotos     JobProofPhoto[]
-  scheduleItems   ScheduleItem[]
-  workerLocations WorkerLocation[]
-  availability    WorkerAvailability[]
-  timeOff         WorkerTimeOff[]
-  conflicts       ScheduleConflict[]
-  recurringRules  RecurringJobRule[]
-  stockLocations  StockLocation[]
-  jobPartUsages   JobPartUsage[]
-  workerDevices   WorkerDevice[]
-  offlineActions  OfflineActionQueue[]
+  id               String               @id @default(cuid())
+  companyId        String
+  branchId         String?
+  userId           String               @unique
+  roleId           String?
+  title            String?
+  phone            String?
+  active           Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  company          Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch           Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role             WorkerRole?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  jobs             Job[]
+  jobActivities    JobActivity[]
+  proofPhotos      JobProofPhoto[]
+  scheduleItems    ScheduleItem[]
+  workerLocations  WorkerLocation[]
+  availability     WorkerAvailability[]
+  timeOff          WorkerTimeOff[]
+  conflicts        ScheduleConflict[]
+  recurringRules   RecurringJobRule[]
+  stockLocations   StockLocation[]
+  jobPartUsages    JobPartUsage[]
+  workerDevices    WorkerDevice[]
+  offlineActions   OfflineActionQueue[]
   checklistAnswers JobChecklistAnswer[]
 
   @@index([companyId])
@@ -1127,15 +1133,15 @@ model WorkerProfile {
 }
 
 model Service {
-  id                   String                @id @default(cuid())
+  id                   String                 @id @default(cuid())
   companyId            String
   name                 String
   description          String?
-  price                Decimal               @default(0) @db.Decimal(12, 2)
-  active               Boolean               @default(true)
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
-  company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  price                Decimal                @default(0) @db.Decimal(12, 2)
+  active               Boolean                @default(true)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
   jobs                 Job[]
   quotes               Quote[]
   invoices             Invoice[]
@@ -1151,79 +1157,79 @@ model Service {
 }
 
 model Job {
-  id                   String                 @id @default(cuid())
-  companyId            String
-  branchId             String?
-  teamId               String?
-  customerId           String
-  serviceId            String?
-  workerId             String?
-  title                String
-  description          String?
-  status               JobStatus              @default(NEW)
-  scheduledStart       DateTime?
-  scheduledEnd         DateTime?
-  durationMinutes      Int?
-  travelBufferMinutes  Int?
-  rescheduledFromId    String?
-  recurrenceRuleId     String?
-  contractId           String?
-  arrivedAt            DateTime?
-  startedAt            DateTime?
-  pausedAt             DateTime?
-  resumedAt            DateTime?
-  completedAt          DateTime?
-  responseDueAt        DateTime?
-  completionDueAt      DateTime?
-  slaStatus            JobSlaStatus           @default(NOT_APPLICABLE)
-  slaBreachedAt        DateTime?
-  slaWaivedAt          DateTime?
-  slaWaivedById        String?
-  slaWaiverApprovalId  String?
-  contractLineId       String?
+  id                         String                 @id @default(cuid())
+  companyId                  String
+  branchId                   String?
+  teamId                     String?
+  customerId                 String
+  serviceId                  String?
+  workerId                   String?
+  title                      String
+  description                String?
+  status                     JobStatus              @default(NEW)
+  scheduledStart             DateTime?
+  scheduledEnd               DateTime?
+  durationMinutes            Int?
+  travelBufferMinutes        Int?
+  rescheduledFromId          String?
+  recurrenceRuleId           String?
+  contractId                 String?
+  arrivedAt                  DateTime?
+  startedAt                  DateTime?
+  pausedAt                   DateTime?
+  resumedAt                  DateTime?
+  completedAt                DateTime?
+  responseDueAt              DateTime?
+  completionDueAt            DateTime?
+  slaStatus                  JobSlaStatus           @default(NOT_APPLICABLE)
+  slaBreachedAt              DateTime?
+  slaWaivedAt                DateTime?
+  slaWaivedById              String?
+  slaWaiverApprovalId        String?
+  contractLineId             String?
   preventiveMaintenanceRunId String?
-  contractBillingStatus ContractBillingStatus @default(UNKNOWN)
-  warrantyRelated      Boolean                @default(false)
-  warrantyBillingOverride Boolean              @default(false)
-  warrantyOverrideReason String?
-  completedById        String?
-  completionNotes      String?
-  customerSignatureUrl String?
-  requiresProofPhotos  Boolean                @default(false)
-  minimumProofPhotos   Int                    @default(0)
-  requiresBeforePhotos Boolean                @default(false)
-  requiresAfterPhotos  Boolean                @default(false)
-  requiresSignature    Boolean                @default(false)
-  requiresLocation     Boolean                @default(false)
-  proofCompletedAt     DateTime?
-  signatureCompletedAt DateTime?
-  total                Decimal                @default(0) @db.Decimal(12, 2)
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  company              Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch               Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  team                 Team?                  @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  customer             Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  service              Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  contract             ServiceContract?       @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  worker               WorkerProfile?         @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  completedBy          User?                  @relation("JobCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
-  scheduleItems        ScheduleItem[]
-  quotes               Quote[]
-  invoices             Invoice[]
-  proofPhotos          JobProofPhoto[]
-  completionLocation   JobCompletionLocation?
-  signature            JobSignature?
-  scheduleConflicts    ScheduleConflict[]
-  activities           JobActivity[]
-  bookingRequest       BookingRequest?
-  messageLogs          MessageLog[]
-  storageObjects       StorageObject[]
-  jobAssets            JobAsset[]
-  stockMovements       StockMovement[]
-  jobPartUsages        JobPartUsage[]
-  purchaseRequests     PurchaseRequest[]
-  checklistAnswers     JobChecklistAnswer[]
+  contractBillingStatus      ContractBillingStatus  @default(UNKNOWN)
+  warrantyRelated            Boolean                @default(false)
+  warrantyBillingOverride    Boolean                @default(false)
+  warrantyOverrideReason     String?
+  completedById              String?
+  completionNotes            String?
+  customerSignatureUrl       String?
+  requiresProofPhotos        Boolean                @default(false)
+  minimumProofPhotos         Int                    @default(0)
+  requiresBeforePhotos       Boolean                @default(false)
+  requiresAfterPhotos        Boolean                @default(false)
+  requiresSignature          Boolean                @default(false)
+  requiresLocation           Boolean                @default(false)
+  proofCompletedAt           DateTime?
+  signatureCompletedAt       DateTime?
+  total                      Decimal                @default(0) @db.Decimal(12, 2)
+  createdAt                  DateTime               @default(now())
+  updatedAt                  DateTime               @updatedAt
+  company                    Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch                     Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  team                       Team?                  @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  customer                   Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service                    Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  contract                   ServiceContract?       @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  worker                     WorkerProfile?         @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  completedBy                User?                  @relation("JobCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  scheduleItems              ScheduleItem[]
+  quotes                     Quote[]
+  invoices                   Invoice[]
+  proofPhotos                JobProofPhoto[]
+  completionLocation         JobCompletionLocation?
+  signature                  JobSignature?
+  scheduleConflicts          ScheduleConflict[]
+  activities                 JobActivity[]
+  bookingRequest             BookingRequest?
+  messageLogs                MessageLog[]
+  storageObjects             StorageObject[]
+  jobAssets                  JobAsset[]
+  stockMovements             StockMovement[]
+  jobPartUsages              JobPartUsage[]
+  purchaseRequests           PurchaseRequest[]
+  checklistAnswers           JobChecklistAnswer[]
 
   @@index([companyId])
   @@index([companyId, customerId])
@@ -1269,8 +1275,8 @@ model Asset {
   service               Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   jobAssets             JobAsset[]
   serviceContractAssets ServiceContractAsset[]
-  purchaseRequests PurchaseRequest[]
-  purchaseOrders   PurchaseOrder[]
+  purchaseRequests      PurchaseRequest[]
+  purchaseOrders        PurchaseOrder[]
 
   @@unique([companyId, assetTag])
   @@index([companyId, customerId])
@@ -1297,45 +1303,45 @@ model JobAsset {
 }
 
 model ServiceContract {
-  id                 String                 @id @default(cuid())
-  companyId          String
-  branchId           String?
-  customerId         String
-  propertyId         String?
-  contractNumber     String
-  name               String
-  status             ServiceContractStatus  @default(DRAFT)
-  startDate          DateTime
-  endDate            DateTime?
-  currency           String                 @default("USD")
-  contractValue      Decimal?               @db.Decimal(12, 2)
-  contractMonthlyValue Decimal?             @db.Decimal(12, 2)
-  overageBillingRate Decimal?               @db.Decimal(12, 2)
-  billingInterval    BillingInterval?
-  responseSlaHours   Int?
-  completionSlaHours Int?
-  includedVisits     Int?
-  excludedServices   Json?
-  renewalDate        DateTime?
+  id                     String                 @id @default(cuid())
+  companyId              String
+  branchId               String?
+  customerId             String
+  propertyId             String?
+  contractNumber         String
+  name                   String
+  status                 ServiceContractStatus  @default(DRAFT)
+  startDate              DateTime
+  endDate                DateTime?
+  currency               String                 @default("USD")
+  contractValue          Decimal?               @db.Decimal(12, 2)
+  contractMonthlyValue   Decimal?               @db.Decimal(12, 2)
+  overageBillingRate     Decimal?               @db.Decimal(12, 2)
+  billingInterval        BillingInterval?
+  responseSlaHours       Int?
+  completionSlaHours     Int?
+  includedVisits         Int?
+  excludedServices       Json?
+  renewalDate            DateTime?
   cancellationNoticeDays Int?
-  autoGenerateJobs   Boolean                @default(true)
-  reviewBeforeDispatch Boolean              @default(true)
-  serviceWindowStart String?
-  serviceWindowEnd   String?
-  blackoutDates      Json?
-  notes              String?
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
-  company            Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch             Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  customer           Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  property           CustomerProperty?      @relation(fields: [propertyId], references: [id], onDelete: SetNull)
-  jobs               Job[]
-  assets             ServiceContractAsset[]
-  serviceLines       ContractServiceLine[]
-  checklistTemplates JobChecklistTemplate[]
-  purchaseRequests PurchaseRequest[]
-  purchaseOrders   PurchaseOrder[]
+  autoGenerateJobs       Boolean                @default(true)
+  reviewBeforeDispatch   Boolean                @default(true)
+  serviceWindowStart     String?
+  serviceWindowEnd       String?
+  blackoutDates          Json?
+  notes                  String?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  company                Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch                 Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customer               Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  property               CustomerProperty?      @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  jobs                   Job[]
+  assets                 ServiceContractAsset[]
+  serviceLines           ContractServiceLine[]
+  checklistTemplates     JobChecklistTemplate[]
+  purchaseRequests       PurchaseRequest[]
+  purchaseOrders         PurchaseOrder[]
 
   @@unique([companyId, contractNumber])
   @@index([companyId, customerId])
@@ -1392,23 +1398,21 @@ model ContractServiceLine {
   @@index([companyId, nextDueAt])
 }
 
-
-
 model AssetIncident {
-  id          String              @id @default(cuid())
-  companyId   String
-  assetId     String
-  jobId       String?
-  title       String
-  description String?
-  severity    AssetIncidentSeverity @default(MEDIUM)
-  status      AssetIncidentStatus   @default(OPEN)
-  occurredAt  DateTime              @default(now())
-  resolvedAt  DateTime?
+  id              String                @id @default(cuid())
+  companyId       String
+  assetId         String
+  jobId           String?
+  title           String
+  description     String?
+  severity        AssetIncidentSeverity @default(MEDIUM)
+  status          AssetIncidentStatus   @default(OPEN)
+  occurredAt      DateTime              @default(now())
+  resolvedAt      DateTime?
   technicianNotes String?
-  createdById String?
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  createdById     String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 
   @@index([companyId, assetId])
   @@index([companyId, jobId])
@@ -1416,19 +1420,19 @@ model AssetIncident {
 }
 
 model AssetComplianceDocument {
-  id          String                 @id @default(cuid())
-  companyId   String
-  assetId     String
-  jobId       String?
+  id           String                 @id @default(cuid())
+  companyId    String
+  assetId      String
+  jobId        String?
   documentType ComplianceDocumentType @default(DOCUMENT)
-  title       String
-  url         String
-  filename    String?
-  mimeType    String?
-  notes       String?
-  capturedAt  DateTime?
-  createdById String?
-  createdAt   DateTime               @default(now())
+  title        String
+  url          String
+  filename     String?
+  mimeType     String?
+  notes        String?
+  capturedAt   DateTime?
+  createdById  String?
+  createdAt    DateTime               @default(now())
 
   @@index([companyId, assetId])
   @@index([companyId, jobId])
@@ -1436,16 +1440,16 @@ model AssetComplianceDocument {
 }
 
 model ContractVisitUsage {
-  id            String                @id @default(cuid())
-  companyId     String
-  contractId    String
+  id             String                @id @default(cuid())
+  companyId      String
+  contractId     String
   contractLineId String?
-  jobId         String
-  periodStart   DateTime
-  periodEnd     DateTime
-  billingStatus ContractBillingStatus @default(UNKNOWN)
-  countedVisit  Boolean               @default(true)
-  createdAt     DateTime              @default(now())
+  jobId          String
+  periodStart    DateTime
+  periodEnd      DateTime
+  billingStatus  ContractBillingStatus @default(UNKNOWN)
+  countedVisit   Boolean               @default(true)
+  createdAt      DateTime              @default(now())
 
   @@unique([companyId, contractId, jobId])
   @@index([companyId, contractId, periodStart])
@@ -1454,7 +1458,7 @@ model ContractVisitUsage {
 }
 
 model PreventiveMaintenanceRun {
-  id             String                    @id @default(cuid())
+  id             String                      @id @default(cuid())
   companyId      String
   contractId     String
   contractLineId String
@@ -1463,54 +1467,54 @@ model PreventiveMaintenanceRun {
   dueAt          DateTime
   generatedAt    DateTime?
   skippedReason  String?
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
 
+  @@unique([companyId, contractLineId, dueAt])
   @@index([companyId, contractId])
   @@index([companyId, contractLineId])
   @@index([companyId, status])
-  @@unique([companyId, contractLineId, dueAt])
 }
 
 model Supplier {
-  id             String          @id @default(cuid())
-  companyId      String
-  name           String
-  email          String?
-  phone          String?
-  address        String?
-  taxNumber      String?
-  leadTimeDays   Int?
-  notes          String?
-  active         Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                      String          @id @default(cuid())
+  companyId               String
+  name                    String
+  email                   String?
+  phone                   String?
+  address                 String?
+  taxNumber               String?
+  leadTimeDays            Int?
+  notes                   String?
+  active                  Boolean         @default(true)
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+  company                 Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   preferredInventoryItems InventoryItem[]
-  purchaseOrders PurchaseOrder[]
+  purchaseOrders          PurchaseOrder[]
 
   @@unique([companyId, name])
   @@index([companyId, active])
 }
 
 model StockLocation {
-  id              String            @id @default(cuid())
-  companyId       String
-  branchId        String?
-  name            String
-  type            StockLocationType @default(WAREHOUSE)
-  address         String?
-  workerId        String?
+  id                String            @id @default(cuid())
+  companyId         String
+  branchId          String?
+  name              String
+  type              StockLocationType @default(WAREHOUSE)
+  address           String?
+  workerId          String?
   vehicleIdentifier String?
-  active          Boolean           @default(true)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch          Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  worker          WorkerProfile?    @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  stocks          InventoryStock[]
-  stockMovements  StockMovement[]
-  jobPartUsages   JobPartUsage[]
+  active            Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch            Branch?           @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  worker            WorkerProfile?    @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  stocks            InventoryStock[]
+  stockMovements    StockMovement[]
+  jobPartUsages     JobPartUsage[]
 
   @@unique([companyId, name])
   @@index([companyId, active])
@@ -1519,31 +1523,31 @@ model StockLocation {
 }
 
 model InventoryItem {
-  id               String              @id @default(cuid())
-  companyId        String
-  sku              String?
-  name             String
-  description      String?
-  category         String?
-  itemCategory     String?
-  unitOfMeasure    String              @default("each")
-  unitCost         Decimal?            @db.Decimal(12, 2)
-  salePrice        Decimal?            @db.Decimal(12, 2)
-  minStockLevel    Decimal?            @db.Decimal(12, 3)
-  reorderPoint     Decimal?            @db.Decimal(12, 3)
-  preferredSupplierId String?
+  id                   String                @id @default(cuid())
+  companyId            String
+  sku                  String?
+  name                 String
+  description          String?
+  category             String?
+  itemCategory         String?
+  unitOfMeasure        String                @default("each")
+  unitCost             Decimal?              @db.Decimal(12, 2)
+  salePrice            Decimal?              @db.Decimal(12, 2)
+  minStockLevel        Decimal?              @db.Decimal(12, 3)
+  reorderPoint         Decimal?              @db.Decimal(12, 3)
+  preferredSupplierId  String?
   supplierLeadTimeDays Int?
-  serialTracked    Boolean             @default(false)
-  serialNumberRequired Boolean          @default(false)
-  active           Boolean             @default(true)
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
-  company          Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  preferredSupplier Supplier?           @relation(fields: [preferredSupplierId], references: [id], onDelete: SetNull)
-  stocks           InventoryStock[]
-  stockMovements   StockMovement[]
-  jobPartUsages    JobPartUsage[]
-  purchaseOrderLines PurchaseOrderLine[]
+  serialTracked        Boolean               @default(false)
+  serialNumberRequired Boolean               @default(false)
+  active               Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  preferredSupplier    Supplier?             @relation(fields: [preferredSupplierId], references: [id], onDelete: SetNull)
+  stocks               InventoryStock[]
+  stockMovements       StockMovement[]
+  jobPartUsages        JobPartUsage[]
+  purchaseOrderLines   PurchaseOrderLine[]
   purchaseRequestLines PurchaseRequestLine[]
 
   @@unique([companyId, sku])
@@ -1553,17 +1557,17 @@ model InventoryItem {
 }
 
 model InventoryStock {
-  id               String         @id @default(cuid())
+  id               String        @id @default(cuid())
   companyId        String
   itemId           String
   locationId       String
-  quantityOnHand   Decimal        @default(0) @db.Decimal(12, 3)
-  quantityReserved Decimal        @default(0) @db.Decimal(12, 3)
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
-  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  item             InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  location         StockLocation  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  quantityOnHand   Decimal       @default(0) @db.Decimal(12, 3)
+  quantityReserved Decimal       @default(0) @db.Decimal(12, 3)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  company          Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  item             InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  location         StockLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
 
   @@unique([companyId, itemId, locationId])
   @@index([companyId, itemId])
@@ -1597,22 +1601,22 @@ model StockMovement {
 }
 
 model JobPartUsage {
-  id              String        @id @default(cuid())
+  id              String         @id @default(cuid())
   companyId       String
   jobId           String
   itemId          String
   locationId      String?
   workerId        String?
-  quantityPlanned Decimal?      @db.Decimal(12, 3)
-  quantityUsed    Decimal?      @db.Decimal(12, 3)
-  unitCost        Decimal?      @db.Decimal(12, 2)
+  quantityPlanned Decimal?       @db.Decimal(12, 3)
+  quantityUsed    Decimal?       @db.Decimal(12, 3)
+  unitCost        Decimal?       @db.Decimal(12, 2)
   notes           String?
-  status          JobPartStatus @default(PLANNED)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  company         Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job             Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  item            InventoryItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  status          JobPartStatus  @default(PLANNED)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  company         Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job             Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  item            InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
   location        StockLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
   worker          WorkerProfile? @relation(fields: [workerId], references: [id], onDelete: SetNull)
 
@@ -1680,32 +1684,32 @@ model PurchaseRequestLine {
 }
 
 model PurchaseOrder {
-  id                String              @id @default(cuid())
-  companyId         String
-  branchId          String?
-  supplierId        String?
-  purchaseRequestId String?
-  assetId           String?
-  contractId        String?
-  approvedById      String?
-  status            PurchaseOrderStatus @default(DRAFT)
-  orderNumber       String
-  expectedAt        DateTime?
-  receivedAt        DateTime?
-  approvedAt        DateTime?
+  id                 String              @id @default(cuid())
+  companyId          String
+  branchId           String?
+  supplierId         String?
+  purchaseRequestId  String?
+  assetId            String?
+  contractId         String?
+  approvedById       String?
+  status             PurchaseOrderStatus @default(DRAFT)
+  orderNumber        String
+  expectedAt         DateTime?
+  receivedAt         DateTime?
+  approvedAt         DateTime?
   supplierInvoiceRef String?
-  notes             String?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  company           Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch            Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  supplier          Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  purchaseRequest   PurchaseRequest?    @relation(fields: [purchaseRequestId], references: [id], onDelete: SetNull)
-  asset             Asset?               @relation(fields: [assetId], references: [id], onDelete: SetNull)
-  contract          ServiceContract?     @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  approvedBy        User?                @relation("PurchaseOrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
-  lines             PurchaseOrderLine[]
-  stockMovements    StockMovement[]
+  notes              String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch             Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  supplier           Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseRequest    PurchaseRequest?    @relation(fields: [purchaseRequestId], references: [id], onDelete: SetNull)
+  asset              Asset?              @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  contract           ServiceContract?    @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  approvedBy         User?               @relation("PurchaseOrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  lines              PurchaseOrderLine[]
+  stockMovements     StockMovement[]
 
   @@unique([companyId, orderNumber])
   @@index([companyId, status])
@@ -1716,26 +1720,26 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderLine {
-  id              String         @id @default(cuid())
-  companyId       String
-  purchaseOrderId String
-  itemId          String
-  quantity        Decimal        @db.Decimal(12, 3)
-  unitCost        Decimal?       @db.Decimal(12, 2)
-  receivedQuantity Decimal       @default(0) @db.Decimal(12, 3)
-  backorderQuantity Decimal      @default(0) @db.Decimal(12, 3)
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  company         Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  purchaseOrder   PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  item            InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  id                String        @id @default(cuid())
+  companyId         String
+  purchaseOrderId   String
+  itemId            String
+  quantity          Decimal       @db.Decimal(12, 3)
+  unitCost          Decimal?      @db.Decimal(12, 2)
+  receivedQuantity  Decimal       @default(0) @db.Decimal(12, 3)
+  backorderQuantity Decimal       @default(0) @db.Decimal(12, 3)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  company           Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  item              InventoryItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
   @@index([companyId, purchaseOrderId])
   @@index([companyId, itemId])
 }
 
 model WorkerDevice {
-  id            String    @id @default(cuid())
+  id            String               @id @default(cuid())
   companyId     String
   workerId      String
   userId        String
@@ -1750,13 +1754,13 @@ model WorkerDevice {
   revokedAt     DateTime?
   revokedById   String?
   revokedReason String?
-  active        Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  worker        WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  revokedBy     User?     @relation("WorkerDeviceRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+  active        Boolean              @default(true)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker        WorkerProfile        @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revokedBy     User?                @relation("WorkerDeviceRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
   actions       OfflineActionQueue[]
 
   @@unique([companyId, deviceId])
@@ -1799,74 +1803,73 @@ model OfflineActionQueue {
   @@index([companyId, clientActionId])
 }
 
-
 model JobChecklistTemplate {
-  id             String              @id @default(cuid())
-  companyId      String
-  serviceId      String?
-  contractId     String?
-  name           String
-  description    String?
-  active         Boolean             @default(true)
-  requiredForCompletion Boolean      @default(true)
-  sortOrder      Int                 @default(0)
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
-  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  service        Service?            @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  contract       ServiceContract?    @relation(fields: [contractId], references: [id], onDelete: SetNull)
-  items          JobChecklistItem[]
-  answers        JobChecklistAnswer[]
+  id                    String               @id @default(cuid())
+  companyId             String
+  serviceId             String?
+  contractId            String?
+  name                  String
+  description           String?
+  active                Boolean              @default(true)
+  requiredForCompletion Boolean              @default(true)
+  sortOrder             Int                  @default(0)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  company               Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  service               Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  contract              ServiceContract?     @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  items                 JobChecklistItem[]
+  answers               JobChecklistAnswer[]
 
   @@index([companyId, serviceId, active])
   @@index([companyId, contractId, active])
 }
 
 model JobChecklistItem {
-  id              String              @id @default(cuid())
-  companyId       String
-  templateId      String
-  label           String
-  helpText        String?
-  answerType      String              @default("TEXT")
-  required        Boolean             @default(false)
-  photoRequired   Boolean             @default(false)
-  passFail        Boolean             @default(false)
-  sortOrder       Int                 @default(0)
-  active          Boolean             @default(true)
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  company         Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  template        JobChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-  answers         JobChecklistAnswer[]
+  id            String               @id @default(cuid())
+  companyId     String
+  templateId    String
+  label         String
+  helpText      String?
+  answerType    String               @default("TEXT")
+  required      Boolean              @default(false)
+  photoRequired Boolean              @default(false)
+  passFail      Boolean              @default(false)
+  sortOrder     Int                  @default(0)
+  active        Boolean              @default(true)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  template      JobChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  answers       JobChecklistAnswer[]
 
   @@index([companyId, templateId, active])
 }
 
 model JobChecklistAnswer {
-  id             String               @id @default(cuid())
-  companyId      String
-  jobId          String
-  templateId     String
-  itemId         String
-  workerId       String?
-  capturedById   String?
-  answer         String?
-  passed         Boolean?
-  note           String?
-  photoUrl       String?
-  capturedAt     DateTime             @default(now())
+  id               String               @id @default(cuid())
+  companyId        String
+  jobId            String
+  templateId       String
+  itemId           String
+  workerId         String?
+  capturedById     String?
+  answer           String?
+  passed           Boolean?
+  note             String?
+  photoUrl         String?
+  capturedAt       DateTime             @default(now())
   offlineCreatedAt DateTime?
-  deviceId       String?
-  syncId         String?
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
-  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job            Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  template       JobChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-  item           JobChecklistItem     @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  worker         WorkerProfile?       @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  capturedBy     User?                @relation("ChecklistAnswerCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
+  deviceId         String?
+  syncId           String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  company          Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job              Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  template         JobChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  item             JobChecklistItem     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  worker           WorkerProfile?       @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  capturedBy       User?                @relation("ChecklistAnswerCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
 
   @@unique([companyId, jobId, itemId])
   @@index([companyId, jobId])
@@ -1875,12 +1878,12 @@ model JobChecklistAnswer {
 }
 
 model JobActivity {
-  id        String          @id @default(cuid())
-  companyId String
-  jobId     String
-  workerId  String?
-  userId    String?
-  type      JobActivityType
+  id               String          @id @default(cuid())
+  companyId        String
+  jobId            String
+  workerId         String?
+  userId           String?
+  type             JobActivityType
   note             String?
   metadata         Json?
   capturedAt       DateTime?
@@ -1888,10 +1891,10 @@ model JobActivity {
   deviceId         String?
   syncId           String?
   createdAt        DateTime        @default(now())
-  company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job       Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  worker    WorkerProfile?  @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  user      User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company          Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job              Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker           WorkerProfile?  @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  user             User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([companyId, jobId, createdAt])
   @@index([companyId, workerId, createdAt])
@@ -1922,41 +1925,41 @@ model ScheduleItem {
 }
 
 model Quote {
-  id              String               @id @default(cuid())
-  companyId       String
-  branchId        String?
-  customerId      String
-  serviceId       String?
-  jobId           String?
-  title           String
-  description     String?
-  status          QuoteStatus          @default(DRAFT)
-  amount          Decimal              @default(0) @db.Decimal(12, 2)
-  subtotal        Decimal              @default(0) @db.Decimal(12, 2)
-  discountTotal   Decimal              @default(0) @db.Decimal(12, 2)
-  taxTotal        Decimal              @default(0) @db.Decimal(12, 2)
-  total           Decimal              @default(0) @db.Decimal(12, 2)
-  depositRequiredAmount Decimal        @default(0) @db.Decimal(12, 2)
-  depositRequiredPercent Decimal       @default(0) @db.Decimal(7, 4)
-  depositPaidAt   DateTime?
-  validUntil      DateTime?
-  sentAt          DateTime?
-  acceptedAt      DateTime?
-  rejectedAt      DateTime?
-  expiredAt       DateTime?
-  deletedAt       DateTime?
-  deleteExpiresAt DateTime?
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch          Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  customer        Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  service         Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  job             Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
-  invoices        Invoice[]
-  paymentLinks    PaymentLink[]
-  lineItems       QuoteLineItem[]
-  statusHistory   QuoteStatusHistory[]
+  id                     String               @id @default(cuid())
+  companyId              String
+  branchId               String?
+  customerId             String
+  serviceId              String?
+  jobId                  String?
+  title                  String
+  description            String?
+  status                 QuoteStatus          @default(DRAFT)
+  amount                 Decimal              @default(0) @db.Decimal(12, 2)
+  subtotal               Decimal              @default(0) @db.Decimal(12, 2)
+  discountTotal          Decimal              @default(0) @db.Decimal(12, 2)
+  taxTotal               Decimal              @default(0) @db.Decimal(12, 2)
+  total                  Decimal              @default(0) @db.Decimal(12, 2)
+  depositRequiredAmount  Decimal              @default(0) @db.Decimal(12, 2)
+  depositRequiredPercent Decimal              @default(0) @db.Decimal(7, 4)
+  depositPaidAt          DateTime?
+  validUntil             DateTime?
+  sentAt                 DateTime?
+  acceptedAt             DateTime?
+  rejectedAt             DateTime?
+  expiredAt              DateTime?
+  deletedAt              DateTime?
+  deleteExpiresAt        DateTime?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  company                Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch                 Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customer               Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service                Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  job                    Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  invoices               Invoice[]
+  paymentLinks           PaymentLink[]
+  lineItems              QuoteLineItem[]
+  statusHistory          QuoteStatusHistory[]
 
   @@index([companyId])
   @@index([companyId, deletedAt])
@@ -2001,59 +2004,62 @@ model QuoteStatusHistory {
 }
 
 model CompanyInvoiceCounter {
-  id         String   @id @default(cuid())
-  companyId  String   @unique
-  prefix     String   @default("INV")
-  nextNumber Int      @default(1)
-  padding    Int      @default(4)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                   String   @id @default(cuid())
+  companyId            String   @unique
+  prefix               String   @default("INV")
+  nextNumber           Int      @default(1)
+  receiptNextNumber    Int      @default(1)
+  creditNoteNextNumber Int      @default(1)
+  padding              Int      @default(4)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  company              Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 }
 
 model Invoice {
-  id            String                 @id @default(cuid())
-  companyId     String
-  branchId      String?
-  customerId    String
-  serviceId     String?
-  jobId         String?
-  number        String
-  status        InvoiceStatus          @default(DRAFT)
-  amount        Decimal                @default(0) @db.Decimal(12, 2)
-  subtotal      Decimal                @default(0) @db.Decimal(12, 2)
-  discountTotal Decimal                @default(0) @db.Decimal(12, 2)
-  taxTotal      Decimal                @default(0) @db.Decimal(12, 2)
-  total         Decimal                @default(0) @db.Decimal(12, 2)
-  balanceDue    Decimal                @default(0) @db.Decimal(12, 2)
-  depositRequiredAmount Decimal         @default(0) @db.Decimal(12, 2)
-  depositRequiredPercent Decimal        @default(0) @db.Decimal(7, 4)
-  paymentPlanNotes String?
-  promisedPaymentDate DateTime?
-  lastReminderSentAt DateTime?
-  nextReminderAt DateTime?
-  disputedAt    DateTime?
-  dueDate       DateTime?
-  sentAt        DateTime?
-  paidAt        DateTime?
-  voidedAt      DateTime?
-  createdAt     DateTime               @default(now())
-  updatedAt     DateTime               @updatedAt
-  company       Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch        Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  customer      Customer               @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  service       Service?               @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  job           Job?                   @relation(fields: [jobId], references: [id], onDelete: SetNull)
-  quoteId       String?
-  quote         Quote?                 @relation(fields: [quoteId], references: [id], onDelete: SetNull)
-  payments      Payment[]
-  receipts      Receipt[]
-  lineItems     InvoiceLineItem[]
-  statusHistory InvoiceStatusHistory[]
-  messageLogs   MessageLog[]
-  paymentLinks  PaymentLink[]
-  paymentRefunds PaymentRefund[]
-  creditNotes   CreditNote[]
+  id                     String                    @id @default(cuid())
+  companyId              String
+  branchId               String?
+  customerId             String
+  serviceId              String?
+  jobId                  String?
+  number                 String
+  status                 InvoiceStatus             @default(DRAFT)
+  amount                 Decimal                   @default(0) @db.Decimal(12, 2)
+  subtotal               Decimal                   @default(0) @db.Decimal(12, 2)
+  discountTotal          Decimal                   @default(0) @db.Decimal(12, 2)
+  taxTotal               Decimal                   @default(0) @db.Decimal(12, 2)
+  total                  Decimal                   @default(0) @db.Decimal(12, 2)
+  balanceDue             Decimal                   @default(0) @db.Decimal(12, 2)
+  depositRequiredAmount  Decimal                   @default(0) @db.Decimal(12, 2)
+  depositRequiredPercent Decimal                   @default(0) @db.Decimal(7, 4)
+  paymentPlanNotes       String?
+  promisedPaymentDate    DateTime?
+  lastReminderSentAt     DateTime?
+  nextReminderAt         DateTime?
+  disputedAt             DateTime?
+  dueDate                DateTime?
+  sentAt                 DateTime?
+  paidAt                 DateTime?
+  voidedAt               DateTime?
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
+  company                Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch                 Branch?                   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  customer               Customer                  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  service                Service?                  @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  job                    Job?                      @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  quoteId                String?
+  quote                  Quote?                    @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  payments               Payment[]
+  receipts               Receipt[]
+  lineItems              InvoiceLineItem[]
+  statusHistory          InvoiceStatusHistory[]
+  messageLogs            MessageLog[]
+  paymentLinks           PaymentLink[]
+  paymentRefunds         PaymentRefund[]
+  creditNotes            CreditNote[]
+  unappliedCredits       UnappliedCustomerCredit[]
   collectionReminderLogs CollectionReminderLog[]
 
   @@unique([companyId, number])
@@ -2099,36 +2105,37 @@ model InvoiceStatusHistory {
 }
 
 model Payment {
-  id          String        @id @default(cuid())
-  companyId   String
-  branchId    String?
-  invoiceId   String
-  amount      Decimal       @db.Decimal(12, 2)
-  method      PaymentMethod @default(OTHER)
-  status      PaymentStatus @default(PENDING)
-  reference   String?
-  provider    PaymentProvider?
-  providerPaymentId String?
-  paymentLinkId String?
+  id                   String                   @id @default(cuid())
+  companyId            String
+  branchId             String?
+  invoiceId            String
+  amount               Decimal                  @db.Decimal(12, 2)
+  method               PaymentMethod            @default(OTHER)
+  status               PaymentStatus            @default(PENDING)
+  reference            String?
+  provider             PaymentProvider?
+  providerPaymentId    String?
+  paymentLinkId        String?
   reconciliationItemId String?
-  receivedAt  DateTime?
-  confirmedAt DateTime?
-  notes       String?
-  createdById String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  branch      Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  createdBy   User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
-  paymentLink PaymentLink?   @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
-  receipt     Receipt?
-  refunds     PaymentRefund[]
+  receivedAt           DateTime?
+  confirmedAt          DateTime?
+  notes                String?
+  createdById          String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  company              Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  branch               Branch?                  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  invoice              Invoice                  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  createdBy            User?                    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  paymentLink          PaymentLink?             @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
+  receipt              Receipt?
+  refunds              PaymentRefund[]
+  unappliedCredit      UnappliedCustomerCredit?
 
+  @@unique([companyId, paymentLinkId])
   @@index([companyId])
   @@index([companyId, branchId])
   @@index([companyId, provider, providerPaymentId])
-  @@index([paymentLinkId])
 }
 
 model Receipt {
@@ -2152,24 +2159,26 @@ model Receipt {
   @@index([companyId, branchId])
 }
 
-
 model PaymentProviderConnection {
-  id             String                          @id @default(cuid())
-  companyId      String
-  provider       PaymentProvider
-  displayName    String?
-  status         PaymentProviderConnectionStatus @default(CONFIGURED)
-  config         Json?
-  lastTestedAt   DateTime?
-  lastTestStatus String?
-  lastTestError  String?
-  createdById    String?
-  createdAt      DateTime                        @default(now())
-  updatedAt      DateTime                        @updatedAt
-  company        Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  secrets        PaymentProviderSecret[]
-  paymentLinks   PaymentLink[]
-  refunds        PaymentRefund[]
+  id                       String                             @id @default(cuid())
+  companyId                String
+  provider                 PaymentProvider
+  displayName              String?
+  status                   PaymentProviderConnectionStatus    @default(CONFIGURED)
+  config                   Json?
+  lastTestedAt             DateTime?
+  lastTestStatus           String?
+  lastTestError            String?
+  signedResponseVerifiedAt DateTime?
+  callbackToken            String?                            @unique
+  createdById              String?
+  createdAt                DateTime                           @default(now())
+  updatedAt                DateTime                           @updatedAt
+  company                  Company                            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secrets                  PaymentProviderSecret[]
+  paymentLinks             PaymentLink[]
+  refunds                  PaymentRefund[]
+  credentialVersions       PaymentProviderCredentialVersion[]
 
   @@unique([companyId, provider])
   @@index([companyId])
@@ -2178,102 +2187,153 @@ model PaymentProviderConnection {
 }
 
 model PaymentProviderSecret {
-  id           String                    @id @default(cuid())
-  companyId    String
-  connectionId String
-  keyName      String
+  id             String                    @id @default(cuid())
+  companyId      String
+  connectionId   String
+  keyName        String
   encryptedValue String
-  iv           String
-  authTag      String
-  keyVersion   String
-  createdAt    DateTime                  @default(now())
-  updatedAt    DateTime                  @updatedAt
-  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connection   PaymentProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  iv             String
+  authTag        String
+  keyVersion     String
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  company        Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connection     PaymentProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@unique([connectionId, keyName])
   @@index([companyId])
   @@index([connectionId])
 }
 
+model PaymentProviderCredentialVersion {
+  id             String                    @id @default(cuid())
+  companyId      String
+  connectionId   String
+  version        Int
+  encryptedValue String
+  iv             String
+  authTag        String
+  keyVersion     String
+  mode           String                    @default("test")
+  activatedAt    DateTime                  @default(now())
+  retiredAt      DateTime?
+  createdAt      DateTime                  @default(now())
+  company        Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connection     PaymentProviderConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  paymentLinks   PaymentLink[]
+
+  @@unique([connectionId, version])
+  @@index([companyId, connectionId])
+  @@index([connectionId, retiredAt])
+}
+
 model PaymentLink {
-  id           String                    @id @default(cuid())
-  companyId    String
-  branchId     String?
-  invoiceId    String
-  quoteId      String?
-  providerConnectionId String?
-  provider     PaymentProvider
-  status       PaymentLinkStatus         @default(CREATED)
-  amount       Decimal                   @db.Decimal(12, 2)
-  currency     String                    @default("USD")
-  reference    String
-  checkoutUrl  String?
-  externalId   String?
-  expiresAt    DateTime?
-  sentAt       DateTime?
-  openedAt     DateTime?
-  paidAt       DateTime?
-  createdById  String?
-  createdAt    DateTime                  @default(now())
-  updatedAt    DateTime                  @updatedAt
-  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  invoice      Invoice                   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  quote        Quote?                    @relation(fields: [quoteId], references: [id], onDelete: SetNull)
-  providerConnection PaymentProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
-  payments     Payment[]
+  id                       String                            @id @default(cuid())
+  companyId                String
+  branchId                 String?
+  invoiceId                String
+  quoteId                  String?
+  providerConnectionId     String?
+  credentialVersionId      String?
+  provider                 PaymentProvider
+  status                   PaymentLinkStatus                 @default(CREATED)
+  amount                   Decimal                           @db.Decimal(12, 2)
+  currency                 String                            @default("USD")
+  reference                String
+  checkoutUrl              String?
+  externalId               String?
+  providerPaymentId        String?
+  pollUrl                  String?
+  merchantTrace            String?
+  providerStatus           String?
+  providerStatusMessage    String?
+  providerIsTest           Boolean?
+  lastProviderVerifiedAt   DateTime?
+  invoiceUpdatedAtSnapshot DateTime?
+  invoiceBalanceSnapshot   Decimal?                          @db.Decimal(12, 2)
+  invoiceTotalSnapshot     Decimal?                          @db.Decimal(12, 2)
+  customerIdSnapshot       String?
+  submittedAt              DateTime?
+  nextStatusCheckAt        DateTime?
+  statusCheckAttempts      Int                               @default(0)
+  lastStatusCheckAt        DateTime?
+  lastStatusCheckErrorCode String?
+  reconciliationState      String?
+  abandonedAt              DateTime?
+  expiresAt                DateTime?
+  sentAt                   DateTime?
+  openedAt                 DateTime?
+  paidAt                   DateTime?
+  createdById              String?
+  createdAt                DateTime                          @default(now())
+  updatedAt                DateTime                          @updatedAt
+  company                  Company                           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice                  Invoice                           @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  quote                    Quote?                            @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  providerConnection       PaymentProviderConnection?        @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
+  credentialVersion        PaymentProviderCredentialVersion? @relation(fields: [credentialVersionId], references: [id], onDelete: SetNull)
+  payments                 Payment[]
+  unappliedCredits         UnappliedCustomerCredit[]
 
   @@unique([companyId, reference])
+  @@unique([providerConnectionId, providerPaymentId])
+  @@unique([providerConnectionId, merchantTrace])
   @@index([companyId, invoiceId])
   @@index([companyId, status])
   @@index([provider, externalId])
+  @@index([companyId, provider, providerPaymentId])
+  @@index([companyId, provider, merchantTrace])
+  @@index([credentialVersionId])
+  @@index([nextStatusCheckAt, status])
 }
 
 model PaymentProviderEvent {
-  id           String                     @id @default(cuid())
-  companyId    String
+  id                   String                     @id @default(cuid())
+  companyId            String
   providerConnectionId String?
-  provider     PaymentProvider
-  eventId      String?
-  eventType    String?
-  status       PaymentProviderEventStatus @default(RECEIVED)
-  signatureValid Boolean                  @default(false)
-  paymentLinkId String?
-  invoiceId    String?
-  paymentId    String?
-  payload      Json?
-  errorMessage String?
-  receivedAt   DateTime                   @default(now())
-  processedAt  DateTime?
-  company      Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  provider             PaymentProvider
+  eventId              String?
+  eventType            String?
+  status               PaymentProviderEventStatus @default(RECEIVED)
+  signatureValid       Boolean                    @default(false)
+  paymentLinkId        String?
+  invoiceId            String?
+  paymentId            String?
+  payload              Json?
+  errorMessage         String?
+  receivedAt           DateTime                   @default(now())
+  processedAt          DateTime?
+  company              Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
+  @@unique([companyId, provider, eventId])
   @@index([companyId, provider])
   @@index([companyId, eventId])
   @@index([status])
 }
 
 model PaymentReconciliationItem {
-  id           String                       @id @default(cuid())
-  companyId    String
-  branchId     String?
+  id                   String                      @id @default(cuid())
+  companyId            String
+  branchId             String?
   providerConnectionId String?
-  provider     PaymentProvider
-  status       PaymentReconciliationStatus  @default(UNMATCHED)
-  providerPaymentId String?
-  reference    String?
-  payerName    String?
-  payerEmail   String?
-  amount       Decimal                      @db.Decimal(12, 2)
-  currency     String                       @default("USD")
-  paidAt       DateTime?
-  matchedInvoiceId String?
-  matchedPaymentId String?
-  matchedById  String?
-  suspiciousReason String?
-  raw          Json?
-  createdAt    DateTime                     @default(now())
-  updatedAt    DateTime                     @updatedAt
-  company      Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  provider             PaymentProvider
+  status               PaymentReconciliationStatus @default(UNMATCHED)
+  providerPaymentId    String?
+  dedupeKey            String?                     @unique
+  reference            String?
+  payerName            String?
+  payerEmail           String?
+  amount               Decimal                     @db.Decimal(12, 2)
+  currency             String                      @default("USD")
+  paidAt               DateTime?
+  matchedInvoiceId     String?
+  matchedPaymentId     String?
+  matchedById          String?
+  suspiciousReason     String?
+  raw                  Json?
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  company              Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId, status])
   @@index([companyId, reference])
@@ -2281,93 +2341,139 @@ model PaymentReconciliationItem {
 }
 
 model PaymentRefund {
-  id           String              @id @default(cuid())
-  companyId    String
-  branchId     String?
-  paymentId    String
-  invoiceId    String
+  id                   String                     @id @default(cuid())
+  companyId            String
+  branchId             String?
+  paymentId            String
+  invoiceId            String
   providerConnectionId String?
-  approvalRequestId String?
-  amount       Decimal             @db.Decimal(12, 2)
-  status       PaymentRefundStatus @default(REQUESTED)
-  providerRefundId String?
-  reason       String?
-  requestedById String?
-  processedAt  DateTime?
-  createdAt    DateTime            @default(now())
-  updatedAt    DateTime            @updatedAt
-  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  payment      Payment             @relation(fields: [paymentId], references: [id], onDelete: Cascade)
-  invoice      Invoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  providerConnection PaymentProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
+  approvalRequestId    String?
+  amount               Decimal                    @db.Decimal(12, 2)
+  status               PaymentRefundStatus        @default(REQUESTED)
+  providerRefundId     String?
+  reason               String?
+  requestedById        String?
+  processedAt          DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  company              Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  payment              Payment                    @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice              Invoice                    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  providerConnection   PaymentProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
 
+  @@unique([companyId, providerConnectionId, providerRefundId])
   @@index([companyId, paymentId])
   @@index([companyId, status])
 }
 
 model CreditNote {
-  id           String           @id @default(cuid())
-  companyId    String
-  invoiceId    String
+  id              String           @id @default(cuid())
+  companyId       String
+  invoiceId       String
   paymentRefundId String?
-  number       String
-  amount       Decimal          @db.Decimal(12, 2)
-  status       CreditNoteStatus @default(DRAFT)
-  reason       String?
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
-  company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  invoice      Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  number          String
+  amount          Decimal          @db.Decimal(12, 2)
+  status          CreditNoteStatus @default(DRAFT)
+  reason          String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@unique([companyId, number])
+  @@unique([companyId, paymentRefundId])
   @@index([companyId, invoiceId])
 }
 
+model UnappliedCustomerCredit {
+  id            String       @id @default(cuid())
+  companyId     String
+  customerId    String
+  invoiceId     String?
+  paymentId     String       @unique
+  paymentLinkId String?
+  amount        Decimal      @db.Decimal(12, 2)
+  currency      String       @default("USD")
+  status        String       @default("OPEN")
+  reason        String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer      Customer     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoice       Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  payment       Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  paymentLink   PaymentLink? @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, customerId, status])
+  @@index([companyId, invoiceId])
+}
+
+model PaymentNotificationOutbox {
+  id            String    @id @default(cuid())
+  companyId     String
+  eventKey      String
+  eventType     String
+  entityType    String
+  entityId      String
+  payload       Json?
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  processedAt   DateTime?
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, eventKey])
+  @@index([status, nextAttemptAt])
+}
+
 model CollectionReminderRule {
-  id           String   @id @default(cuid())
-  companyId    String
-  name         String
-  offsetDays   Int      @default(0)
-  channel      String   @default("EMAIL")
-  active       Boolean  @default(true)
-  template     String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  companyId  String
+  name       String
+  offsetDays Int      @default(0)
+  channel    String   @default("EMAIL")
+  active     Boolean  @default(true)
+  template   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId, active])
 }
 
 model CollectionReminderLog {
-  id           String                   @id @default(cuid())
-  companyId    String
-  invoiceId    String
-  channel      String
-  status       CollectionReminderStatus @default(QUEUED)
-  reminderType String?
-  recipient    String?
-  sentAt       DateTime?
+  id            String                   @id @default(cuid())
+  companyId     String
+  invoiceId     String
+  channel       String
+  status        CollectionReminderStatus @default(QUEUED)
+  reminderType  String?
+  recipient     String?
+  sentAt        DateTime?
   nextAllowedAt DateTime?
-  errorMessage String?
-  createdAt    DateTime                 @default(now())
-  company      Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  invoice      Invoice                  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  errorMessage  String?
+  createdAt     DateTime                 @default(now())
+  company       Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice       Invoice                  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([companyId, invoiceId, createdAt])
   @@index([companyId, status])
 }
 
 model WorkerLocation {
-  id         String        @id @default(cuid())
-  companyId  String
-  workerId   String
-  latitude   Float
-  longitude  Float
+  id             String        @id @default(cuid())
+  companyId      String
+  workerId       String
+  latitude       Float
+  longitude      Float
   accuracyMeters Float?
-  source     String        @default("MOBILE_APP")
-  recordedAt DateTime      @default(now())
-  company    Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  worker     WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  source         String        @default("MOBILE_APP")
+  recordedAt     DateTime      @default(now())
+  company        Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  worker         WorkerProfile @relation(fields: [workerId], references: [id], onDelete: Cascade)
 
   @@index([companyId, workerId, recordedAt])
 }
@@ -2548,15 +2654,15 @@ model BookingRequestPhoto {
 }
 
 model JobProofPhoto {
-  id           String             @id @default(cuid())
-  companyId    String
-  jobId        String
-  workerId     String?
-  uploadedById String?
-  url          String
-  filename     String
-  mimeType     String
-  sizeBytes    Int
+  id               String             @id @default(cuid())
+  companyId        String
+  jobId            String
+  workerId         String?
+  uploadedById     String?
+  url              String
+  filename         String
+  mimeType         String
+  sizeBytes        Int
   category         ProofPhotoCategory @default(GENERAL)
   caption          String?
   capturedAt       DateTime?
@@ -2567,45 +2673,45 @@ model JobProofPhoto {
   accuracy         Float?
   syncId           String?
   createdAt        DateTime           @default(now())
-  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job          Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  worker       WorkerProfile?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
-  uploadedBy   User?              @relation("JobProofPhotoUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  company          Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job              Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker           WorkerProfile?     @relation(fields: [workerId], references: [id], onDelete: SetNull)
+  uploadedBy       User?              @relation("JobProofPhotoUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
+  @@unique([companyId, jobId, syncId])
   @@index([companyId, jobId])
   @@index([companyId, workerId])
   @@index([companyId, uploadedById])
-  @@unique([companyId, jobId, syncId])
 }
 
 model JobCompletionLocation {
-  id           String   @id @default(cuid())
-  companyId    String
-  jobId        String   @unique
-  capturedById String?
-  latitude     Float
-  longitude    Float
-  accuracy     Float?
+  id               String    @id @default(cuid())
+  companyId        String
+  jobId            String    @unique
+  capturedById     String?
+  latitude         Float
+  longitude        Float
+  accuracy         Float?
   source           String?
-  capturedAt       DateTime @default(now())
+  capturedAt       DateTime  @default(now())
   offlineCreatedAt DateTime?
   deviceId         String?
   syncId           String?
-  createdAt        DateTime @default(now())
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  capturedBy   User?    @relation(fields: [capturedById], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  company          Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job              Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  capturedBy       User?     @relation(fields: [capturedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, jobId])
   @@index([companyId, capturedById])
 }
 
 model JobSignature {
-  id           String   @id @default(cuid())
-  companyId    String
-  jobId        String   @unique
-  capturedById String?
-  signerName   String?
+  id               String    @id @default(cuid())
+  companyId        String
+  jobId            String    @unique
+  capturedById     String?
+  signerName       String?
   signatureUrl     String
   mimeType         String
   sizeBytes        Int
@@ -2616,51 +2722,51 @@ model JobSignature {
   longitude        Float?
   accuracy         Float?
   syncId           String?
-  createdAt        DateTime @default(now())
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  capturedBy   User?    @relation("JobSignatureCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  company          Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  job              Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  capturedBy       User?     @relation("JobSignatureCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, jobId])
   @@index([companyId, capturedById])
 }
 
 model CompanyFinanceSettings {
-  id                    String   @id @default(cuid())
-  companyId             String   @unique
-  country               String   @default("ZW")
-  timezone              String   @default("Africa/Harare")
-  defaultCurrency       String   @default("USD")
-  allowedCurrencies     Json?
-  taxName               String   @default("Tax")
-  taxRate               Decimal  @default(0) @db.Decimal(7, 4)
-  pricesIncludeTax      Boolean  @default(false)
-  dateFormat            String   @default("yyyy-MM-dd")
-  numberFormat          String   @default("en-ZW")
-  invoicePrefix         String?
-  receiptPrefix         String?
-  quoteExpiryDays       Int      @default(14)
-  paymentTermsDays      Int      @default(14)
-  fiscalYearStartMonth  Int?
-  invoiceFooter         String?
-  allowedPaymentMethods Json?
-  paymentInstructions   String?
-  bankTransferProofRequired Boolean @default(true)
-  enforceQuoteDepositBeforeScheduling Boolean @default(false)
-  defaultQuoteDepositPercent Decimal @default(0) @db.Decimal(7, 4)
-  reminderThrottleHours Int @default(24)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                                  String   @id @default(cuid())
+  companyId                           String   @unique
+  country                             String   @default("ZW")
+  timezone                            String   @default("Africa/Harare")
+  defaultCurrency                     String   @default("USD")
+  allowedCurrencies                   Json?
+  taxName                             String   @default("Tax")
+  taxRate                             Decimal  @default(0) @db.Decimal(7, 4)
+  pricesIncludeTax                    Boolean  @default(false)
+  dateFormat                          String   @default("yyyy-MM-dd")
+  numberFormat                        String   @default("en-ZW")
+  invoicePrefix                       String?
+  receiptPrefix                       String?
+  quoteExpiryDays                     Int      @default(14)
+  paymentTermsDays                    Int      @default(14)
+  fiscalYearStartMonth                Int?
+  invoiceFooter                       String?
+  allowedPaymentMethods               Json?
+  paymentInstructions                 String?
+  bankTransferProofRequired           Boolean  @default(true)
+  enforceQuoteDepositBeforeScheduling Boolean  @default(false)
+  defaultQuoteDepositPercent          Decimal  @default(0) @db.Decimal(7, 4)
+  reminderThrottleHours               Int      @default(24)
+  createdAt                           DateTime @default(now())
+  updatedAt                           DateTime @updatedAt
+  company                             Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
 }
 
 model FinanceIntegration {
-  id               String                   @id @default(cuid())
+  id               String                     @id @default(cuid())
   companyId        String
   provider         FinanceProvider
-  status           FinanceIntegrationStatus @default(CONFIGURED)
+  status           FinanceIntegrationStatus   @default(CONFIGURED)
   externalTenantId String?
   lastSyncAt       DateTime?
   config           Json?
@@ -2668,9 +2774,9 @@ model FinanceIntegration {
   disconnectedAt   DateTime?
   lastTestAt       DateTime?
   lastError        String?
-  createdAt        DateTime                 @default(now())
-  updatedAt        DateTime                 @updatedAt
-  company          Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  company          Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   secrets          FinanceIntegrationSecret[]
   mappings         FinanceMapping[]
   syncLogs         FinanceSyncLog[]
@@ -2683,19 +2789,19 @@ model FinanceIntegration {
 }
 
 model FinanceIntegrationSecret {
-  id               String             @id @default(cuid())
-  companyId        String
-  integrationId    String
-  secretType       String
-  encryptedValue   String
-  iv               String
-  authTag          String
-  keyVersion       String
-  expiresAt        DateTime?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
-  company          Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  integration      FinanceIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  id             String             @id @default(cuid())
+  companyId      String
+  integrationId  String
+  secretType     String
+  encryptedValue String
+  iv             String
+  authTag        String
+  keyVersion     String
+  expiresAt      DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  company        Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration    FinanceIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
 
   @@unique([integrationId, secretType])
   @@index([companyId])
@@ -2704,24 +2810,24 @@ model FinanceIntegrationSecret {
 }
 
 model FinanceMapping {
-  id                      String             @id @default(cuid())
-  companyId               String
-  integrationId           String?
-  provider                FinanceProvider
-  revenueAccountCode      String?
-  taxRateId               String?
-  paymentsAccountCode     String?
-  discountsAccountCode    String?
-  stockAccountCode        String?
+  id                       String              @id @default(cuid())
+  companyId                String
+  integrationId            String?
+  provider                 FinanceProvider
+  revenueAccountCode       String?
+  taxRateId                String?
+  paymentsAccountCode      String?
+  discountsAccountCode     String?
+  stockAccountCode         String?
   branchTrackingCategoryId String?
-  trackingCategoryId      String?
-  invoicePrefix           String?
-  customerNamingRule      String?
-  config                  Json?
-  createdAt               DateTime           @default(now())
-  updatedAt               DateTime           @updatedAt
-  company                 Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  integration             FinanceIntegration? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  trackingCategoryId       String?
+  invoicePrefix            String?
+  customerNamingRule       String?
+  config                   Json?
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  company                  Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration              FinanceIntegration? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
 
   @@unique([companyId, provider])
   @@index([companyId])
@@ -2730,25 +2836,25 @@ model FinanceMapping {
 }
 
 model FinanceSyncLog {
-  id             String             @id @default(cuid())
-  companyId      String
-  integrationId  String?
-  provider       FinanceProvider
-  localType      ExternalLocalType
-  localId        String
-  status         FinanceSyncStatus  @default(PENDING)
-  operation      String
-  externalId     String?
-  attempt        Int                @default(1)
-  errorCode      String?
-  errorMessage   String?
-  metadata       Json?
-  createdById    String?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-  company        Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  integration    FinanceIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
-  createdBy      User?              @relation("FinanceSyncLogCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  id            String              @id @default(cuid())
+  companyId     String
+  integrationId String?
+  provider      FinanceProvider
+  localType     ExternalLocalType
+  localId       String
+  status        FinanceSyncStatus   @default(PENDING)
+  operation     String
+  externalId    String?
+  attempt       Int                 @default(1)
+  errorCode     String?
+  errorMessage  String?
+  metadata      Json?
+  createdById   String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  integration   FinanceIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  createdBy     User?               @relation("FinanceSyncLogCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([companyId, createdAt])
   @@index([companyId, provider, localType, localId])
@@ -2757,7 +2863,7 @@ model FinanceSyncLog {
 }
 
 model FinanceWebhookEvent {
-  id             String              @id @default(cuid())
+  id             String               @id @default(cuid())
   companyId      String
   integrationId  String?
   provider       FinanceProvider
@@ -2784,7 +2890,7 @@ model ExternalRecordLink {
   companyId    String
   provider     FinanceProvider
   localType    ExternalLocalType
-  localId       String
+  localId      String
   externalId   String
   lastSyncedAt DateTime?
   createdAt    DateTime          @default(now())
@@ -3001,24 +3107,24 @@ model StorageUsageMonthly {
 }
 
 model CompanySecuritySettings {
-  id                            String   @id @default(cuid())
-  companyId                     String   @unique
-  sessionLengthHours            Int      @default(8)
-  sessionIdleTimeoutMinutes     Int      @default(120)
-  passwordMinimum               Int      @default(8)
-  requirePasswordResetOnInvite  Boolean  @default(true)
-  twoFactorEnabled              Boolean  @default(false)
-  twoFactorRequired             Boolean  @default(false)
-  failedLoginLockoutThreshold   Int      @default(5)
-  lockoutDurationMinutes        Int      @default(30)
-  inactiveUserDisableDays       Int?
-  auditLogRetentionDays         Int      @default(365)
-  notificationLogRetentionDays  Int      @default(180)
-  proofPhotoRetentionDays       Int      @default(365)
-  deletedCustomerPolicyNotes    String?
-  createdAt                     DateTime @default(now())
-  updatedAt                     DateTime @updatedAt
-  company                       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  id                           String   @id @default(cuid())
+  companyId                    String   @unique
+  sessionLengthHours           Int      @default(8)
+  sessionIdleTimeoutMinutes    Int      @default(120)
+  passwordMinimum              Int      @default(8)
+  requirePasswordResetOnInvite Boolean  @default(true)
+  twoFactorEnabled             Boolean  @default(false)
+  twoFactorRequired            Boolean  @default(false)
+  failedLoginLockoutThreshold  Int      @default(5)
+  lockoutDurationMinutes       Int      @default(30)
+  inactiveUserDisableDays      Int?
+  auditLogRetentionDays        Int      @default(365)
+  notificationLogRetentionDays Int      @default(180)
+  proofPhotoRetentionDays      Int      @default(365)
+  deletedCustomerPolicyNotes   String?
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  company                      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
 }
@@ -3045,38 +3151,38 @@ model UserSession {
 }
 
 model IdentityProviderConfig {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   companyId      String
   providerType   String
   displayName    String
   issuerUrl      String?
   clientId       String?
-  status         String   @default("DISABLED")
+  status         String    @default("DISABLED")
   scopes         Json?
   config         Json?
   lastTestedAt   DateTime?
   lastTestStatus String?
   lastTestError  String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  company        Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId, providerType])
   @@index([companyId, status])
 }
 
 model SecurityEvent {
-  id          String   @id @default(cuid())
-  companyId   String
-  userId      String?
-  eventType   String
-  severity    String   @default("INFO")
-  ipAddress   String?
-  userAgent   String?
-  metadata    Json?
-  createdAt   DateTime @default(now())
-  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String?
+  eventType String
+  severity  String   @default("INFO")
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([companyId, createdAt])
   @@index([companyId, eventType])
@@ -3084,17 +3190,17 @@ model SecurityEvent {
 }
 
 model CompanyImplementationSettings {
-  id                        String   @id @default(cuid())
-  companyId                 String   @unique
-  implementationMode        Boolean  @default(true)
-  hideDemoData              Boolean  @default(false)
-  resetAllowed              Boolean  @default(true)
+  id                        String    @id @default(cuid())
+  companyId                 String    @unique
+  implementationMode        Boolean   @default(true)
+  hideDemoData              Boolean   @default(false)
+  resetAllowed              Boolean   @default(true)
   goLiveDate                DateTime?
   implementationOwnerUserId String?
   implementationNotes       String?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @updatedAt
-  company                   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  company                   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@index([companyId, implementationMode])
 }

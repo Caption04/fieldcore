@@ -63,7 +63,7 @@ async function loadRecord(eventType, companyId, relatedId, fallback) {
   if (eventType === 'BOOKING_CREATED') return prisma.bookingRequest.findFirst({ where: { id: relatedId, companyId }, include: { customer: true, service: true, clientAccount: true } });
   if (eventType.startsWith('QUOTE_')) return prisma.quote.findFirst({ where: { id: relatedId, companyId }, include: { customer: true, service: true, job: true } });
   if (eventType === 'INVOICE_SENT') return prisma.invoice.findFirst({ where: { id: relatedId, companyId }, include: { customer: true, service: true, job: true } });
-  if (eventType === 'PAYMENT_RECEIVED') {
+  if (['PAYMENT_RECEIVED', 'PAYMENT_HELD', 'PAYMENT_REFUNDED', 'PAYMENT_DISPUTED', 'PAYMENT_NEEDS_REVIEW'].includes(eventType)) {
     const payment = await prisma.payment.findFirst({ where: { id: relatedId, companyId }, include: { receipt: true } });
     if (!payment) return null;
     const invoice = await prisma.invoice.findFirst({ where: { id: payment.invoiceId, companyId }, include: { customer: true, service: true, job: true } });
@@ -82,7 +82,8 @@ async function recipientsFor(eventType, companyId, record, tenant) {
   if (eventType === 'BOOKING_CREATED') return adminRecipients(companyId, tenant);
   if (['QUOTE_ACCEPTED', 'QUOTE_REJECTED'].includes(eventType)) return adminRecipients(companyId, tenant);
   if (['QUOTE_SENT', 'INVOICE_SENT'].includes(eventType)) return clientRecipient(companyId, record.customer, record);
-  if (eventType === 'PAYMENT_RECEIVED') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.invoice && record.invoice.customer, record.invoice));
+  if (['PAYMENT_RECEIVED', 'PAYMENT_HELD', 'PAYMENT_REFUNDED', 'PAYMENT_DISPUTED'].includes(eventType)) return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.invoice && record.invoice.customer, record.invoice));
+  if (eventType === 'PAYMENT_NEEDS_REVIEW') return adminRecipients(companyId, tenant);
   if (eventType === 'CONTRACT_ACTIVATED') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.customer, record));
   if (['MAINTENANCE_VISIT_DUE', 'SLA_AT_RISK', 'SLA_BREACHED'].includes(eventType)) return (await adminRecipients(companyId, tenant)).concat(await workerRecipient(companyId, record.workerId));
   if (eventType === 'JOB_PROOF_READY') return (await adminRecipients(companyId, tenant)).concat(await clientRecipient(companyId, record.customer, record));

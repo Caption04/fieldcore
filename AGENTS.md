@@ -799,3 +799,23 @@ Do not add placeholder permissions. If a function does not exist, do not show a 
 Keep permissions in the correct plain-language section. Money settings, invoices, reports, connected apps, and operations are separate areas. Do not use one broad checkbox to unlock unrelated data.
 
 The Owner must always retain access to Reports and every owner page, even if old saved permission rows are incomplete.
+
+## Payment Setup UI Law
+
+Normal FieldCore users must never see internal payment setup details such as:
+
+* mock or QA payment providers
+* webhook, callback, result, success, error, or cancel URLs
+* API endpoints
+* country or currency codes used by provider requests
+* raw test/live flags
+* raw provider configuration objects
+
+Show only the payment service available in the company's market and the small number of account credentials the provider gives the business. FieldCore must create callback URLs, regional defaults, and provider request settings in the backend or environment configuration.
+
+### Secret field safety
+
+- API keys, provider keys, tokens, and other reusable secrets must be encrypted at rest, never stored in frontend code, localStorage, or readable API responses.
+- Reusable provider secrets must not be hashed because FieldCore must use the original value when calling the provider. Use authenticated encryption instead.
+- After a secret is saved, the UI may show only a masked suffix. It must never refill the saved value or provide a show/reveal control.
+- Replacing a saved secret requires entering a completely new value.

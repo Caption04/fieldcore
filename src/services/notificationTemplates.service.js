@@ -79,6 +79,33 @@ function buildNotificationTemplate(eventType, context = {}) {
     'Payment date: ' + date(record.confirmedAt || record.receivedAt || record.createdAt)
   ]);
 
+  if (eventType === 'PAYMENT_HELD') return textTemplate(prefix + ': payment received', [
+    'A payment was received, but the provider is holding the funds.',
+    'Invoice: ' + (record.invoice && record.invoice.number || record.invoiceId),
+    'Amount paid: ' + money(record.amount),
+    'The payment is recorded. Check the provider account before treating the funds as settled.'
+  ]);
+
+  if (eventType === 'PAYMENT_REFUNDED') return textTemplate(prefix + ': payment refunded', [
+    'A payment was refunded.',
+    'Invoice: ' + (record.invoice && record.invoice.number || record.invoiceId),
+    'Amount: ' + money(record.amount),
+    'The invoice balance has been updated.'
+  ]);
+
+  if (eventType === 'PAYMENT_DISPUTED') return textTemplate(prefix + ': payment disputed', [
+    'A payment is disputed.',
+    'Invoice: ' + (record.invoice && record.invoice.number || record.invoiceId),
+    'Amount: ' + money(record.amount),
+    'This payment needs review.'
+  ]);
+
+  if (eventType === 'PAYMENT_NEEDS_REVIEW') return textTemplate(prefix + ': payment needs review', [
+    'A payment needs review in FieldCore.',
+    'Reference: ' + (record.reference || record.id || 'Payment'),
+    'Please open the payment record for details.'
+  ]);
+
   if (eventType === 'JOB_SCHEDULED' || eventType === 'WORKER_ASSIGNED') return textTemplate(prefix + ': job scheduled', [
     'A job has been scheduled.',
     'Job: ' + record.title,
@@ -158,6 +185,10 @@ function buildWhatsAppTemplate(eventType, context = {}) {
     QUOTE_REJECTED: ['Quote rejected', reference, customer.name || 'Customer'],
     INVOICE_SENT: ['Invoice sent', record.number, money(record.balanceDue || record.total || record.amount), record.dueDate ? 'Due ' + date(record.dueDate) : null],
     PAYMENT_RECEIVED: ['Payment received', money(record.amount), 'Invoice ' + (record.invoice && record.invoice.number || record.invoiceId), record.receipt ? 'Receipt ' + record.receipt.receiptNumber : null],
+    PAYMENT_HELD: ['Payment received - funds held by provider', money(record.amount), 'Invoice ' + (record.invoice && record.invoice.number || record.invoiceId)],
+    PAYMENT_REFUNDED: ['Payment refunded', money(record.amount), 'Invoice ' + (record.invoice && record.invoice.number || record.invoiceId)],
+    PAYMENT_DISPUTED: ['Payment disputed', money(record.amount), 'Invoice ' + (record.invoice && record.invoice.number || record.invoiceId)],
+    PAYMENT_NEEDS_REVIEW: ['Payment needs review', record.reference || reference],
     JOB_SCHEDULED: ['Job scheduled', record.title, date(record.scheduledStart), customer.address || record.address],
     JOB_RESCHEDULED: ['Job rescheduled', record.title, date(record.scheduledStart), customer.address || record.address],
     WORKER_ASSIGNED: ['Worker assigned', record.title, date(record.scheduledStart), customer.address || record.address],

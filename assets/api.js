@@ -2683,7 +2683,7 @@
       const summary = '<div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(item.lastTestedAt ? 'Last checked ' + formatDateTime(item.lastTestedAt) : 'Not checked yet') + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status === 'ACTIVE' || status === 'CONFIGURED' ? 'Connected' : status === 'ERROR' ? 'Needs attention' : 'Not connected') + '</span></div>';
       if (!canManage) return '<article class="integration-card read-only">' + summary + '</article>';
       const configFields = definition.config.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="config.' + escapeHtml(key) + '" value="' + escapeHtml(config[key] || '') + '"></div>').join('');
-      const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" placeholder="' + (configuredSecrets.has(key) ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved' : 'Not saved') + '"></div>').join('');
+      const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-secret-input="true" data-no-password-toggle="true" placeholder="' + (configuredSecrets.has(key) ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved. Enter a new value to replace it' : 'Not saved') + '"></div>').join('');
       return '<form class="integration-card" data-integration-form="' + escapeHtml(definition.provider) + '" data-integration-id="' + escapeHtml(item.id || '') + '">' + summary + '<div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save</button><button class="secondary-button compact" type="button" data-integration-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Check connection</button><button class="secondary-button compact" type="button" data-integration-disable="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Turn off</button></div><p class="fc-form-error span-2" data-integration-message hidden></p></div></form>';
     }).join('');
     if (canManage) bindIntegrationActions();
@@ -2769,10 +2769,29 @@
   }
 
   const paymentProviderDefinitions = [
-    { provider: 'PAYNOW', title: 'Paynow Zimbabwe', initials: 'PN', market: 'ZW', note: 'Zimbabwe customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['resultUrl', 'Result/webhook URL'], ['returnUrl', 'Return URL'], ['authemail', 'Auth email']], secrets: [['integrationId', 'Integration ID'], ['integrationKey', 'Integration Key']] },
-    { provider: 'OZOW', title: 'Ozow South Africa', initials: 'OZ', market: 'SA', note: 'South African customer invoice payments', config: [['mode', 'Mode: test/live'], ['endpoint', 'Endpoint'], ['countryCode', 'Country code'], ['currencyCode', 'Currency code'], ['notifyUrl', 'Notify/webhook URL'], ['successUrl', 'Success URL'], ['errorUrl', 'Error URL'], ['cancelUrl', 'Cancel URL']], secrets: [['siteCode', 'Site Code'], ['apiKey', 'API Key'], ['privateKey', 'Private Key']] },
-    { provider: 'MOCK', title: 'Mock Provider', initials: 'MK', market: 'QA', note: 'Controlled QA payment success/failure', config: [['mockMode', 'Mock mode: true/false'], ['webhookSecret', 'Webhook secret']], secrets: [['apiKey', 'Mock API key']] },
-    { provider: 'MANUAL_BANK', title: 'Manual Bank Transfer', initials: 'BT', market: 'QA', note: 'Offline/manual bank transfer records', config: [['instructions', 'Instructions'], ['accountName', 'Account name'], ['bankName', 'Bank name'], ['accountNumber', 'Account number'], ['branchCode', 'Branch code']], secrets: [] }
+    {
+      provider: 'PAYNOW',
+      title: 'Paynow',
+      initials: 'PN',
+      market: 'ZW',
+      note: 'Let customers pay online in Zimbabwe.',
+      secrets: [
+        ['integrationId', 'Paynow Integration ID', 'Copy the Integration ID from your Paynow account.'],
+        ['integrationKey', 'Paynow Integration Key', 'Copy the Integration Key from your Paynow account.']
+      ]
+    },
+    {
+      provider: 'OZOW',
+      title: 'Ozow',
+      initials: 'OZ',
+      market: 'SA',
+      note: 'Let customers pay online in South Africa.',
+      secrets: [
+        ['siteCode', 'Ozow Site Code', 'Copy the Site Code from your Ozow account.'],
+        ['apiKey', 'Ozow API Key', 'Copy the API Key from your Ozow account.'],
+        ['privateKey', 'Ozow Private Key', 'Copy the Private Key from your Ozow account.']
+      ]
+    }
   ];
 
   function paymentProviderByProvider(provider) {
@@ -2780,33 +2799,47 @@
   }
 
   function paymentProviderPayload(form) {
-    const payload = { provider: form.dataset.paymentProviderForm, status: 'ACTIVE', config: {}, secrets: {} };
-    form.querySelectorAll('input[name^="config."], textarea[name^="config."]').forEach((field) => {
-      const key = field.name.replace('config.', '');
-      if (key === 'mockMode') payload.config[key] = String(field.value || '').toLowerCase() === 'true';
-      else payload.config[key] = field.value || '';
-    });
+    const payload = { provider: form.dataset.paymentProviderForm, secrets: {} };
     form.querySelectorAll('input[name^="secret."]').forEach((field) => {
       if (field.value) payload.secrets[field.name.replace('secret.', '')] = field.value;
     });
     return payload;
   }
 
+  function paymentProviderStatus(status) {
+    if (status === 'ACTIVE') return { label: 'Ready', className: 'green' };
+    if (status === 'CONFIGURED') return { label: 'Details saved', className: 'blue' };
+    if (status === 'ERROR') return { label: 'Needs attention', className: 'red' };
+    return { label: 'Not set up', className: 'gray' };
+  }
+
   function renderPaymentProviders() {
     const card = document.querySelector('[data-payment-providers-card]');
     if (!card) return;
-    card.innerHTML = '<div class="panel-head"><h3>Customer Payment Providers</h3><span class="badge gray">Tenant scoped</span></div>' + paymentProviderDefinitions.map((definition) => {
+    const market = currentMarket();
+    const definitions = paymentProviderDefinitions.filter((definition) => definition.market === market);
+    const intro = '<div class="panel-head"><div><h3>Online payments</h3><p class="muted">Connect the payment service used in your country. FieldCore handles the technical setup in the background.</p></div></div>';
+    if (!definitions.length) {
+      card.innerHTML = intro + '<div class="empty-state"><div><strong>Online payments are not available yet.</strong><span>You can still use cash or bank transfer.</span></div></div>';
+      return;
+    }
+    card.innerHTML = intro + definitions.map((definition) => {
       const item = paymentProviderByProvider(definition.provider) || {};
-      const config = item.config || {};
-      const status = item.status || 'DISCONNECTED';
-      const statusClass = status === 'ACTIVE' || status === 'CONFIGURED' ? 'green' : status === 'ERROR' ? 'red' : 'gray';
-      const configFields = definition.config.map(([key, label]) => {
-        const value = config[key] == null ? '' : config[key];
-        const input = String(label).toLowerCase().includes('instructions') ? '<textarea name="config.' + escapeHtml(key) + '">' + escapeHtml(value) + '</textarea>' : '<input name="config.' + escapeHtml(key) + '" value="' + escapeHtml(value) + '">';
-        return '<div class="field"><label>' + escapeHtml(label) + '</label>' + input + '</div>';
+      const status = paymentProviderStatus(item.status || 'DISCONNECTED');
+      const secretMasks = item.secretMasks || {};
+      const hasSavedCredentials = Boolean(item.id && Object.keys(secretMasks).length);
+      const normalizeSecretKey = (key) => String(key || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+      const secretFields = definition.secrets.map(([key, label, help]) => {
+        const maskedValue = secretMasks[normalizeSecretKey(key)] || '';
+        if (hasSavedCredentials && maskedValue) {
+          return '<div class="field payment-secret-field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" data-secret-input="true" data-no-password-toggle="true" data-saved-mask="' + escapeHtml(maskedValue) + '" data-empty-placeholder="Enter a new ' + escapeHtml(label.toLowerCase()) + '" value="' + escapeHtml(maskedValue) + '" disabled aria-label="' + escapeHtml(label) + ' saved"><small>Saved securely. Select Update connection to replace it.</small></div>';
+        }
+        return '<div class="field payment-secret-field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-secret-input="true" data-no-password-toggle="true" data-empty-placeholder="Enter ' + escapeHtml(label.toLowerCase()) + '" placeholder="Enter ' + escapeHtml(label.toLowerCase()) + '"><small>' + escapeHtml(help) + '</small></div>';
       }).join('');
-      const secretFields = definition.secrets.map(([key, label]) => '<div class="field"><label>' + escapeHtml(label) + '</label><input name="secret.' + escapeHtml(key) + '" type="password" placeholder="' + (item.id ? '&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226; saved if previously entered' : 'Not saved') + '"></div>').join('');
-      return '<form class="integration-card" ' + (definition.market === 'ZW' ? 'data-zimbabwe-only="true" ' : definition.market === 'SA' ? 'data-south-africa-only="true" ' : '') + 'data-payment-provider-form="' + escapeHtml(definition.provider) + '" data-payment-provider-id="' + escapeHtml(item.id || '') + '"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.note + (item.lastTestedAt ? ' / tested ' + formatDateTime(item.lastTestedAt) : ' / not tested')) + '</small></div><span class="badge ' + statusClass + '">' + escapeHtml(status.replace(/_/g, ' ')) + '</span></div><div class="form-grid integration-fields">' + configFields + secretFields + '<div class="form-actions span-2"><button class="primary-button compact" type="submit">Save Provider</button><button class="secondary-button compact" type="button" data-payment-provider-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Test</button></div><p class="fc-form-error span-2" data-payment-provider-message hidden></p></div></form>';
+      const primaryAction = hasSavedCredentials
+        ? '<button class="primary-button compact" type="button" data-payment-provider-edit>Update connection</button>'
+        : '<button class="primary-button compact" type="submit">Save connection</button>';
+      return '<form class="integration-card simple-payment-provider" autocomplete="off" data-payment-provider-form="' + escapeHtml(definition.provider) + '" data-payment-provider-id="' + escapeHtml(item.id || '') + '" data-payment-provider-connected="' + (hasSavedCredentials ? 'true' : 'false') + '" data-payment-provider-editing="false"><div class="list-item integration-summary"><span class="initials">' + escapeHtml(definition.initials) + '</span><div><strong>' + escapeHtml(definition.title) + '</strong><small>' + escapeHtml(definition.note) + '</small></div><span class="badge ' + status.className + '">' + escapeHtml(status.label) + '</span></div><div class="form-grid integration-fields">' + secretFields + '<div class="form-actions span-2">' + primaryAction + '<button class="secondary-button compact" type="button" data-payment-provider-cancel hidden>Cancel</button><button class="secondary-button compact" type="button" data-payment-provider-test="' + escapeHtml(item.id || '') + '" ' + (item.id ? '' : 'disabled') + '>Check connection</button></div></div></form>';
     }).join('');
     bindPaymentProviderActions();
   }
@@ -2824,18 +2857,50 @@
 
   function bindPaymentProviderActions() {
     document.querySelectorAll('[data-payment-provider-form]').forEach((form) => {
+      const editButton = form.querySelector('[data-payment-provider-edit]');
+      const cancelButton = form.querySelector('[data-payment-provider-cancel]');
+
+      const enterEditMode = () => {
+        form.dataset.paymentProviderEditing = 'true';
+        form.querySelectorAll('input[name^="secret."]').forEach((field) => {
+          field.disabled = false;
+          field.type = 'password';
+          field.value = '';
+          field.placeholder = field.dataset.emptyPlaceholder || 'Enter a new value';
+          field.removeAttribute('aria-label');
+          const help = field.parentElement && field.parentElement.querySelector('small');
+          if (help) help.textContent = 'Enter a new value, or leave this blank to keep the saved value.';
+        });
+        if (editButton) {
+          editButton.type = 'submit';
+          editButton.textContent = 'Save changes';
+          editButton.removeAttribute('data-payment-provider-edit');
+          editButton.onclick = null;
+        }
+        if (cancelButton) cancelButton.hidden = false;
+        const firstField = form.querySelector('input[name^="secret."]');
+        if (firstField) firstField.focus();
+      };
+
+      if (editButton) editButton.onclick = enterEditMode;
+      if (cancelButton) cancelButton.onclick = () => renderPaymentProviders();
+
       form.onsubmit = async (event) => {
         event.preventDefault();
-        const message = form.querySelector('[data-payment-provider-message]');
-        if (message) { message.hidden = true; message.classList.remove('green'); }
         try {
           const payload = paymentProviderPayload(form);
           const id = form.dataset.paymentProviderId;
+          const isUpdating = Boolean(id);
+          if (isUpdating) delete payload.provider;
+          if (isUpdating && !Object.keys(payload.secrets).length) {
+            showToast('Enter at least one new value to update the connection.', false);
+            return;
+          }
           await api(id ? '/payment-providers/' + id : '/payment-providers', { method: id ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
-          if (message) { message.textContent = 'Payment provider saved.'; message.classList.add('green'); message.hidden = false; }
+          showToast(isUpdating ? 'Online payment connection updated.' : 'Online payment connection saved.', true);
           await loadPaymentProviders();
         } catch (error) {
-          if (message) { message.textContent = error.message; message.hidden = false; }
+          showToast(error.message || 'Could not save the payment connection.', false);
         }
       };
     });
@@ -2844,7 +2909,7 @@
         if (!button.dataset.paymentProviderTest) return;
         try {
           const result = await api('/payment-providers/' + button.dataset.paymentProviderTest + '/test', { method: 'POST', body: JSON.stringify({}) });
-          showToast(result.test && result.test.ok ? 'Payment provider test passed.' : result.test && result.test.message || 'Payment provider test failed.', Boolean(result.test && result.test.ok));
+          showToast(result.test && result.test.ok ? 'Connection is working.' : result.test && result.test.message || 'Connection could not be checked.', Boolean(result.test && result.test.ok));
           await loadPaymentProviders();
         } catch (error) {
           showToast(error.message, false);

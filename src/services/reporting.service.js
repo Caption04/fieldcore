@@ -197,13 +197,15 @@ async function reportData(companyId, query = {}) {
   const filters = await validateFilters(companyId, query);
   const range = filters.range;
   const now = new Date();
-  const [customers, services, workers, jobsRaw, invoicesRaw, paymentsRaw, quotesRaw, bookingsRaw] = await Promise.all([
+  const [customers, services, workers, jobsRaw, invoicesRaw, paymentsRaw, refundsRaw, unappliedCreditsRaw, quotesRaw, bookingsRaw] = await Promise.all([
     prisma.customer.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' } }),
     prisma.service.findMany({ where: { companyId }, orderBy: { name: 'asc' } }),
     prisma.workerProfile.findMany({ where: { companyId }, include: { user: { select: { id: true, name: true, email: true, role: true } } }, orderBy: { createdAt: 'desc' } }),
     prisma.job.findMany({ where: { companyId }, include: { customer: true, service: true, worker: { include: { user: { select: { id: true, name: true, email: true, role: true } } } }, proofPhotos: true, signature: true, completionLocation: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
     prisma.invoice.findMany({ where: { companyId }, include: { customer: true, service: true, payments: true, receipts: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
     prisma.payment.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' }, take: 1000 }),
+    prisma.paymentRefund.findMany({ where: { companyId, status: 'REFUNDED' }, orderBy: { createdAt: 'desc' }, take: 3000 }),
+    prisma.unappliedCustomerCredit ? prisma.unappliedCustomerCredit.findMany({ where: { companyId, status: { in: ['OPEN', 'LOCKED'] } }, orderBy: { createdAt: 'desc' }, take: 3000 }) : Promise.resolve([]),
     prisma.quote.findMany({ where: { companyId, deletedAt: null }, include: { customer: true, service: true }, orderBy: { createdAt: 'desc' }, take: 1000 }),
     prisma.bookingRequest.findMany({ where: { companyId }, include: { service: true, customer: true }, orderBy: { createdAt: 'desc' }, take: 1000 })
   ]);
@@ -221,7 +223,21 @@ async function reportData(companyId, query = {}) {
   const quotes = applyOptionalFilters(quotesRaw, filters);
   const bookings = applyOptionalFilters(bookingsRaw, filters);
 
-  const paidPayments = payments.filter((payment) => payment.status === 'CONFIRMED' && inRange(paidDate(payment), range));
+  const completedRefundsByPayment = refundsRaw.reduce((map, refund) => {
+    map.set(refund.paymentId, (map.get(refund.paymentId) || 0) + number(refund.amount));
+    return map;
+  }, new Map());
+  const unappliedByPayment = unappliedCreditsRaw.reduce((map, credit) => {
+    map.set(credit.paymentId, (map.get(credit.paymentId) || 0) + number(credit.amount));
+    return map;
+  }, new Map());
+  const netPaymentAmount = (payment) => {
+    if (String(payment.status || '').toUpperCase() !== 'CONFIRMED') return 0;
+    return Math.max(0, number(payment.amount)
+      - (completedRefundsByPayment.get(payment.id) || 0)
+      - (unappliedByPayment.get(payment.id) || 0));
+  };
+  const paidPayments = payments.filter((payment) => netPaymentAmount(payment) > 0 && inRange(paidDate(payment), range));
   const periodInvoices = invoices.filter((invoice) => inRange(invoiceDate(invoice), range));
   const unpaidInvoices = invoices.filter(isUnpaid);
   const overdueInvoices = unpaidInvoices.filter((invoice) => invoice.dueDate && new Date(invoice.dueDate) < now);
@@ -231,7 +247,7 @@ async function reportData(companyId, query = {}) {
   const periodQuotes = quotes.filter((quote) => inRange(quoteDate(quote), range));
   const periodBookings = bookings.filter((booking) => inRange(booking.createdAt, range));
 
-  const paidRevenue = paidPayments.reduce((sum, payment) => sum + number(payment.amount), MONEY_ZERO);
+  const paidRevenue = paidPayments.reduce((sum, payment) => sum + netPaymentAmount(payment), MONEY_ZERO);
   const paidInvoiceTotal = periodInvoices.filter((invoice) => invoice.status === 'PAID').reduce((sum, invoice) => sum + number(invoice.total || invoice.amount), MONEY_ZERO);
   const unpaidTotal = unpaidInvoices.reduce((sum, invoice) => sum + number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total), MONEY_ZERO);
   const overdueTotal = overdueInvoices.reduce((sum, invoice) => sum + number(invoice.balanceDue != null ? invoice.balanceDue : invoice.total), MONEY_ZERO);
@@ -259,14 +275,14 @@ async function reportData(companyId, query = {}) {
   const revenueByService = enrichGroups(groupSum(paidPayments, (payment) => {
     const invoice = invoiceForPayment(payment);
     return invoice && invoice.serviceId;
-  }, (payment) => number(payment.amount)), serviceNames);
+  }, (payment) => netPaymentAmount(payment)), serviceNames);
 
   const revenueByCustomer = enrichGroups(groupSum(paidPayments, (payment) => {
     const invoice = invoiceForPayment(payment);
     return invoice && invoice.customerId;
-  }, (payment) => number(payment.amount)), customerNames);
+  }, (payment) => netPaymentAmount(payment)), customerNames);
 
-  const revenueByPaymentMethod = groupSum(paidPayments, (payment) => String(payment.method || 'OTHER').replace(/_/g, ' '), (payment) => number(payment.amount)).map((item) => ({
+  const revenueByPaymentMethod = groupSum(paidPayments, (payment) => String(payment.method || 'OTHER').replace(/_/g, ' '), (payment) => netPaymentAmount(payment)).map((item) => ({
     name: item.key,
     total: item.total,
     count: item.count
@@ -288,7 +304,7 @@ async function reportData(companyId, query = {}) {
     const revenueHandled = paidPayments.reduce((sum, payment) => {
       const invoice = invoiceForPayment(payment);
       const job = invoice && jobForInvoice(invoice);
-      return job && job.workerId === worker.id ? sum + number(payment.amount) : sum;
+      return job && job.workerId === worker.id ? sum + netPaymentAmount(payment) : sum;
     }, 0);
     return {
       id: worker.id,
@@ -322,7 +338,7 @@ async function reportData(companyId, query = {}) {
       bookingRequests: serviceBookings.length,
       jobs: serviceJobs.length,
       completedJobs: serviceJobs.filter((job) => job.status === 'COMPLETED').length,
-      revenue: servicePayments.reduce((sum, payment) => sum + number(payment.amount), 0),
+      revenue: servicePayments.reduce((sum, payment) => sum + netPaymentAmount(payment), 0),
       quotes: serviceQuotes.length,
       acceptedQuotes: serviceAcceptedQuotes.length,
       quoteAcceptanceRate: pct(serviceAcceptedQuotes.length, eligibleQuotes.length),
@@ -339,7 +355,7 @@ async function reportData(companyId, query = {}) {
     return {
       id: customer.id,
       name: customer.name,
-      revenue: customerPayments.reduce((sum, payment) => sum + number(payment.amount), 0),
+      revenue: customerPayments.reduce((sum, payment) => sum + netPaymentAmount(payment), 0),
       unpaidTotal: customerInvoices.filter(isUnpaid).reduce((sum, invoice) => sum + invoiceBalance(invoice), 0),
       invoices: customerInvoices.length,
       jobs: customerJobs.length,
@@ -407,7 +423,7 @@ async function reportData(companyId, query = {}) {
       unpaidInvoiceTotal: unpaidTotal,
       overdueInvoiceTotal: overdueTotal,
       averageInvoiceValue: periodInvoices.length ? periodInvoices.reduce((sum, invoice) => sum + invoiceTotal(invoice), 0) / periodInvoices.length : 0,
-      byPeriod: timeline(paidPayments, paidDate, (payment) => number(payment.amount)),
+      byPeriod: timeline(paidPayments, paidDate, (payment) => netPaymentAmount(payment)),
       byService: revenueByService,
       byCustomer: revenueByCustomer,
       byPaymentMethod: revenueByPaymentMethod,

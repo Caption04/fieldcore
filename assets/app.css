@@ -5004,3 +5004,16 @@ body[data-page="executive-dashboard"] .report-table-scroll table {
     grid-template-columns: 1fr;
   }
 }
+
+/* Saved payment credentials stay masked and locked until the user chooses Update connection. */
+.simple-payment-provider input[data-saved-mask][disabled] {
+  opacity: 1;
+  background: #f4f7fb;
+  color: #334155;
+  -webkit-text-fill-color: #334155;
+  cursor: not-allowed;
+  letter-spacing: .04em;
+}
+.simple-payment-provider .payment-secret-field small {
+  min-height: 18px;
+}

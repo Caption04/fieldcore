@@ -1,7 +1,7 @@
 function getPrisma() { return require('../../db').prisma; }
 const { safeError } = require('../../utils/crypto/redact');
-
-function decimal(value) { return Number(value || 0); }
+const { allocateFinancialNumber } = require('./financialNumber.service');
+const { money, recalculateInvoiceFinancials, syncUnappliedCreditForPayment } = require('./invoiceLedger.service');
 
 function safeReconciliationItem(item) {
   if (!item) return item;
@@ -37,14 +37,59 @@ async function createOrFlagReconciliationItem(data) {
 
 async function matchReconciliationItem({ companyId, itemId, invoice, userId, method = 'BANK_TRANSFER' }) {
   const prisma = getPrisma();
-  const item = await prisma.paymentReconciliationItem.findFirst({ where: { id: itemId, companyId } });
-  if (!item) { const err = new Error('Reconciliation item not found'); err.status = 404; err.statusCode = 404; throw err; }
-  if (item.status === 'MATCHED') { const err = new Error('Reconciliation item is already matched'); err.status = 409; err.statusCode = 409; throw err; }
-  if (decimal(item.amount) > decimal(invoice.balanceDue || invoice.total || invoice.amount)) { const err = new Error('Payment amount exceeds invoice balance'); err.status = 400; err.statusCode = 400; throw err; }
+  return prisma.$transaction(async (tx) => {
+    if (typeof tx.$queryRaw === 'function') {
+      await tx.$queryRaw`SELECT "id" FROM "PaymentReconciliationItem" WHERE "companyId" = ${companyId} AND "id" = ${itemId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "companyId" = ${companyId} AND "id" = ${invoice.id} FOR UPDATE`;
+    }
+    const [item, currentInvoice] = await Promise.all([
+      tx.paymentReconciliationItem.findFirst({ where: { id: itemId, companyId } }),
+      tx.invoice.findFirst({ where: { id: invoice.id, companyId } })
+    ]);
+    if (!item) { const err = new Error('Reconciliation item not found'); err.status = 404; err.statusCode = 404; throw err; }
+    if (!currentInvoice) { const err = new Error('Invoice not found'); err.status = 404; err.statusCode = 404; throw err; }
+    if (item.status === 'MATCHED') { const err = new Error('Reconciliation item is already matched'); err.status = 409; err.statusCode = 409; throw err; }
+    if (String(currentInvoice.status).toUpperCase() === 'VOID') { const err = new Error('A void invoice cannot receive this payment'); err.status = 409; err.statusCode = 409; throw err; }
 
-  const payment = await prisma.payment.create({ data: { companyId, branchId: invoice.branchId || item.branchId || null, invoiceId: invoice.id, amount: item.amount, method, status: 'CONFIRMED', reference: item.reference, provider: item.provider, providerPaymentId: item.providerPaymentId || null, reconciliationItemId: item.id, receivedAt: item.paidAt || new Date(), confirmedAt: new Date(), createdById: userId || null, notes: 'Matched through reconciliation' } });
-  await prisma.paymentReconciliationItem.update({ where: { id: item.id }, data: { status: 'MATCHED', matchedInvoiceId: invoice.id, matchedPaymentId: payment.id, matchedById: userId || null, suspiciousReason: null } });
-  return { payment, item: await prisma.paymentReconciliationItem.findFirst({ where: { id: item.id, companyId } }) };
+    const existingPayment = item.providerPaymentId ? await tx.payment.findFirst({ where: { companyId, provider: item.provider, providerPaymentId: item.providerPaymentId } }) : null;
+    const payment = existingPayment || await tx.payment.create({
+      data: {
+        companyId,
+        branchId: currentInvoice.branchId || item.branchId || null,
+        invoiceId: currentInvoice.id,
+        amount: money(item.amount),
+        method,
+        status: 'CONFIRMED',
+        reference: item.reference,
+        provider: item.provider,
+        providerPaymentId: item.providerPaymentId || null,
+        reconciliationItemId: item.id,
+        receivedAt: item.paidAt || new Date(),
+        confirmedAt: new Date(),
+        createdById: userId || null,
+        notes: 'Matched through reconciliation'
+      }
+    });
+
+    const receipt = await tx.receipt.findUnique({ where: { paymentId: payment.id } });
+    if (!receipt) {
+      const receiptNumber = await allocateFinancialNumber(tx, companyId, 'RECEIPT');
+      await tx.receipt.create({ data: { companyId, branchId: payment.branchId || currentInvoice.branchId || null, invoiceId: currentInvoice.id, paymentId: payment.id, receiptNumber, amount: payment.amount } });
+    }
+    await recalculateInvoiceFinancials(tx, companyId, currentInvoice.id);
+    const credit = await syncUnappliedCreditForPayment(tx, companyId, payment.id, { currency: item.currency });
+    const updated = await tx.paymentReconciliationItem.update({
+      where: { id: item.id },
+      data: {
+        status: 'MATCHED',
+        matchedInvoiceId: currentInvoice.id,
+        matchedPaymentId: payment.id,
+        matchedById: userId || null,
+        suspiciousReason: credit.excess.greaterThan(0) ? 'Extra payment received — needs review' : null
+      }
+    });
+    return { payment, item: updated, unappliedCredit: credit.credit || null };
+  });
 }
 
 function safePaymentError(error) { return safeError(error); }

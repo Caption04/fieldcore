@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const net = require('node:net');
+const { Prisma } = require('@prisma/client');
 
 function upperSha512(text) {
   return crypto.createHash('sha512').update(String(text || ''), 'utf8').digest('hex').toUpperCase();
@@ -43,33 +45,83 @@ function firstValue(object, keys) {
 }
 
 function amountString(amount) {
-  const value = Number(amount || 0);
-  if (!Number.isFinite(value) || value <= 0) throw new Error('Payment amount must be greater than zero');
-  return value.toFixed(2);
+  let value;
+  try {
+    value = amount instanceof Prisma.Decimal ? amount : new Prisma.Decimal(amount == null || amount === '' ? 0 : amount);
+  } catch {
+    throw new Error('Payment amount is invalid');
+  }
+  if (!value.isFinite() || !value.greaterThan(0)) throw new Error('Payment amount must be greater than zero');
+  return value.toDecimalPlaces(2).toFixed(2);
 }
 
-function absoluteUrl(path, fallbackBase) {
+function privateOrLocalHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const family = net.isIP(host);
+  if (!family) return false;
+  if (family === 6) return host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:');
+  const parts = host.split('.').map(Number);
+  return parts[0] === 10
+    || parts[0] === 127
+    || parts[0] === 0
+    || (parts[0] === 169 && parts[1] === 254)
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168);
+}
+
+function providerBaseUrl(base, options = {}) {
+  let value = String(base || '').trim();
+  if (!value && options.allowTestFallback) value = 'https://fieldcore.test';
+  if (!value) throw new Error('Public payment address is not configured');
+  let url;
+  try { url = new URL(value); } catch { throw new Error('Public payment address is invalid'); }
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash || privateOrLocalHost(url.hostname)) {
+    throw new Error('Public payment address must use a safe HTTPS address');
+  }
+  url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+  url.search = '';
+  return url;
+}
+
+function absoluteUrl(path, fallbackBase, options = {}) {
   if (!path) return null;
   if (/^https?:\/\//i.test(String(path))) return String(path);
-  const base = String(fallbackBase || process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  const baseInput = fallbackBase === undefined ? process.env.APP_BASE_URL : fallbackBase;
+  const base = providerBaseUrl(baseInput, options);
   const suffix = String(path).startsWith('/') ? String(path) : '/' + String(path);
-  return base + suffix;
+  return base.toString().replace(/\/+$/, '') + suffix;
 }
 
 function formEncode(values) {
   const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(values || {})) {
+  const entries = Array.isArray(values) ? values : Object.entries(values || {});
+  for (const [key, value] of entries) {
     if (value === undefined || value === null) continue;
     params.append(key, String(value));
   }
   return params.toString();
 }
 
-function parseFormBody(text) {
+function parseFormPairs(text) {
   const params = new URLSearchParams(String(text || ''));
-  const out = {};
-  for (const [key, value] of params.entries()) out[key] = value;
-  return out;
+  const pairs = [];
+  const seen = new Set();
+  for (const [key, value] of params.entries()) {
+    const normalized = String(key).toLowerCase();
+    if (seen.has(normalized)) throw new Error('Payment response contains duplicate fields');
+    seen.add(normalized);
+    pairs.push([key, value]);
+  }
+  return pairs;
+}
+
+function pairsToObject(pairs) {
+  return Object.fromEntries(pairs || []);
+}
+
+function parseFormBody(text) {
+  return pairsToObject(parseFormPairs(text));
 }
 
 function getHeader(headers, name) {
@@ -82,7 +134,9 @@ function getHeader(headers, name) {
 function normalizePaymentStatus(status) {
   const value = String(status || '').trim().toUpperCase().replace(/\s+/g, '_');
   if (['PAID', 'CONFIRMED', 'SUCCESS', 'SUCCESSFUL', 'SUCCEEDED', 'COMPLETE', 'COMPLETED'].includes(value)) return 'CONFIRMED';
-  if (['FAILED', 'CANCELLED', 'CANCELED', 'ERROR', 'DECLINED', 'DISPUTED', 'EXPIRED'].includes(value)) return 'FAILED';
+  if (value === 'DISPUTED') return 'DISPUTED';
+  if (value === 'REFUNDED') return 'REFUNDED';
+  if (['FAILED', 'CANCELLED', 'CANCELED', 'ERROR', 'DECLINED', 'EXPIRED'].includes(value)) return 'FAILED';
   if (['PENDING', 'CREATED', 'SENT', 'AWAITING_DELIVERY', 'OPENED', 'PROCESSING'].includes(value)) return 'PENDING';
   return value || 'PENDING';
 }
@@ -96,7 +150,11 @@ module.exports = {
   getHeader,
   lowerSha512,
   normalizePaymentStatus,
+  pairsToObject,
   parseFormBody,
+  parseFormPairs,
+  privateOrLocalHost,
+  providerBaseUrl,
   secretValue,
   upperSha512
 };
